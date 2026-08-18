@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<resources>
+  <resource name="agentBridgeLog" type="RESOURCE"/>
+  <resource name="agentBridgeCreate" type="RESOURCE"/>
+  <resource name="agentBridgeStep" type="RESOURCE"/>
+  <resource name="agentBridgeSend" type="RESOURCE"/>
+  <resource name="agentBridgeDispatch" type="RESOURCE"/>
+  <resource name="agentBridgeState" type="RESOURCE"/>
+  <resource name="agentBridgeDestroy" type="RESOURCE"/>
+</resources>
