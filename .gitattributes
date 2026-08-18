@@ -1,0 +1,5 @@
+# The payload is injected verbatim into the Gang Garrison 2 source tree, which
+# disables line-ending conversion for the same reason (see GG2's .gitattributes).
+# Let git normalise these and every future diff of the game's tree fills with
+# whitespace noise.
+* -text
