@@ -1,0 +1,193 @@
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+;==============================================================================
+; gm8_build.ahk - drive the Game Maker 8 IDE to compile a .gmk into an .exe.
+;
+; GM8 has no command-line compile, so this automates the one GUI step:
+;   File > Create Executable  (menu command id 19, fired as WM_COMMAND)
+;
+; Usage:
+;   AutoHotkey64.exe gm8_build.ahk <project.gmk> <output.exe> [gm8.exe]
+;
+; Exit codes:  0 = exe produced   1 = failure (reason on stdout)
+;==============================================================================
+
+if (A_Args.Length < 2) {
+    Out("FAIL: usage: gm8_build.ahk <project.gmk> <output.exe> [gm8.exe]")
+    ExitApp 1
+}
+
+gmk     := A_Args[1]
+outExe  := A_Args[2]
+gm8     := A_Args.Length >= 3 ? A_Args[3] : "D:\GameDev\Game_Maker_8\Game_Maker.exe"
+
+WM_COMMAND        := 0x111
+ID_CREATE_EXE     := 19          ; File > Create Executable (verified by probe)
+LOAD_TIMEOUT      := 180         ; seconds to wait for the project to open
+COMPILE_TIMEOUT   := 600         ; seconds to wait for the exe to appear
+STABLE_SECONDS    := 4           ; exe size must hold steady this long
+
+Out(s) {
+    FileAppend(s "`n", "*")
+}
+
+Die(msg) {
+    Out("FAIL: " msg)
+    Cleanup()
+    ExitApp 1
+}
+
+Cleanup() {
+    ; Close GM8, declining any "save changes?" prompt.
+    hwnd := WinExist("ahk_class TMainForm ahk_exe Game_Maker.exe")
+    if hwnd
+        try WinClose(hwnd)
+    Loop 24 {
+        Sleep 500
+        if WinExist("ahk_class #32770 ahk_exe Game_Maker.exe") {
+            try {
+                WinActivate("ahk_class #32770 ahk_exe Game_Maker.exe")
+                Send("n")          ; "No" to save-changes
+            }
+            Sleep 300
+        }
+        if !ProcessExist("Game_Maker.exe")
+            return
+    }
+    if ProcessExist("Game_Maker.exe")
+        ProcessClose("Game_Maker.exe")
+}
+
+;-- sanity -------------------------------------------------------------------
+if !FileExist(gmk)
+    Die("project not found: " gmk)
+if !FileExist(gm8)
+    Die("Game Maker not found: " gm8)
+if ProcessExist("Game_Maker.exe")
+    Die("Game_Maker.exe is already running - close it first")
+
+; Remove any previous output so "file appeared" is unambiguous.
+if FileExist(outExe) {
+    try FileDelete(outExe)
+    catch
+        Die("could not delete existing " outExe " (is the game running?)")
+}
+
+;-- launch -------------------------------------------------------------------
+Out("[*] launching Game Maker 8...")
+Run('"' gm8 '" "' gmk '"')
+
+if !WinWait("ahk_class TMainForm ahk_exe Game_Maker.exe", , 90)
+    Die("Game Maker window never appeared")
+
+;-- wait for the project to finish loading -----------------------------------
+; A large project takes a while; consider it loaded when the window has a menu
+; bar and its title has stopped changing.
+Out("[*] waiting for project to load...")
+lastTitle := "", stable := 0, loaded := false
+Loop LOAD_TIMEOUT {
+    Sleep 1000
+    hwnd := WinExist("ahk_class TMainForm ahk_exe Game_Maker.exe")
+    if !hwnd
+        continue
+    t := WinGetTitle(hwnd)
+    stable := (t = lastTitle) ? stable + 1 : 0
+    lastTitle := t
+    if (DllCall("GetMenu", "Ptr", hwnd, "Ptr") && stable >= 5) {
+        loaded := true
+        break
+    }
+}
+if !loaded
+    Die("project did not finish loading within " LOAD_TIMEOUT "s")
+
+hwnd := WinExist("ahk_class TMainForm ahk_exe Game_Maker.exe")
+Out("[+] loaded: " WinGetTitle(hwnd))
+
+WinActivate(hwnd)
+WinWaitActive(hwnd, , 15)
+Sleep 1000
+
+;-- File > Create Executable --------------------------------------------------
+Out("[*] File > Create Executable...")
+PostMessage(WM_COMMAND, ID_CREATE_EXE, 0, , hwnd)
+
+if !WinWait("ahk_class #32770 ahk_exe Game_Maker.exe", , 30)
+    Die("save dialog never appeared")
+
+dlg := WinExist("ahk_class #32770 ahk_exe Game_Maker.exe")
+dlgTitle := WinGetTitle(dlg)
+Out("[+] dialog: " dlgTitle)
+if !InStr(dlgTitle, "stand alone")
+    Die("unexpected dialog '" dlgTitle "' - menu command id may have shifted")
+
+WinActivate(dlg)
+Sleep 500
+
+; Type the destination path into the filename edit.
+try {
+    ControlSetText(outExe, "Edit1", dlg)
+} catch {
+    Die("could not set filename in save dialog")
+}
+Sleep 400
+got := ""
+try got := ControlGetText("Edit1", dlg)
+if (got != outExe)
+    Out("[-] warning: filename edit reads '" got "'")
+
+ControlSend("{Enter}", "Edit1", dlg)
+Out("[*] compiling (this is the slow part)...")
+
+; An overwrite confirmation may appear even though we deleted the file.
+Sleep 1500
+if WinExist("ahk_class #32770 ahk_exe Game_Maker.exe") {
+    c := WinExist("ahk_class #32770 ahk_exe Game_Maker.exe")
+    ct := WinGetTitle(c)
+    if InStr(ct, "Confirm") || InStr(ct, "already exists") {
+        WinActivate(c)
+        Send("{Enter}")
+        Sleep 500
+    }
+}
+
+;-- wait for the exe ----------------------------------------------------------
+lastSize := -1, held := 0, done := false
+Loop COMPILE_TIMEOUT {
+    Sleep 1000
+
+    ; A GM8 error box during compile is a hard failure.
+    if WinExist("ahk_class #32770 ahk_exe Game_Maker.exe") {
+        e := WinExist("ahk_class #32770 ahk_exe Game_Maker.exe")
+        et := WinGetTitle(e)
+        if (InStr(et, "Error") || InStr(et, "error")) {
+            body := ""
+            try body := ControlGetText("Static2", e)
+            Die("Game Maker reported an error: " et " / " body)
+        }
+    }
+
+    if !FileExist(outExe)
+        continue
+
+    sz := FileGetSize(outExe)
+    if (sz = lastSize && sz > 0) {
+        held++
+        if (held >= STABLE_SECONDS) {
+            done := true
+            break
+        }
+    } else {
+        held := 0
+    }
+    lastSize := sz
+}
+
+if !done
+    Die("no stable executable at " outExe " within " COMPILE_TIMEOUT "s")
+
+Out("[+] built: " outExe " (" FileGetSize(outExe) " bytes)")
+
+Cleanup()
+Out("[+] Game Maker closed")
+ExitApp 0

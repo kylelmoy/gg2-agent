@@ -3,34 +3,59 @@
     Build a Gang Garrison 2 executable with the agent bridge compiled in.
 
 .DESCRIPTION
-    Injects the bridge, runs the public build.bat unchanged, then removes the
-    bridge again. The upstream checkout is left exactly as it was found, so the
-    public fork never carries the bridge and build.bat stays PR-clean.
+    Owns the whole pipeline, so the game repo stays pristine:
 
-    Cleanup runs in a finally block, so a failed or interrupted build still
-    leaves the tree clean.
+      1. inject the agent bridge into the split source tree
+      2. gmksplit    reassemble Source/gg2 into a .gmk
+      3. gm8_build   drive the Game Maker 8 IDE to compile it   (~35s)
+      4. gm8x_fix    patch the resulting executable
+      5. package     optional: copy music/licences and zip      (-Package)
+      6. cleanup     remove the bridge again
+
+    Step 6 runs from a finally block, so an interrupted or failed build still
+    leaves the checkout clean.
+
+    The upstream build.bat is never called or modified. It stops at a manual
+    "File > Create Executable" step in the IDE, which is exactly the gap
+    gm8_build.ahk closes.
 
 .PARAMETER KeepInjected
-    Leave the bridge in the tree after building. Useful while iterating on the
-    GML itself; remember to run cleanup.ps1 before committing.
+    Leave the bridge in the tree afterwards. Useful while iterating on the
+    bridge's own GML; run cleanup.ps1 before committing anything.
+
+.PARAMETER Package
+    Also produce build.zip with music, licences and extensions, the way a
+    release is assembled. Off by default: a dev loop only needs the exe.
 
 .EXAMPLE
     .\build-agent.ps1
     .\build-agent.ps1 -KeepInjected
+    .\build-agent.ps1 -Package
 #>
 param(
     [string]$Repo = (Join-Path $PSScriptRoot '..\Gang-Garrison-2'),
-    [switch]$KeepInjected
+    [switch]$KeepInjected,
+    [switch]$Package
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 $repoFull = (Resolve-Path $Repo).Path
-$source = Join-Path $repoFull 'Source'
-if (-not (Test-Path (Join-Path $source 'build.bat'))) { throw "build.bat not found in $source" }
+$source   = Join-Path $repoFull 'Source'
+$build    = Join-Path $source 'build'
+$exeOut   = Join-Path $build 'Gang Garrison 2.exe'
+$gmkOut   = Join-Path $build 'gg2.gmk'
 
-# Refuse to start from a dirty tree: cleanup afterwards would be ambiguous.
+# gmksplit / gm8x_fix may sit in this repo's tools directory or, following the
+# game's own convention, in its Source directory.
+$gmksplit = Find-Tool 'gmksplit.exe' @((Join-Path $PSScriptRoot 'tools'), $source)
+$gm8x     = Find-Tool 'gm8x_fix.exe' @((Join-Path $PSScriptRoot 'tools'), $source)
+$builder  = Join-Path $PSScriptRoot 'tools\gm8_build.ahk'
+$ahk      = Find-AutoHotkey
+
+Write-Step "Building $repoFull"
+
 Push-Location $repoFull
 try { $before = @(git status --porcelain 2>$null) } finally { Pop-Location }
 if ($before.Count -gt 0) {
@@ -42,42 +67,37 @@ if ($before.Count -gt 0) {
 & (Join-Path $PSScriptRoot 'inject.ps1') -Repo $repoFull
 
 try {
-    # build.bat's own "rmdir /S /Q build" fails silently if anything still holds
-    # a handle there - a game process shutting down, or an open log file - and
-    # the build then dies on "A subdirectory or file build already exists".
-    $buildDir = Join-Path $source 'build'
-    for ($try = 1; $try -le 5 -and (Test-Path $buildDir); $try++) {
-        try { Remove-Item $buildDir -Recurse -Force -ErrorAction Stop }
+    # --- clear the build directory ----------------------------------------
+    # A game still shutting down, or an open log, keeps a handle here.
+    for ($try = 1; $try -le 5 -and (Test-Path $build); $try++) {
+        try { Remove-Item $build -Recurse -Force -ErrorAction Stop }
         catch { Write-Skip "build dir busy, retry $try"; Start-Sleep -Seconds 1 }
     }
-    if (Test-Path $buildDir) { throw "could not clear $buildDir - is the game still running?" }
+    if (Test-Path $build) { throw "could not clear $build - is the game still running?" }
+    New-Item -ItemType Directory -Path $build | Out-Null
 
-    Write-Step "Running build.bat"
-    Push-Location $source
-    try {
-        # build.bat resolves its tools from the current directory; a shell with
-        # NoDefaultCurrentDirectoryInExePath set would break that.
-        $env:NoDefaultCurrentDirectoryInExePath = ''
-        # build.bat writes progress to stderr. Under ErrorActionPreference=Stop
-        # PowerShell turns native stderr into a terminating NativeCommandError,
-        # so relax it here and judge the result by the exit code instead.
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            cmd /c ".\build.bat < nul" 2>&1 | Out-Null
-            $code = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $prev
-        }
-    } finally {
-        Pop-Location
+    # --- 2. reassemble the split tree --------------------------------------
+    Write-Step "Reassembling source tree"
+    Invoke-Native $gmksplit @('gg2', (Join-Path 'build' 'gg2.gmk')) $source
+    if (-not (Test-Path $gmkOut)) { throw "gmksplit produced no $gmkOut" }
+    Write-Ok "gg2.gmk ($((Get-Item $gmkOut).Length) bytes)"
+
+    # --- 3. compile in the Game Maker 8 IDE --------------------------------
+    Write-Step "Compiling in Game Maker 8 (this is the slow part)"
+    Invoke-Native $ahk @($builder, $gmkOut, $exeOut) $source
+    if (-not (Test-Path $exeOut)) { throw "Game Maker produced no $exeOut" }
+    Write-Ok "compiled ($((Get-Item $exeOut).Length) bytes)"
+
+    # --- 4. patch the executable -------------------------------------------
+    Write-Step "Patching executable"
+    Invoke-Native $gm8x @('-nb', '-s', $exeOut) $source
+    Write-Ok "patched"
+
+    # --- 5. package --------------------------------------------------------
+    if ($Package) {
+        Write-Step "Packaging"
+        & (Join-Path $PSScriptRoot 'package.ps1') -Repo $repoFull
     }
-
-    if ($code -ne 0) { throw "build.bat failed with exit code $code" }
-
-    $exe = Join-Path $source 'build\Gang Garrison 2.exe'
-    if (-not (Test-Path $exe)) { throw "build reported success but $exe is missing" }
-    Write-Ok "built $exe ($((Get-Item $exe).Length) bytes)"
 }
 finally {
     if ($KeepInjected) {

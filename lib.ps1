@@ -82,6 +82,47 @@ function Remove-Line([string]$Path, [string]$Line) {
     return $true
 }
 
+# Locate a tool by name across candidate directories, then PATH.
+function Find-Tool([string]$Name, [string[]]$Dirs) {
+    foreach ($d in $Dirs) {
+        $p = Join-Path $d $Name
+        if (Test-Path $p) { return (Resolve-Path $p).Path }
+    }
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    throw "$Name not found. Looked in: $($Dirs -join '; ') and PATH."
+}
+
+function Find-AutoHotkey() {
+    $candidates = @(
+        'C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe',
+        'C:\Program Files\AutoHotkey\v2\AutoHotkey32.exe',
+        "$env:LOCALAPPDATA\Programs\AutoHotkey\v2\AutoHotkey64.exe"
+    )
+    if ($env:AHK_EXE) { $candidates = @($env:AHK_EXE) + $candidates }
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+    throw "AutoHotkey v2 not found. Set AHK_EXE to its path."
+}
+
+# Run a native executable and throw on a non-zero exit code.
+#
+# PowerShell turns a native program's stderr into a terminating NativeCommandError
+# when ErrorActionPreference is Stop, which misreports ordinary progress output as
+# failure. Judge by the exit code instead.
+function Invoke-Native([string]$Exe, [string[]]$Arguments, [string]$WorkingDir) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    Push-Location $WorkingDir
+    try {
+        & $Exe @Arguments 2>&1 | ForEach-Object { Write-Host "      $_" }
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $prev
+    }
+    if ($code -ne 0) { throw "$(Split-Path $Exe -Leaf) exited with code $code" }
+}
+
 function Write-Step([string]$m, [bool]$Quiet = $false) { if (-not $Quiet) { Write-Host "[*] $m" -ForegroundColor Cyan } }
 function Write-Ok  ([string]$m, [bool]$Quiet = $false) { if (-not $Quiet) { Write-Host "[+] $m" -ForegroundColor Green } }
 function Write-Skip([string]$m, [bool]$Quiet = $false) { if (-not $Quiet) { Write-Host "[=] $m" -ForegroundColor DarkGray } }
