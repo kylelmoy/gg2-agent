@@ -155,6 +155,45 @@ async function command(text) {
 }
 
 //--------------------------------------------------------------------------
+// Lint gate
+//
+// A GML syntax error inside execute_string raises a modal dialog that freezes
+// the game and every pending call. That is the worst failure mode here and it
+// needs a person to clear it, so code is checked before it is ever sent.
+//--------------------------------------------------------------------------
+
+const { spawnSync } = require('child_process');
+
+function lintGml(code) {
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'gml-lint.js'), '--stdin', '--json'], {
+    input: code,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (r.error) return { ok: true, note: 'lint unavailable: ' + r.error.message };
+  try {
+    const out = JSON.parse(r.stdout);
+    const errors = out.findings.filter((f) => f.severity === 'error');
+    return { ok: errors.length === 0, errors };
+  } catch (e) {
+    // Never let a linter problem block legitimate work.
+    return { ok: true, note: 'lint output unreadable' };
+  }
+}
+
+function lintOrThrow(code, skip) {
+  if (skip) return;
+  const res = lintGml(code);
+  if (res.ok) return;
+  const lines = res.errors.map((f) => `  line ${f.line}: ${f.message}`).join('\n');
+  throw new Error(
+    'Refused: this GML would not compile, and sending it would freeze the game on a modal error dialog.\n' +
+      lines +
+      '\nFix it, or pass skip_lint: true if you are certain the linter is wrong.'
+  );
+}
+
+//--------------------------------------------------------------------------
 // Tools
 //--------------------------------------------------------------------------
 
@@ -169,11 +208,15 @@ const TOOLS = [
     name: 'gg2_eval',
     description:
       'Run GML code inside the running game for its side effects. Returns nothing on success. ' +
-      'GM8-era GML only: no ternary, no try/catch, no structs, use "and"/"or" rather than && and ||. ' +
-      'A syntax error will pop a modal dialog in the game and block further calls, so keep statements simple.',
+      'GM8-era GML only: no ternary, no try/catch, no structs, no modern functions like array_length. ' +
+      'The code is linted against the installed Game Maker 8 before being sent, and refused if it ' +
+      'would not compile, because a syntax error freezes the game on a modal dialog.',
     inputSchema: {
       type: 'object',
-      properties: { code: { type: 'string', description: 'GML statements, e.g. global.playerLimit = 24;' } },
+      properties: {
+        code: { type: 'string', description: 'GML statements, e.g. global.playerLimit = 24;' },
+        skip_lint: { type: 'boolean', description: 'Bypass the lint gate. Only if you are certain the linter is wrong.' },
+      },
       required: ['code'],
       additionalProperties: false,
     },
@@ -196,6 +239,20 @@ const TOOLS = [
       'Return a structured snapshot of the running game: current room, fps, room speed, host/dedicated flags, ' +
       'and the connected players with their name, team and class. Encoded as GGON, the game\'s own JSON-like format.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'gg2_lint',
+    description:
+      'Check GML against the installed Game Maker 8 without running it. Verifies syntax, that every ' +
+      'function exists (built-ins come from GM8\'s own fnames table, plus project scripts and .gex ' +
+      'extensions), and that argument counts match the real signatures. Use it on code you are about ' +
+      'to write into a source file, since a full rebuild costs ~50s. gg2_eval runs this automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: { code: { type: 'string', description: 'GML to check.' } },
+      required: ['code'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'gg2_log',
@@ -222,13 +279,24 @@ async function callTool(name, args) {
 
     case 'gg2_eval': {
       if (typeof args.code !== 'string' || !args.code.trim()) throw new Error('code is required');
+      lintOrThrow(args.code, args.skip_lint);
       await command('EVAL ' + args.code);
       return 'ok';
     }
 
     case 'gg2_evalx': {
       if (typeof args.expr !== 'string' || !args.expr.trim()) throw new Error('expr is required');
-      return await command('EVALX ' + args.expr.replace(/;\s*$/, ''));
+      const expr = args.expr.replace(/;\s*$/, '');
+      lintOrThrow(expr, args.skip_lint);
+      return await command('EVALX ' + expr);
+    }
+
+    case 'gg2_lint': {
+      if (typeof args.code !== 'string' || !args.code.trim()) throw new Error('code is required');
+      const res = lintGml(args.code);
+      if (res.note) return res.note;
+      if (res.ok) return 'clean - this compiles under Game Maker 8';
+      return res.errors.map((f) => `line ${f.line}: ${f.message} [${f.rule}]`).join('\n');
     }
 
     case 'gg2_state':

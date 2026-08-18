@@ -1,0 +1,79 @@
+# Functions provided by the .gex extension packages GG2 loads. They are not in
+# GM8's fnames table and are not project scripts, so the linter needs them here.
+#
+# This list was derived from the game's own source: every name it calls that is
+# neither a GM8 built-in nor a project script. Since the game compiles, all of
+# these are real. Add a line when you start using a new extension function.
+
+## Faucet Networking v1.8 - sockets
+tcp_connect
+tcp_listen
+tcp_receive
+tcp_receive_available
+tcp_eof
+udp_send
+socket_accept
+socket_send
+socket_destroy
+socket_destroy_abortive
+socket_has_error
+socket_error
+socket_connecting
+socket_remote_ip
+socket_receivebuffer_size
+
+## Faucet Networking v1.8 - buffers
+buffer_create
+buffer_destroy
+buffer_clear
+buffer_size
+buffer_bytes_left
+buffer_set_readpos
+append_file_to_buffer
+set_little_endian
+set_little_endian_global
+
+## Faucet Networking v1.8 - reading and writing
+read_byte
+read_ubyte
+read_short
+read_ushort
+read_uint
+read_string
+read_binstring
+write_byte
+write_ubyte
+write_short
+write_ushort
+write_uint
+write_string
+write_binstring
+write_buffer
+write_buffer_part
+write_buffer_to_file
+
+## Faucet Networking v1.8 - name resolution
+ip_lookup_create
+ip_lookup_ready
+ip_lookup_has_next
+ip_lookup_next_result
+ip_lookup_destroy
+
+## Faucet Forwarding v1.1 - UPnP
+upnp_discover
+upnp_set_description
+upnp_forward_port
+upnp_release_port
+upnp_error_string
+
+## GG2DLL
+GG2DLL_get_temp_filename
+GG2DLL_embed_PNG_leveldata
+GG2DLL_extract_PNG_leveldata
+GG2DLL_compute_MD5
+GG2DLL_imageHeight
+GG2DLL_imageWidth
+GG2DLL_imagefSize
+
+## GM8 action functions, which fnames does not list
+action_splash_web

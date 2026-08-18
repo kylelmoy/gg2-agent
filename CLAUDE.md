@@ -28,6 +28,7 @@ Then drive the running game with the MCP tools:
 | `gg2_evalx` | read live state — `room_speed`, `instance_number(Player)`, `global.currentMap` |
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
+| `gg2_lint` | check GML compiles **before** writing it to a file or evaluating it |
 | `gg2_log` | tail the bridge log when a call times out |
 
 **Prefer `gg2_eval` over rebuilding.** A rebuild costs ~50 seconds; an eval costs
@@ -50,7 +51,9 @@ arrays beyond 2D, `#region`, function literals, `static`, string escapes
 **Required by house style** (see the game's `Contributing.md`) — and the first
 one is a compatibility rule, not taste:
 
-- `and` / `or` / `not`, never `&&` / `||` / `!`. The symbol forms break GmkSplitter.
+- `and` / `or` / `not` rather than `&&` / `||` / `!`. This is style, not a hard
+  rule: `Contributing.md` says the symbol forms break GmkSplitter, but the game's
+  own code uses `&&` and compiles and round-trips fine. Match the surrounding code.
 - Semicolons always. Parentheses around every conditional.
 - Braces on their own line, four-space indent.
 - `lowerCamelCase` variables, `UpperCamelCase` objects, `lowercaseCamel` scripts,
@@ -80,8 +83,19 @@ GM8 has no exceptions. A GML error raises a **modal dialog** that freezes the
 game and every pending MCP call. If a tool call times out, that is almost
 certainly what happened — check `gg2_log`, then look at the game window.
 
-So keep `gg2_eval` statements simple and syntactically obvious. Prefer several
-small evals over one large one, so a failure tells you exactly what broke.
+`gg2_eval` guards against this: it lints your code against the installed Game
+Maker 8 first and refuses anything that would not compile, so the freeze mostly
+cannot happen any more. The linter is authoritative rather than heuristic - it
+reads GM8's own `fnames` table for built-in names and signatures, plus this
+project's scripts and extension functions - and it reports nothing on the game's
+existing ~20,000 lines.
+
+Run `gg2_lint` yourself before writing GML into a source file: a rebuild costs
+~50s, and the linter costs nothing. If it flags a function that really does
+exist, it came from a `.gex` - add it to `tools/gml-extensions.txt`.
+
+Still prefer several small evals over one large one, so a failure tells you
+exactly what broke.
 
 ## Things that will waste your time if you do not know them
 
