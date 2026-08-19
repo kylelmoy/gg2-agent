@@ -11,14 +11,23 @@ Operating guide for an AI agent. Read this before touching either repo.
 
 The bridge is **injected** into the game's source tree at build time and removed
 again afterwards. If you find `AgentBridge` files or an `instance_create(0, 0,
-AgentBridge);` line committed in the fork, that is a mistake — run `cleanup.ps1`.
+AgentBridge);` line committed in the fork, that is a mistake — run `cleanup.js`.
 
 ## The loop
 
 ```powershell
-.\build-agent.ps1     # inject, reassemble, compile, patch, clean up   (~50s)
-.\run-agent.ps1       # launch the game, wait for the bridge
+node build-fast.js      # splice code changes into the last build         (~3s)
+node run-agent.js       # launch the game, wait for the bridge
+node build-agent.js     # full build - stops for a person to drive the IDE
 ```
+
+`build-agent.js` is the only step that is not automatic: Game Maker 8 has no
+command-line compile, so it opens the project, prints the path to save to, and
+waits for someone to choose *File > Create Executable*. Do not start one
+expecting it to finish by itself - ask, or use `build-fast.js`.
+
+Every script takes `--repo <path>` and `--help`, and each is a module as well as
+a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
 
 Then drive the running game with the MCP tools:
 
@@ -29,15 +38,50 @@ Then drive the running game with the MCP tools:
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
 | `gg2_lint` | check GML compiles **before** writing it to a file or evaluating it |
-| `gg2_log` | tail the bridge log when a call times out |
+| `gg2_rebuild` | apply edited `.gml` and event code to the game, then relaunch (~3s) |
+| `gg2_log` | read the game's logs, including GML errors the launcher dismissed |
 
-**Prefer `gg2_eval` over rebuilding.** A rebuild costs ~50 seconds; an eval costs
-~40ms. Only rebuild when you have changed something the evaluator cannot reach:
-new objects, sprites, rooms, or the bridge itself.
+Editing the game's `.gml` does **not** affect the running game: the code lives
+inside the executable. Three ways to close that gap, cheapest first:
 
-Editing the game's `.gml` does **not** affect the running game. Those files are
-compiled into the executable. Test an idea with `gg2_eval` first, then write it
-into the source and rebuild once.
+| Cost | Use | For |
+|---|---|---|
+| ~40ms | `gg2_eval` | trying an idea out against live state |
+| ~3s | `gg2_rebuild` / `build-fast.js` | code you have written into the tree |
+| manual | `build-agent.js` | new objects, sprites, rooms, settings, or the bridge |
+
+So: experiment with `gg2_eval`, write the result into the source, and
+`gg2_rebuild`. Reach for the full build only when the fast one refuses.
+
+## Why the fast rebuild works, and when it refuses
+
+Game Maker 8 does not compile GML. "Create Executable" copies the runner stub,
+appends the project as zlib blobs behind a swap-table cipher, and stores every
+script and event as **source text**. Nothing in that stream holds an absolute
+offset, so a piece of code can be replaced in place and everything after it
+just shifts.
+
+`build-fast.js` does exactly that: it takes the last executable the IDE built
+(kept in `Source/build/template` with a manifest of the code inside it), splices
+in every script and event that has changed, and re-encrypts. Anything it does
+not recognise is copied through byte for byte.
+
+It refuses, rather than guessing, when:
+
+- a non-code file changed - sprite, room, object property, setting, included
+  file - which it detects with a hash of the tree taken when the template built;
+- a script or event was added or removed;
+- the changed code is not the code the manifest recorded, meaning the template
+  is stale;
+- the same code string appears twice in one asset, so the splice is ambiguous;
+- the GML does not lint, since bad code in a built exe is a modal dialog with no
+  way back.
+
+Every one of those says to run `build-agent.js`. It will not hand you a stale
+executable.
+
+`node tools/gamedata.js selftest "<exe>"` proves the unpack/repack round-trip is
+byte-identical; run it if you suspect the splicer.
 
 ## Writing GML for this game
 
@@ -85,14 +129,19 @@ certainly what happened — check `gg2_log`, then look at the game window.
 
 `gg2_eval` guards against this: it lints your code against the installed Game
 Maker 8 first and refuses anything that would not compile, so the freeze mostly
-cannot happen any more. The linter is authoritative rather than heuristic - it
+cannot happen any more. What the linter cannot catch - a variable that does not
+exist at runtime, say - raises the dialog anyway, and the launcher clears it;
+the call then fails with the game's own error text rather than returning a
+number that means nothing. The linter is authoritative rather than heuristic - it
 reads GM8's own `fnames` table for built-in names and signatures, plus this
 project's scripts and extension functions - and it reports nothing on the game's
 existing ~20,000 lines.
 
-Run `gg2_lint` yourself before writing GML into a source file: a rebuild costs
-~50s, and the linter costs nothing. If it flags a function that really does
-exist, it came from a `.gex` - add it to `tools/gml-extensions.txt`.
+Run `gg2_lint` yourself before writing GML into a source file; the linter costs
+nothing and a build costs seconds or a minute. `gg2_rebuild` runs it too and
+refuses to splice code that would not compile, but finding out at edit time
+beats finding out at build time. If it flags a function that really does exist,
+it came from a `.gex` - add it to `tools/gml-extensions.txt`.
 
 Still prefer several small evals over one large one, so a failure tells you
 exactly what broke.
@@ -103,9 +152,13 @@ exactly what broke.
   DirectSound during engine startup, before any game code runs. With no audio
   endpoint it shows two modal errors and terminates. Over RDP that means audio
   redirection, or `tscon <id> /dest:console`. No code change can avoid this.
-- **The build needs an interactive desktop.** Compiling drives the Game Maker
-  IDE's window. Message-based automation works in a disconnected RDP session,
-  but a locked or absent session does not.
+- **A full build needs a person at the desktop**, because Game Maker 8 has no
+  command-line compile. `build-fast.js` needs neither, which is the point of it.
+- **A GML error does not kill the game any more, and it is not silent either.**
+  `tools/launcher.js` presses Ignore on GM8's `TErrorForm` and logs the message;
+  any call that runs while the game raises one comes back as an error carrying
+  that text, instead of the `0` the bridge would otherwise report. `gg2_log`
+  with `source: "launcher"` shows the same history.
 - **Only one bridge client at a time.** The game accepts a single connection;
   a second one waits.
 - **The listener binds all interfaces**, because that is what Faucet's
