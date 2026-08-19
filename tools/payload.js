@@ -16,7 +16,11 @@
 // instance of one is created.
 const OBJECTS = ['AgentBridge', 'AgentSpare0', 'AgentSpare1', 'AgentSpare2', 'AgentSpare3'];
 
-// The single script group, registered in Scripts/_resources.list.xml.
+// The single script group, registered in Scripts/_resources.list.xml. Besides
+// the bridge's own scripts, it holds agentScriptSpare0..5 - the same idea as
+// the object spares above, for a standalone script: build-fast.js can splice
+// a spare's placeholder body into real behaviour in ~3s, where a genuinely
+// new script name needs a full IDE build to be registered at all.
 const SCRIPT_GROUP = 'AgentBridge';
 
 // The one line added to the game's own code.

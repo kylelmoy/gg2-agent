@@ -230,6 +230,7 @@ async function main() {
   process.env.GG2_BUILD_DIR = BUILD;
 
   const instances = require('./instances.js');
+  const win32 = require('./win32.js');
   const events = require('./events.js');
   const session = require('./session.js');
   const image = require('./image.js');
@@ -250,6 +251,9 @@ async function main() {
     return !instances.list(BUILD).some((i) => i.name === 'ghost');
   })());
   await throws('an unknown name is an error, not a guess', async () => instances.resolve(BUILD, 'nope'), 'no running game');
+
+  process.stdout.write('\nwin32\n');
+  check('isRemoteSession answers without throwing', typeof win32.isRemoteSession() === 'boolean');
 
   process.stdout.write('\ngg2.ini\n');
   fs.writeFileSync(path.join(BUILD, 'gg2.ini'), '[Settings]\r\nUseLobby=1\r\nHostingPort=8190\r\n\r\n[Server]\r\nDedicated=0\r\n');

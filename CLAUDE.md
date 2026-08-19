@@ -103,7 +103,7 @@ is the same address; and `UseLobby` must be 0 or a dedicated server announces
 itself to the public lobby. `gg2_session` handles all three. Both games share one
 `gg2.ini` and one working directory — only the logs are separated, by port.
 
-### The spare objects
+### The spare objects, and the spare scripts
 
 `AgentSpare0..3` are blank objects built into the executable. `build-fast.js` can
 only replace code that already exists in the template, so a genuinely new object
@@ -111,6 +111,17 @@ costs a full IDE build; a spare costs a ~3s splice. Write to one with
 `gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`. Their
 events hold placeholder comments rather than nothing, because the splicer cannot
 place an empty string — do not tidy them to empty.
+
+`agentScriptSpare0..5` are the same idea for standalone scripts, since
+`gg2_rebuild` refuses a brand new script name exactly like it refuses a brand
+new object. Each is a real registered resource already, with a placeholder
+comment as its body (payload/Scripts/AgentBridge/agentScriptSpareN.gml) — edit
+the file directly (there is no `gg2_event`-equivalent for a plain script; it is
+just a `.gml` file) and `gg2_rebuild`/`build-fast.js` splices it in ~3s, the
+same as any other script edit. Once behaviour proven in a spare is worth
+keeping, giving it its real name still needs one full `build-agent.js` build —
+the spares buy iteration speed while a script is being written, not a way to
+skip ever renaming it.
 
 Editing the game's `.gml` does **not** affect the running game: the code lives
 inside the executable. Three ways to close that gap, cheapest first:

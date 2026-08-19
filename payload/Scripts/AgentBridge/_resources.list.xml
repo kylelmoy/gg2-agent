@@ -13,4 +13,10 @@
   <resource name="agentBridgeWatch" type="RESOURCE"/>
   <resource name="agentBridgeWatchTick" type="RESOURCE"/>
   <resource name="agentBridgeDestroy" type="RESOURCE"/>
+  <resource name="agentScriptSpare0" type="RESOURCE"/>
+  <resource name="agentScriptSpare1" type="RESOURCE"/>
+  <resource name="agentScriptSpare2" type="RESOURCE"/>
+  <resource name="agentScriptSpare3" type="RESOURCE"/>
+  <resource name="agentScriptSpare4" type="RESOURCE"/>
+  <resource name="agentScriptSpare5" type="RESOURCE"/>
 </resources>

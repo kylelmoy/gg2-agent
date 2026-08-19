@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
 const instances = require('./tools/instances.js');
+const win32 = require('./tools/win32.js');
 
 const USAGE = `
 usage: node run-agent.js [--repo <path>] [--port <n>] [--name <label>]
@@ -64,6 +65,30 @@ async function runAgent({
   }
 
   lib.fail(`bridge did not come up within ${timeoutSeconds}s`);
+
+  // The single most common reason for exactly this failure: GM8 loads its
+  // sound resources into DirectSound during engine startup, before any game
+  // code runs, and a Remote Desktop session with no audio redirection has no
+  // endpoint for that - two modal "no audio device" errors and a silent exit,
+  // which from here looks identical to any other stuck-modal timeout. This
+  // check is deterministic and cheap, so it is worth doing even though it
+  // cannot tell audio redirection is or is not configured - only that the
+  // session is remote at all.
+  let remote = false;
+  try {
+    remote = win32.isRemoteSession();
+  } catch (e) {
+    /* best-effort: a failed check should not hide the real timeout below */
+  }
+  if (remote) {
+    lib.warn(
+      'this is a Remote Desktop session - if it has no audio redirection, GM8 hangs on a ' +
+        '"no audio device" modal during startup and never gets as far as opening the bridge. ' +
+        'Try `tscon <id> /dest:console` (see `query session` for <id>) to run on the console instead, ' +
+        'or enable audio redirection for this RDP session.'
+    );
+  }
+
   for (const p of [instances.launcherLog(buildDir, port), instances.bridgeLog(buildDir, port)]) {
     if (!fs.existsSync(p)) continue;
     lib.warn(`--- ${path.basename(p)} ---`);

@@ -32,6 +32,7 @@ const SendMessageTimeoutW = user32.func(
   'void* __stdcall SendMessageTimeoutW(void*, uint32, size_t, void*, uint32, uint32, void*)'
 );
 const GetMenu = user32.func('void* __stdcall GetMenu(void*)');
+const GetSystemMetrics = user32.func('int __stdcall GetSystemMetrics(int)');
 
 const BM_CLICK = 0x00f5;
 const WM_GETTEXT = 0x000d;
@@ -39,6 +40,7 @@ const WM_SETTEXT = 0x000c;
 const WM_COMMAND = 0x0111;
 const WM_CLOSE = 0x0010;
 const SMTO_ABORTIFHUNG = 0x0002;
+const SM_REMOTESESSION = 0x1000;
 
 // A UTF-16 buffer, read back as far as the API says it wrote.
 function readWide(fn, hwnd, max = 256) {
@@ -134,11 +136,20 @@ const closeWindow = (hwnd) => PostMessageW(hwnd, WM_CLOSE, 0, 0);
 // proxy for "finished starting up".
 const hasMenu = (hwnd) => !!GetMenu(hwnd);
 
+// Whether this process is running in a Remote Desktop session. GM8 loads its
+// sound resources into DirectSound during engine startup, before any game
+// code runs, and an RDP session with no audio redirection has no endpoint for
+// that - two modal errors and a silent exit, which from here just looks like
+// the bridge never came up. This is one deterministic check for the single
+// most common reason for that.
+const isRemoteSession = () => !!GetSystemMetrics(SM_REMOTESESSION);
+
 module.exports = {
   windows, children, descendants,
   controlText, setControlText,
   clickButton, postCommand, closeWindow, hasMenu,
   classOf, titleOf, pidOf,
+  isRemoteSession,
 };
 
 if (require.main === module) {

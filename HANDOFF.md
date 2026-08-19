@@ -1,13 +1,15 @@
 # State of the live bridge
 
 Everything in [`CLAUDE.md`](CLAUDE.md) is built and the Node half is tested
-(`node tools/selftest.js`, ~3s, no Game Maker; 46 checks as of this pass). The
+(`node tools/selftest.js`, ~3s, no Game Maker; 47 checks as of this pass). The
 GML half has run against a real game repeatedly, most recently on 2026-08-19,
 and the problems this document used to describe - the client bridge dying,
 held movement input having no route into the game, the `AudioControl`/`CTFHUD`
 "winners" bug and the `fps:4` death spiral it caused, a stale lint cache after
-a full build, and `watched()`'s error reports repeating the same dialog dozens
-of times - are all fixed and verified live. Nothing here is currently blocked.
+a full build, `watched()`'s error reports repeating the same dialog dozens of
+times, an RDP session's timeout giving no hint why, and a genuinely new script
+costing a full IDE build even to try out - are all fixed and verified live.
+Nothing here is currently blocked.
 
 Also re-checked this pass: `node tools/session.js start --clients 2` comes up
 clean (zero `AgentBridge` errors in either client's log, both bridges answer
@@ -279,30 +281,37 @@ error carried a growing dialog banner. `gg2_test` still reports `test_ggon:
   restarted to take effect, same as a game code edit needs `gg2_rebuild`.
   Worth remembering if a bug report and the code on disk ever disagree again.
 
-## Still open
+## Two more fixed and verified live (2026-08-19, later the same day)
 
-- **Detect an RDP session before attempting to launch, and fail fast with the
-  actual fix**, instead of a ~10-60s generic timeout. GM8 hangs on a "no audio
-  device" modal over RDP (see "An audio device is required" in `CLAUDE.md`),
-  and the only diagnosis an agent currently gets is a `gg2_session`/`gg2_ping`
-  timeout suggesting a stuck modal - it has to separately notice the pattern
-  and know it is RDP-specific. `query session` (or `GetSystemMetrics(
-  SM_REMOTESESSION)` via `win32.js`, which already talks Win32) before
-  spawning the game is one deterministic check; `run-agent.js`/`launcher.js`
-  could refuse up front with the actual fix (`tscon <id> /dest:console`), or
-  at least put that sentence in the timeout error. Checked for an existing
-  escape hatch first: `global.forceAudioFix`/`Scripts/Sound/playsound.gml` is
-  a Windows-8-crash workaround for `sound_play`, not a device-init guard - the
-  crash this hits is in the initial `sound_add()` calls in `game_init.gml`,
-  before any ini flag could matter. Not done this pass.
-- **Pre-allocated "spare" script slots, mirroring `AgentSpare0..3` for
-  objects, would remove the single biggest recurring build cost in a
-  milestone-shaped session.** `gg2_rebuild`'s ~3s splice correctly refuses
-  when a resource list changes, so every *new* named script still costs a
-  full ~1-minute `build-agent.js` run. The same pre-compiled-placeholder trick
-  that already exists for objects (`AgentSpare0..3`) would work for scripts -
-  a handful of `AgentScriptSpare0..N` `.gml` files with placeholder bodies,
-  registered once, spliceable at ~3s thereafter. Should be simpler than
-  `AgentSpare` was, since a script has no id/parent/sprite to register. Not
-  done this pass - would need a full build to add the slots in the first
-  place, then verification that a splice into one actually works.
+- **RDP sessions now get a real diagnosis instead of a generic timeout.**
+  `win32.js` gained `isRemoteSession()` (`GetSystemMetrics(SM_REMOTESESSION)`,
+  one Win32 call, no shelling out). `run-agent.js` - the single choke point
+  `session.js` and `build-fast.js`'s `--launch` both already funnel through -
+  checks it when the bridge fails to come up in time and, if the session is
+  remote, adds the actual diagnosis (GM8 hangs on a "no audio device" modal
+  with no redirection; `tscon <id> /dest:console` or enabling redirection is
+  the fix) to the same warning stream `gg2_session`'s error already surfaces.
+  Deliberately not a refuse-up-front check - RDP with audio redirection
+  configured works fine, so this only fires once the real symptom (bridge
+  never came up) has actually happened. Verified on this (non-remote) desktop
+  that `isRemoteSession()` reports `false` and `run-agent.js` launches exactly
+  as before; the positive branch is straightforward and low-risk but was not
+  exercised live, since doing that needs an actual RDP session.
+- **`agentScriptSpare0..5`, the script equivalent of `AgentSpare0..3`.** Six
+  pre-registered scripts (`payload/Scripts/AgentBridge/agentScriptSpareN.gml`,
+  each a placeholder comment, registered in that folder's
+  `_resources.list.xml`) so a genuinely new script no longer costs a full
+  `build-agent.js` build while its behaviour is still being worked out - only
+  once, when it is finally renamed to something real. No new tooling needed:
+  a script is already just a `.gml` file, and `build-fast.js` already splices
+  any changed script content, spare or not - the only thing missing was the
+  resource existing at all. One `build-agent.js` run registered them (`git
+  status clean` afterward, confirming inject/cleanup handled the six new files
+  correctly with no changes needed there). **Verified live end to end**:
+  wrote `return argument0 + 1;` into `agentScriptSpare0`, `build-fast.js
+  --launch` spliced it in 2.5s, `gg2_evalx agentScriptSpare0(41)` returned
+  `42`, `gg2_lint` recognised the name as a known script immediately (no MCP
+  server restart needed - this is exactly what the manifest-mtime lint fix
+  above was for). Reverted to the placeholder and re-spliced clean afterward;
+  `gg2_test` still `31/31` and `node tools/gamedata.js selftest` confirms the
+  unpack/repack round trip on the rebuilt template is still byte-identical.
