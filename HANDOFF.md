@@ -1,22 +1,15 @@
-# The first live run
+# State of the live bridge
 
-Everything described in [`CLAUDE.md`](CLAUDE.md) is built, and the Node half of
-it is tested — `node tools/selftest.js` exercises the wire protocol, instance
-routing, the error gate, event editing, the screenshot conversion and the test
-reader against a fake game, in about three seconds.
+Everything in [`CLAUDE.md`](CLAUDE.md) is built and the Node half is tested
+(`node tools/selftest.js`, ~3s, no Game Maker). The GML half **has** now run:
+`node build-agent.js` builds unattended, and the checklist below records what
+each piece actually did against a real game on 2026-08-19.
 
-**The GML half has still never executed inside the game.** The new bridge
-scripts and the `AgentSpare` objects change the resource set, which no amount of
-splicing can express, so they only exist once someone has run:
+**One thing is broken and blocks the network work: the bridge does not survive
+whatever a client does on startup.** See "The client bridge dies" below. A
+single game and a dedicated server are both fine.
 
-```powershell
-node build-agent.js      # opens the IDE and waits for File > Create Executable
-```
-
-Until that happens `build-fast.js` refuses — correctly, and it does so today —
-with a tree-hash mismatch. It will not hand anyone a stale executable.
-
-## What to check once it is built
+## What was checked, and what it did
 
 In order, because each one is cheap and the later ones assume the earlier ones:
 
@@ -50,9 +43,44 @@ In order, because each one is cheap and the later ones assume the earlier ones:
    reading the counters, because GM8's message box turned out to be unreadable
    from outside (see below). If the count comes back `-1`, the suite never
    reached `test_unit_begin` and something earlier went wrong.
-9. `gg2_session start --clients 1` — a server and a client come up on separate
-   ports, `gg2_state` differs between them, and stopping one leaves the other
-   alone. **Not yet run.**
+9. `gg2_session start --clients 1` — **the server comes up; the client does
+   not.** `session.js` itself did its job: `UseLobby=0`, the server registered
+   and opened its bridge, the client launched against `127.0.0.1:8190` on the
+   next port. The client's *bridge* is what failed. See below.
+
+## The client bridge dies
+
+Starting the game with `-server <ip> -port <n>` leaves an `AgentBridge` instance
+whose Create event has not run: every step raises
+
+    In script agentBridgeStep:
+    at position 5: Unknown variable listener
+
+and repeats, 213 dismissed dialogs in one run, so the bridge never listens and
+`run-agent.js` times out waiting for the port. `listener` is the first thing
+`agentBridgeCreate` assigns, so the instance is stepping without having been
+created — most likely the client startup path restarts or re-enters the game in
+a way that leaves the persistent instance behind without re-running Create.
+
+Two things to do, in this order:
+
+1. **Make the bridge self-heal.** At the top of `agentBridgeStep`:
+
+   ```gml
+   if (not variable_local_exists("listener"))
+       agentBridgeCreate();
+   ```
+
+   which costs one check a frame and turns a fatal loop into a working bridge
+   whatever the room transition did. `agentBridgeCreate` already exits quietly
+   without `-agent`, and re-listening on a port it already holds logs FATAL
+   rather than raising.
+2. **Then find out why**, because a Create event that does not run may be doing
+   the same to something else. `game_restart` and the client's room change into
+   the game are the two suspects; `global.agentEnabled` surviving while
+   `listener` does not would distinguish them.
+
+Neither has been done. Everything else in the checklist above is verified.
 
 ## What input needs next
 
