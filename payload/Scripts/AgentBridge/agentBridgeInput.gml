@@ -10,8 +10,16 @@
 // Keys are action names resolved through the game's bindings - see
 // agentBridgeKey - so this drives the game the way a player does, through
 // PlayerControl, rather than by writing to its variables behind its back.
+//
+// press/release of left, right, up/jump, down or taunt set a bit in heldMask
+// instead: keyboard_key_press cannot make keyboard_check true (only the
+// _pressed/_released edge), and those five are read with keyboard_check every
+// step, so nothing else would make them stick between calls. PlayerControl's
+// Begin Step OR's heldMask into its own keybyte. Everything else still goes
+// through keyboard_key_press/release, which is correct for the _pressed edge
+// that discrete actions use.
 
-var cmds, cmd, sp, tok, ntok, verb, code;
+var cmds, cmd, sp, tok, ntok, verb, code, bit;
 cmds = argument0;
 
 if (cmds == "")
@@ -61,20 +69,42 @@ while (string_length(cmds) > 0)
     if (verb == "clear")
     {
         io_clear();
+        heldMask = 0;
     }
     else if (verb == "press" or verb == "release")
     {
         if (ntok < 2)
             return "ERR " + verb + " needs a key";
 
-        code = agentBridgeKey(tok[1]);
-        if (code < 0)
-            return "ERR " + tok[1] + " is not a key or a bound action";
+        bit = 0;
+        switch (string_lower(tok[1]))
+        {
+            case "left":            bit = $40; break;
+            case "right":           bit = $20; break;
+            case "up":
+            case "jump":            bit = $80; break;
+            case "down":            bit = $02; break;
+            case "taunt":           bit = $01; break;
+        }
 
-        if (verb == "press")
-            keyboard_key_press(code);
+        if (bit != 0)
+        {
+            if (verb == "press")
+                heldMask |= bit;
+            else
+                heldMask &= ~bit;
+        }
         else
-            keyboard_key_release(code);
+        {
+            code = agentBridgeKey(tok[1]);
+            if (code < 0)
+                return "ERR " + tok[1] + " is not a key or a bound action";
+
+            if (verb == "press")
+                keyboard_key_press(code);
+            else
+                keyboard_key_release(code);
+        }
     }
     else if (verb == "aim")
     {

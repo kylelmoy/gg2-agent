@@ -23,6 +23,13 @@ deferTotal = 0;
 // game stops advancing between agent calls while the bridge keeps answering.
 frozen = false;
 
+// Held movement input for INPUT press/release, PlayerControl.Begin Step OR's
+// this into its own keybyte - see agentBridgeInput. keyboard_key_press does
+// not make keyboard_check true (verified on 2026-08-19: it only affects the
+// _pressed/_released edge, not the held state), so a key that must be held
+// rather than tapped cannot be driven through the keyboard at all.
+heldMask = 0;
+
 // Expressions sampled once a frame; a changed value is written to the log.
 watchExpr = ds_list_create();
 watchLast = ds_list_create();

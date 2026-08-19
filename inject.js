@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
 const payloadSpec = require('./tools/payload.js');
+const events = require('./tools/events.js');
 
 const USAGE = `
 usage: node inject.js [--repo <path>] [--quiet]
@@ -69,6 +70,17 @@ function inject(repo, quiet) {
     lib.ok('added instance_create to game_init.gml', quiet);
   } else {
     lib.skip('game_init.gml already patched', quiet);
+  }
+
+  // --- 4. wire held input into PlayerControl's own keybyte -------------------
+  const opts = { payload: false };
+  const before = events.readEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, opts).gml;
+  const after = lib.insertLineText(before, payloadSpec.KEYSTATE_ANCHOR, payloadSpec.KEYSTATE_LINE, 'after');
+  if (after === null) {
+    lib.skip(`${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT} already patched`, quiet);
+  } else {
+    events.writeEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, after, opts);
+    lib.ok(`wired heldMask into ${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT}`, quiet);
   }
 }
 

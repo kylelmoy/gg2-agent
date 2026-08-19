@@ -527,16 +527,19 @@ const TOOLS = [
   {
     name: 'gg2_input',
     description:
-      'Drive the game as a player would: presses go through the game\'s own key bindings and PlayerControl, ' +
-      'not by writing to its variables. Commands are separated by ";" -\n' +
+      'Drive the game as a player would, not by writing to its variables. Commands are separated by ";" -\n' +
       '  press <action>    hold a key down, e.g. press jump\n' +
       '  release <action>  let it up\n' +
       '  clear             drop all simulated input\n' +
-      '  aim <x> <y>       move the mouse, in room coordinates\n' +
+      '  aim <x> <y>       move the mouse, in room coordinates - currently hangs, see below\n' +
       '  click 0|1         release or hold the left mouse button\n' +
-      'Actions are the bound names: left, right, jump, down, attack, special, taunt, drop, medic, changeteam, ' +
-      'changeclass, chat1..3 - or a single character, or a raw key code. A held key stays held until released, ' +
-      'so combine with gg2_step to hold a direction for an exact number of frames.',
+      'left, right, jump/up, down and taunt actually hold: the bridge ORs a mask into PlayerControl\'s own ' +
+      'keybyte every step, so combine with gg2_step to hold a direction for an exact number of frames. ' +
+      'Every other action - attack, special, drop, medic, changeteam, changeclass, chat1..3, a single ' +
+      'character, a raw key code - goes through keyboard_key_press/release instead, which only drives the ' +
+      'pressed/released edge, not a held key: fine for one-shot actions, but press attack will not hold down ' +
+      'fire. aim needs the game window to have real OS focus to do anything - a game launched by this tooling ' +
+      'normally does not have it, and nothing here can grant it - so expect a ~10s timeout and no effect.',
     inputSchema: {
       type: 'object',
       properties: {

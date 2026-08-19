@@ -110,7 +110,18 @@ function addAfterLine(file, anchor, insert) {
 
 function insertLine(file, anchor, insert, where) {
   const text = readText(file);
-  if (text.includes(insert.trim())) return false;
+  const next = insertLineText(text, anchor, insert, where);
+  if (next === null) return false;
+  writeText(file, next);
+  return true;
+}
+
+// Same as insertLine, but on a string rather than a file - for text that lives
+// inside something else, like an event's escaped GML. Returns null rather than
+// writing anything if `insert` is already present; throws if `anchor` is not
+// found, same as the file-based form.
+function insertLineText(text, anchor, insert, where) {
+  if (text.includes(insert.trim())) return null;
 
   const nl = newlineOf(text);
   const lines = text.split(/\r?\n/);
@@ -124,21 +135,27 @@ function insertLine(file, anchor, insert, where) {
     }
     if (where === 'before') result.push(line);
   }
-  if (!done) throw new Error(`anchor '${anchor}' not found in ${file}`);
-  writeText(file, result.join(nl));
-  return true;
+  if (!done) throw new Error(`anchor '${anchor}' not found`);
+  return result.join(nl);
 }
 
 // Remove every line whose trimmed text equals `line`. Returns false if none did.
 function removeLine(file, line) {
   if (!fs.existsSync(file)) return false;
   const text = readText(file);
+  const next = removeLineText(text, line);
+  if (next === null) return false;
+  writeText(file, next);
+  return true;
+}
+
+// Same as removeLine, but on a string. Returns null if `line` was not present.
+function removeLineText(text, line) {
   const nl = newlineOf(text);
   const lines = text.split(/\r?\n/);
   const kept = lines.filter((l) => l.trim() !== line.trim());
-  if (kept.length === lines.length) return false;
-  writeText(file, kept.join(nl));
-  return true;
+  if (kept.length === lines.length) return null;
+  return kept.join(nl);
 }
 
 //---------------------------------------------------------------------------
@@ -296,6 +313,7 @@ module.exports = {
   parseArgs, helpAndExit, cli,
   defaultRepo, resolveGg2Tree,
   readText, writeText, addBeforeLine, addAfterLine, removeLine,
+  insertLineText, removeLineText,
   findTool, run, capture, gitStatus,
   sleep, isRunning, stopProcess, launchDetached, waitForPort,
   openInShell, waitForStableFile,

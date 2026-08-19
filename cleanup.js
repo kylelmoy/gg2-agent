@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
 const payloadSpec = require('./tools/payload.js');
+const events = require('./tools/events.js');
 
 const USAGE = `
 usage: node cleanup.js [--repo <path>] [--quiet]
@@ -29,11 +30,21 @@ function cleanup(repo, quiet) {
   const tree = lib.resolveGg2Tree(repo);
   lib.step(`Removing agent bridge from ${tree}`, quiet);
 
-  // --- 1. undo the three line edits ----------------------------------------
+  // --- 1. undo the line edits ------------------------------------------------
   if (lib.removeLine(path.join(tree, 'Scripts', 'Game', 'game_init.gml'), payloadSpec.INIT_LINE)) {
     lib.ok('removed instance_create from game_init.gml', quiet);
   } else {
     lib.skip('game_init.gml already clean', quiet);
+  }
+
+  const opts = { payload: false };
+  const before = events.readEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, opts).gml;
+  const after = lib.removeLineText(before, payloadSpec.KEYSTATE_LINE);
+  if (after === null) {
+    lib.skip(`${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT} already clean`, quiet);
+  } else {
+    events.writeEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, after, opts);
+    lib.ok(`removed heldMask wiring from ${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT}`, quiet);
   }
 
   const objList = path.join(tree, 'Objects', '_resources.list.xml');

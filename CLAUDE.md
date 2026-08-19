@@ -10,22 +10,28 @@ Operating guide for an AI agent. Read this before touching either repo.
 | `Gang-Garrison-2` (public fork) | the game itself | **feature code only** — never commit tooling, build scripts, or the bridge here |
 
 The bridge is **injected** into the game's source tree at build time and removed
-again afterwards. If you find `AgentBridge` files or an `instance_create(0, 0,
-AgentBridge);` line committed in the fork, that is a mistake — run `cleanup.js`.
+again afterwards. If you find `AgentBridge` files, an `instance_create(0, 0,
+AgentBridge);` line, or an `AgentBridge.heldMask` reference inside
+`PlayerControl` committed in the fork, that is a mistake — run `cleanup.js`.
 
 ## The loop
 
 ```powershell
 node build-fast.js      # splice code changes into the last build         (~3s)
 node run-agent.js       # launch the game, wait for the bridge
-node build-agent.js     # full build - stops for a person to drive the IDE
+node build-agent.js     # full build - drives the GM8 IDE itself         (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 ```
 
-`build-agent.js` is the only step that is not automatic: Game Maker 8 has no
-command-line compile, so it opens the project, prints the path to save to, and
-waits for someone to choose *File > Create Executable*. Do not start one
-expecting it to finish by itself - ask, or use `build-fast.js`.
+`build-agent.js` used to be the one step that needed a person: Game Maker 8 has
+no command-line compile. It no longer does in the common case - `tools/gm8ide.js`
+drives the IDE itself with posted window messages (*File > Create Executable*,
+the save dialog, the confirmations either side of it), which needs an
+interactive desktop session but not a person at it. It only falls back to
+opening the project and waiting for someone if Game Maker 8 cannot be found, or
+driving it fails partway through - `--manual` forces that fallback. Either way
+it is much slower than `build-fast.js` and only needed to bootstrap the
+fast-rebuild template or after adding/removing/renaming a resource.
 
 Every script takes `--repo <path>` and `--help`, and each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
@@ -41,7 +47,7 @@ Then drive the running game with the MCP tools:
 | `gg2_screenshot` | look at the game; works while it is frozen |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
-| `gg2_input` | press, release, aim and click, through the game's own bindings |
+| `gg2_input` | press, release and click; `aim` is currently broken, see below |
 | `gg2_wait` | run until a GML expression is true, or give up after N frames |
 | `gg2_watch` | sample expressions every frame; changes land in the bridge log |
 | `gg2_sprite` | replace a sprite from a PNG at runtime, without a rebuild |
@@ -68,8 +74,14 @@ that gap, and between them they cover almost every "why did it do that":
 - **`gg2_watch`** samples up to eight expressions every frame and writes changes
   to the bridge log; `gg2_log` is how you read the trace back.
 
-A held key stays held, so `gg2_input` plus `gg2_step` is "hold right for twelve
-frames" exactly.
+`press left|right|up|jump|down|taunt` actually holds - the bridge ORs a mask
+into `PlayerControl`'s own `keybyte` every step - so `gg2_input` plus
+`gg2_step` is "hold right for twelve frames" exactly, for those six. Every
+other action (`attack`, `special`, arbitrary keys) still goes through
+`keyboard_key_press`, which does not make `keyboard_check` true on this build -
+only the `_pressed`/`_released` edge, which is enough for one-shot actions
+(`drop`, `medic`, `changeteam`, ...) but not for holding down fire. For that,
+call the game's own `Scripts/Input/input*.gml` directly with `gg2_eval`.
 
 **Freezing stops the objects that service the network.** A connected client or a
 hosting server falls behind while frozen and may drop. Freely on a single game;
@@ -95,7 +107,7 @@ itself to the public lobby. `gg2_session` handles all three. Both games share on
 
 `AgentSpare0..3` are blank objects built into the executable. `build-fast.js` can
 only replace code that already exists in the template, so a genuinely new object
-costs a manual IDE build; a spare costs a ~3s splice. Write to one with
+costs a full IDE build; a spare costs a ~3s splice. Write to one with
 `gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`. Their
 events hold placeholder comments rather than nothing, because the splicer cannot
 place an empty string — do not tidy them to empty.
@@ -107,7 +119,7 @@ inside the executable. Three ways to close that gap, cheapest first:
 |---|---|---|
 | ~40ms | `gg2_eval` | trying an idea out against live state |
 | ~3s | `gg2_rebuild` / `build-fast.js` | code you have written into the tree |
-| manual | `build-agent.js` | new objects, sprites, rooms, settings, or the bridge |
+| ~1min | `build-agent.js` | new objects, sprites, rooms, settings, or the bridge |
 
 So: experiment with `gg2_eval`, write the result into the source, and
 `gg2_rebuild`. Reach for the full build only when the fast one refuses.
@@ -246,8 +258,17 @@ exactly what broke.
   DirectSound during engine startup, before any game code runs. With no audio
   endpoint it shows two modal errors and terminates. Over RDP that means audio
   redirection, or `tscon <id> /dest:console`. No code change can avoid this.
-- **A full build needs a person at the desktop**, because Game Maker 8 has no
-  command-line compile. `build-fast.js` needs neither, which is the point of it.
+- **A full build needs an interactive desktop session**, because Game Maker 8
+  has no command-line compile - `tools/gm8ide.js` drives the IDE for you with
+  posted window messages, so it needs a real desktop to open windows on but not
+  a person watching it. `build-fast.js` needs neither, which is the point of it.
+- **`gg2_input aim` hangs** rather than erroring: `window_views_mouse_set` never
+  returns when the game window is not the foreground window, which a game
+  launched by this tooling normally is not. The obvious fix - the launcher
+  forcing focus with `AttachThreadInput`/`SetForegroundWindow` - was tried and
+  failed with access-denied/invalid-parameter errors; see `HANDOFF.md` before
+  trying it again. Expect a ~10s timeout and no effect. `press`/`click` do not
+  depend on focus and work fine.
 - **A GML error does not kill the game any more, and it is not silent either.**
   `tools/launcher.js` presses Ignore on GM8's `TErrorForm` and logs the message;
   any call that runs while the game raises one comes back as an error carrying

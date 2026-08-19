@@ -1,6 +1,12 @@
 // Services the agent bridge once per step: accepts a local client, then reads
 // length prefixed requests and writes length prefixed replies.
 
+// Self-heal: an instance whose Create never ran - the client startup path did
+// this at least once, see HANDOFF.md - would otherwise raise "unknown variable
+// listener" every step forever. Cheap enough to check unconditionally.
+if (not variable_local_exists("listener"))
+    agentBridgeCreate();
+
 if (listener < 0)
     exit;
 

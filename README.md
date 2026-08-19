@@ -14,7 +14,8 @@ Four things live here:
 - **sessions**: a dedicated server and its clients, running at once and
   addressable by name, because nothing about the network protocol is observable
   from inside one process;
-- **the scaffolding** around the one build step that still needs a person.
+- **the scaffolding** around the one build step Game Maker 8 gives no
+  command-line for — driven automatically where possible, manually otherwise.
 
 Everything is kept out of the game's own repository. The bridge is injected into
 its source tree at build time and removed afterwards, so the fork can never ship
@@ -38,6 +39,7 @@ payload/            copied verbatim into the game's Source/gg2/
 tools/
   launcher.js       runs the game; clears the modal dialogs that freeze it
   win32.js          the slice of user32 the launcher needs, via koffi
+  gm8ide.js         drives the GM8 IDE through File > Create Executable
   gg2-mcp-server.js the MCP server (JSON-RPC over stdio)
   instances.js      the register of running games, so they can be named
   session.js        a dedicated server and its clients, started together
@@ -58,7 +60,9 @@ beside this one.
 
 ## Setup
 
-- Game Maker 8.0 **Pro** — the Lite edition cannot build a project with extensions
+- Game Maker 8.0 **Pro** — the Lite edition cannot build a project with extensions.
+  `build-agent.js` auto-detects a few common install paths; if yours is
+  elsewhere, pass `--gm8 <dir>` or set `GM8_DIR`.
 - A JRE, plus `gmksplit.exe` and `gm8x_fix.exe`, in `tools/` or the game's `Source/`
 - Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
   compiler needed)
@@ -88,7 +92,7 @@ clients can be addressed by name; leave it out while only one game is running.
 ## Use
 
 ```powershell
-node build-agent.js            # full build; stops for you to use the GM8 IDE
+node build-agent.js            # full build; drives the GM8 IDE itself
 node build-agent.js --package  # ...and produce build.zip
 node build-fast.js --launch    # ~3s: code changes only, then relaunch
 node run-agent.js              # launch and wait for the bridge
@@ -110,18 +114,21 @@ by design: exactly what makes it useful during development, and exactly what mus
 never reach a player's build. Injecting it, rather than committing it, is what
 guarantees that.
 
-It is practical because the bridge touches the game's tree in only three places,
-one line each:
+It is practical because the bridge touches the game's tree in only a handful of
+places, one line each:
 
 | File | Change |
 |---|---|
 | `Objects/_resources.list.xml` | register the object |
 | `Scripts/_resources.list.xml` | register the script group |
 | `Scripts/Game/game_init.gml` | `instance_create(0, 0, AgentBridge);` |
+| `Objects/InGameElements/PlayerControl.events/Begin Step.xml` | OR `AgentBridge.heldMask` into `keybyte`, so `gg2_input press left` etc. can hold a direction without a keyboard |
 
 Everything else is new files. The object configures itself from the command line
 in its own Create event, so the game's startup needs one line and nothing more.
-Without `-agent`, the instance stays dormant.
+Without `-agent`, the instance stays dormant. The `PlayerControl` line is edited
+and restored through `tools/events.js`, the same escape-aware machinery behind
+`gg2_event`, rather than a plain-text line insert - it lives inside XML.
 
 The listener accepts one client at a time and drops anything that is not
 loopback.
@@ -130,7 +137,7 @@ loopback.
 
 `uint32` little-endian length, then that many bytes. Requests are
 `VERB [argument]` — `PING`, `EVAL`, `EVALX`, `STATE`, `SHOT`, `INPUT`, `WATCH`,
-`FREEZE`, `RESUME`, `STEP`, `WAIT` — and replies are `OK`, `OK <text>` or
+`FREEZE`, `RESUME`, `STEP`, `WAIT`, `QUIT` — and replies are `OK`, `OK <text>` or
 `ERR <text>`. The Node server speaks MCP on one side and this on the other, so
 the GML never parses JSON.
 
@@ -153,11 +160,22 @@ without advancing it.
 Game Maker 8 has no command-line compile — the IDE is the only way to produce an
 executable, and upstream's `build.bat` stops at a manual *File > Create
 Executable*. `build-agent.js` does everything either side of that step: it
-injects the bridge, reassembles the tree with `gmksplit`, opens the `.gmk` for
-you, waits for the executable to appear and settle, then patches it with
-`gm8x_fix`, records the fast-rebuild template, and removes the bridge again.
-Cleanup runs from a `finally` block, so an interrupted build still leaves a clean
-checkout.
+injects the bridge, reassembles the tree with `gmksplit`, builds the
+executable, patches it with `gm8x_fix`, records the fast-rebuild template, and
+removes the bridge again. Cleanup runs from a `finally` block, so an
+interrupted build still leaves a clean checkout.
+
+The build step itself — *File > Create Executable* — is driven automatically by
+`tools/gm8ide.js`, which drives the GM8 IDE with posted window messages: the
+menu command, the save dialog's filename, and the confirmations either side of
+it. `PostMessage` rather than `SendMessage` throughout, same as the launcher, so
+nothing has to be focused or activated and the desktop is not stolen from
+whoever is using it — an interactive desktop session is needed, but not a
+person watching it. If Game Maker 8 cannot be found (pass `--gm8 <dir>` or set
+`GM8_DIR`), or driving it fails partway through, this falls back to opening the
+project and waiting for someone to finish it by hand — the original behaviour,
+and what `--manual` forces on purpose. A failed drive leaves the IDE open with
+the project loaded, so finishing by hand costs one menu click, not a reload.
 
 ## The fast rebuild
 
