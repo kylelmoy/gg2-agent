@@ -25,6 +25,6 @@ const INIT_LINE = '    instance_create(0, 0, AgentBridge);';
 
 // Anything matching this in `git status` after a cleanup means the fork is not
 // clean and the build must fail.
-const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher/;
+const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher|agent_instances|agent_shot/;
 
 module.exports = { OBJECTS, SCRIPT_GROUP, INIT_ANCHOR, INIT_LINE, STRAY };

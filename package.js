@@ -72,14 +72,25 @@ async function packageBuild({ repo }) {
   }
 
   // --- zip ------------------------------------------------------------------
-  // build/template holds the fast-rebuild template exe and its manifest. That
-  // is dev tooling, not part of a release, and it would double the archive.
+  // Three things in the build directory are development leftovers rather than
+  // parts of a release:
+  //
+  //   template     the fast-rebuild exe and its manifest; would double the zip
+  //   agent_*      the bridge and launcher logs, the instance register, and any
+  //                screenshot a tool asked for
+  //   gg2.ini      whoever ran the game last left their settings in it, and
+  //                gg2_session deliberately turns UseLobby off in there. The
+  //                game writes itself a fresh one on first run.
   const zipTool = path.join(source, 'gg2', 'Included Files', '7za.exe');
   const zipOut = path.join(source, 'build.zip');
   if (fs.existsSync(zipOut)) fs.rmSync(zipOut);
   if (!fs.existsSync(zipTool)) throw new Error(`7za.exe not found at ${zipTool} - cannot build the archive`);
 
-  await lib.run(zipTool, ['a', '-tzip', zipOut, path.join(build, '*'), '-xr!template'], source);
+  await lib.run(
+    zipTool,
+    ['a', '-tzip', zipOut, path.join(build, '*'), '-xr!template', '-xr!agent_*', '-xr!gg2.ini'],
+    source
+  );
 
   const mb = (fs.statSync(zipOut).size / (1024 * 1024)).toFixed(1);
   lib.ok(`packaged ${zipOut} (${mb} MB)`);

@@ -19,6 +19,7 @@ AgentBridge);` line committed in the fork, that is a mistake — run `cleanup.js
 node build-fast.js      # splice code changes into the last build         (~3s)
 node run-agent.js       # launch the game, wait for the bridge
 node build-agent.js     # full build - stops for a person to drive the IDE
+node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 ```
 
 `build-agent.js` is the only step that is not automatic: Game Maker 8 has no
@@ -37,9 +38,67 @@ Then drive the running game with the MCP tools:
 | `gg2_evalx` | read live state — `room_speed`, `instance_number(Player)`, `global.currentMap` |
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
+| `gg2_screenshot` | look at the game; works while it is frozen |
+| `gg2_step` | freeze, then advance an exact number of frames |
+| `gg2_resume` | let a frozen game run again |
+| `gg2_input` | press, release, aim and click, through the game's own bindings |
+| `gg2_wait` | run until a GML expression is true, or give up after N frames |
+| `gg2_watch` | sample expressions every frame; changes land in the bridge log |
+| `gg2_sprite` | replace a sprite from a PNG at runtime, without a rebuild |
 | `gg2_lint` | check GML compiles **before** writing it to a file or evaluating it |
+| `gg2_event` | read and write the GML inside object events, escaping handled |
+| `gg2_find` | search scripts *and* event code together — grep cannot see events |
+| `gg2_test` | run the game's own unit tests and read the results back |
+| `gg2_session` | start, stop and list games: a dedicated server and its clients |
 | `gg2_rebuild` | apply edited `.gml` and event code to the game, then relaunch (~3s) |
 | `gg2_log` | read the game's logs, including GML errors the launcher dismissed |
+
+### Seeing what happens, rather than guessing
+
+The game runs at 30 frames a second and an MCP call takes ~40ms, so polling
+`gg2_evalx` samples whenever you get round to asking. Three tools exist to close
+that gap, and between them they cover almost every "why did it do that":
+
+- **`gg2_step`** freezes the world and advances it by an exact number of frames.
+  Freezing works by deactivating every instance except the bridge, so nothing
+  moves while you inspect it. `gg2_screenshot` reactivates, redraws and freezes
+  again, which runs no step events — a frozen screenshot shows the real frame.
+- **`gg2_wait`** tests a condition inside the game once a frame, so a state that
+  lasts two frames is not missed.
+- **`gg2_watch`** samples up to eight expressions every frame and writes changes
+  to the bridge log; `gg2_log` is how you read the trace back.
+
+A held key stays held, so `gg2_input` plus `gg2_step` is "hold right for twelve
+frames" exactly.
+
+**Freezing stops the objects that service the network.** A connected client or a
+hosting server falls behind while frozen and may drop. Freely on a single game;
+carefully inside a session.
+
+### More than one game at once
+
+Nothing about the network protocol is observable from inside one process, so
+`gg2_session start` brings up a dedicated server and its clients, each named
+(`server`, `client1`, …) and separately addressable through the `instance`
+argument that every live tool takes. Leave `instance` out while only one game is
+running. `tools/instances.js` is the register the launcher writes and everything
+else reads; a dead entry is pruned on the next read.
+
+Things that bite here: the hosting port lives in `gg2.ini` (`HostingPort=8190`)
+and has no command-line flag, so clients need `-server` *and* `-port` together;
+`MultiClientLimit=3` caps connections from one address, and every local client
+is the same address; and `UseLobby` must be 0 or a dedicated server announces
+itself to the public lobby. `gg2_session` handles all three. Both games share one
+`gg2.ini` and one working directory — only the logs are separated, by port.
+
+### The spare objects
+
+`AgentSpare0..3` are blank objects built into the executable. `build-fast.js` can
+only replace code that already exists in the template, so a genuinely new object
+costs a manual IDE build; a spare costs a ~3s splice. Write to one with
+`gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`. Their
+events hold placeholder comments rather than nothing, because the splicer cannot
+place an empty string — do not tidy them to empty.
 
 Editing the game's `.gml` does **not** affect the running game: the code lives
 inside the executable. Three ways to close that gap, cheapest first:
@@ -118,8 +177,43 @@ it lives inside XML, in a `<argument kind="STRING">` element, and it is
 ```
 
 Writing a bare `<`, `>` or `&` into one of those files produces invalid XML and
-GmkSplitter will refuse the whole tree. Escape them, or keep the logic in a
-script and call it from the event.
+GmkSplitter will refuse the whole tree.
+
+Use **`gg2_event`** rather than editing the XML by hand: `list` shows an object's
+events, `read` hands back real GML, and `write` escapes it, lints it and leaves
+every other byte of the file exactly as it was. It resolves objects against the
+bridge payload too, so `AgentSpare0` is editable like anything else — and an edit
+to a payload object lands in `payload/`, where it survives `cleanup.js`.
+
+The same escaping is why `grep` misses a large part of the game's logic. Use
+**`gg2_find`**, which searches the scripts and the unescaped text of every event
+together and reports `file:line`.
+
+## Testing a change
+
+`gg2_test` runs the game's own suites — `Scripts/Unit tests/**` — inside the
+running game and reports how many assertions passed. The game's code is not
+modified to accommodate it, and must not be.
+
+Getting an answer out takes one trick, because the obvious route is closed.
+**GM8's message box cannot be read.** Its form holds exactly one windowed
+control, the OK button; the text is drawn straight onto the form, so no Win32
+call will produce it — the launcher can count the boxes and nothing more. The
+assertion *counters* behind those messages are readable, though:
+`test_unit_begin` zeroes them, every assertion moves them, and `test_unit_end`
+is the only thing that resets them — after it has shown its message. So the tool
+evaluates the suite's own source with its `test_unit_end()` call removed, then
+reads `global.testAssertions` and `global.testAssertionsSucceeded` directly.
+Same code, minus the one line whose only job is to report and forget.
+
+A failed assertion still shows a box; the launcher dismisses it, so a failing
+suite does not hang the game, and the count of boxes says how many failed even
+though their text does not survive.
+
+`node tools/selftest.js` is the other half: it exercises this repo's own Node
+modules against a fake bridge and a scratch copy of the tree, in about three
+seconds and with no Game Maker anywhere. Run it after changing anything under
+`tools/`.
 
 ## Error handling has no safety net
 
@@ -157,8 +251,16 @@ exactly what broke.
 - **A GML error does not kill the game any more, and it is not silent either.**
   `tools/launcher.js` presses Ignore on GM8's `TErrorForm` and logs the message;
   any call that runs while the game raises one comes back as an error carrying
-  that text, instead of the `0` the bridge would otherwise report. `gg2_log`
-  with `source: "launcher"` shows the same history.
+  that text, instead of the `0` the bridge would otherwise report, and located as
+  `file:line` by `tools/gmlerror.js`. `gg2_log` with `source: "launcher"` shows
+  the same history.
+- **`E|` is an error, `M|` is a message.** The launcher marks the two kinds of
+  dialog differently in its log, because the game's unit tests report through
+  `show_message` and a failed assertion is a result, not a crash. Anything
+  reading that log must keep them apart.
+- **Logs and the register are per port.** `agent_bridge_<port>.log`,
+  `agent_launcher_<port>.log` and `agent_instances.json`, all beside the exe, so
+  two games in one directory never interleave.
 - **Only one bridge client at a time.** The game accepts a single connection;
   a second one waits.
 - **The listener binds all interfaces**, because that is what Faucet's
@@ -176,9 +278,10 @@ exactly what broke.
 | `Scripts/Client/ClientBeginStep.gml` | client side: the main network receive loop |
 | `Scripts/Input/input*.gml` | player actions as callable scripts — no key simulation needed |
 | `Scripts/ggon/` | GGON, the game's JSON-equivalent encoder |
-| `Scripts/Unit tests/` | assertion helpers (`test_assert_equals`, …) |
+| `Scripts/Unit tests/` | assertion helpers (`test_assert_equals`, …) and the suites `gg2_test` runs |
 | `Documentation/GGON.md` | the GGON format |
 
 Command-line flags the game already understands: `-dedicated`, `-server <ip>`,
 `-port <n>`, `-map <name>`, `-restart`, plus `-agent` and `-agentport <n>` added
-by the bridge.
+by the bridge. `-server` and `-port` only count together — the parser ignores
+either on its own.

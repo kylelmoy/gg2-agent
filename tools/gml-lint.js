@@ -475,9 +475,62 @@ function walk(dir, exts) {
   return out;
 }
 
+//---------------------------------------------------------------------------
+// In-process entry point
+//
+// The CLI above is the interactive face of this file; callers inside the
+// tooling want an answer rather than an exit code, and want it without paying
+// for a process launch on every keystroke of generated GML. Building the
+// context means reading GM8's fnames and walking the tree, so it is cached -
+// keyed on the trees it was built from, since the payload adds symbols the
+// game's own tree does not have.
+//---------------------------------------------------------------------------
+
+let ctxCache = { key: null, ctx: null };
+
+function context(trees, gm8Dir) {
+  const key = JSON.stringify([trees, gm8Dir]);
+  if (ctxCache.key === key) return ctxCache.ctx;
+
+  const syms = loadProject(trees[0]);
+  for (const extra of trees.slice(1)) {
+    if (!fs.existsSync(extra)) continue;
+    const more = loadProject(extra);
+    for (const k of Object.keys(more)) {
+      if (!(more[k] instanceof Set)) continue;
+      if (!(syms[k] instanceof Set)) syms[k] = new Set();
+      for (const v of more[k]) syms[k].add(v);
+    }
+  }
+
+  const ctx = { fnames: loadFnames(gm8Dir), syms, extensions: loadExtensions(), arity: true, style: false };
+  ctxCache = { key, ctx };
+  return ctx;
+}
+
+// Check a snippet, or the STRING arguments of an event file. Returns
+// { ok, findings, errors } - or { ok: true, note } when the linter could not
+// run at all, because a missing GM8 install must never block real work.
+function check(code, { trees = [], gm8 = null, xml = false, name = '<gml>' } = {}) {
+  const gm8Dir = gm8 || autodetectGm8();
+  const treeList = (trees.length ? trees : [autodetectTree(null)]).filter(Boolean);
+  if (!gm8Dir) return { ok: true, findings: [], errors: [], note: 'lint unavailable: no Game Maker 8 install found' };
+  if (treeList.length === 0) return { ok: true, findings: [], errors: [], note: 'lint unavailable: no source tree found' };
+
+  let findings;
+  try {
+    const ctx = context(treeList, gm8Dir);
+    findings = xml ? lintEventXml(code, ctx, name) : lintSource(code, ctx, name);
+  } catch (e) {
+    return { ok: true, findings: [], errors: [], note: 'lint unavailable: ' + e.message };
+  }
+  const errors = findings.filter((f) => f.severity === 'error');
+  return { ok: errors.length === 0, findings, errors };
+}
+
 function main() {
   const argv = process.argv.slice(2);
-  const opts = { json: false, stdin: false, arity: true, style: false, gm8: null, tree: null, targets: [] };
+  const opts = { json: false, stdin: false, arity: true, style: false, gm8: null, trees: [], targets: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
@@ -485,7 +538,7 @@ function main() {
     else if (a === '--no-arity') opts.arity = false;
     else if (a === '--style') opts.style = true;
     else if (a === '--gm8') opts.gm8 = argv[++i];
-    else if (a === '--tree') opts.tree = argv[++i];
+    else if (a === '--tree') opts.trees.push(argv[++i]);
     else opts.targets.push(a);
   }
 
@@ -494,19 +547,20 @@ function main() {
     console.error('gml-lint: could not find a Game Maker 8 install (needs its "fnames" file). Pass --gm8 <dir> or set GM8_DIR.');
     process.exit(2);
   }
-  const tree = opts.tree || autodetectTree(opts.targets[0]);
-  if (!tree) {
+  const trees = opts.trees.length ? opts.trees.map((t) => path.resolve(t)) : [autodetectTree(opts.targets[0])].filter(Boolean);
+  if (trees.length === 0) {
     console.error('gml-lint: could not find the split source tree (Source/gg2). Pass --tree <dir>.');
     process.exit(2);
   }
 
-  const ctx = {
-    fnames: loadFnames(gm8),
-    syms: loadProject(tree),
-    extensions: loadExtensions(),
-    arity: opts.arity,
-    style: opts.style,
-  };
+  // The bridge payload defines scripts that call each other and are not in the
+  // game's tree until they are injected. Linting it against the game alone would
+  // report every one of them as an unknown function.
+  const payload = path.resolve(__dirname, '..', 'payload');
+  const touchesPayload = opts.targets.some((t) => path.resolve(t).startsWith(payload));
+  if (touchesPayload && fs.existsSync(payload) && !trees.includes(payload)) trees.push(payload);
+
+  const ctx = Object.assign(context(trees, gm8), { arity: opts.arity, style: opts.style });
 
   const run = (text, name, isXml) =>
     isXml ? lintEventXml(text, ctx, name) : lintSource(text, ctx, name);
@@ -553,4 +607,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { tokenize, lintSource, lintEventXml, loadFnames, loadProject };
+module.exports = { tokenize, lintSource, lintEventXml, loadFnames, loadProject, check, autodetectGm8, autodetectTree };

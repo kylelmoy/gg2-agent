@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Tooling for developing Gang Garrison 2 with an AI agent",
   "main": "build-agent.js",
+  "scripts": {
+    "test": "node tools/selftest.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kylelmoy/gg2-agent.git"

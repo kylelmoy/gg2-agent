@@ -4,12 +4,16 @@ Tooling for developing
 [Gang Garrison 2](https://github.com/Gang-Garrison-2/Gang-Garrison-2) — a 2008
 game built in Game Maker 8 — with an AI agent.
 
-Three things live here:
+Four things live here:
 
 - **a bridge** injected into the game at build time, letting an agent inspect and
-  change the running game over MCP;
+  change the running game over MCP — read state, drive input, freeze it and step
+  it a frame at a time, and look at the result;
 - **a ~3s code-only rebuild** that splices changed GML straight into the last
   executable, skipping the 2008 toolchain entirely;
+- **sessions**: a dedicated server and its clients, running at once and
+  addressable by name, because nothing about the network protocol is observable
+  from inside one process;
 - **the scaffolding** around the one build step that still needs a person.
 
 Everything is kept out of the game's own repository. The bridge is injected into
@@ -29,14 +33,21 @@ inject.js           add the bridge to a checkout
 cleanup.js          remove it, and verify with git status
 
 payload/            copied verbatim into the game's Source/gg2/
-  Objects/          AgentBridge object and its Create/Step/Destroy events
+  Objects/          AgentBridge and the four AgentSpare objects, with their events
   Scripts/          the GML implementing the bridge
 tools/
   launcher.js       runs the game; clears the modal dialogs that freeze it
   win32.js          the slice of user32 the launcher needs, via koffi
   gg2-mcp-server.js the MCP server (JSON-RPC over stdio)
+  instances.js      the register of running games, so they can be named
+  session.js        a dedicated server and its clients, started together
+  events.js         reading, writing and searching the GML inside object events
   gamedata.js       reads and rewrites the gamedata inside a built exe
   gml-lint.js       checks GML against the installed Game Maker 8
+  gmlerror.js       turns a GM8 error dialog back into file:line
+  image.js          turns what screen_save wrote into a PNG
+  payload.js        what the payload consists of, so inject and cleanup agree
+  selftest.js       exercises all of the above against a fake game
   lib.js            shared helpers (file edits, tool discovery, processes)
 ```
 
@@ -62,8 +73,17 @@ Register the MCP server once, at user scope, so nothing lands in the game repo:
 claude mcp add gg2 -s local -- node <path-to>\gg2-agent\tools\gg2-mcp-server.js
 ```
 
-It exposes `gg2_ping`, `gg2_eval`, `gg2_evalx`, `gg2_state`, `gg2_lint`,
-`gg2_rebuild` and `gg2_log`.
+It exposes eighteen tools, in four groups:
+
+| | |
+|---|---|
+| **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_log` |
+| **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
+| **edit** | `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
+| **run** | `gg2_session`, `gg2_test` |
+
+Every tool that talks to a game takes an optional `instance`, so a server and its
+clients can be addressed by name; leave it out while only one game is running.
 
 ## Use
 
@@ -72,6 +92,8 @@ node build-agent.js            # full build; stops for you to use the GM8 IDE
 node build-agent.js --package  # ...and produce build.zip
 node build-fast.js --launch    # ~3s: code changes only, then relaunch
 node run-agent.js              # launch and wait for the bridge
+node tools/session.js start --clients 2   # a dedicated server and two clients
+node tools/selftest.js         # check this repo's own modules (~3s, no GM8)
 ```
 
 A full build is only needed to bootstrap the fast-rebuild template, and after
@@ -107,9 +129,24 @@ loopback.
 ### Wire protocol
 
 `uint32` little-endian length, then that many bytes. Requests are
-`VERB [argument]` — `PING`, `EVAL`, `EVALX`, `STATE` — and replies are `OK`,
-`OK <text>` or `ERR <text>`. The Node server speaks MCP on one side and this on
-the other, so the GML never parses JSON.
+`VERB [argument]` — `PING`, `EVAL`, `EVALX`, `STATE`, `SHOT`, `INPUT`, `WATCH`,
+`FREEZE`, `RESUME`, `STEP`, `WAIT` — and replies are `OK`, `OK <text>` or
+`ERR <text>`. The Node server speaks MCP on one side and this on the other, so
+the GML never parses JSON.
+
+Two of those verbs cannot answer in the frame they arrive: `STEP` counts frames
+down and `WAIT` re-tests an expression. The dispatcher returns an empty reply for
+those, having recorded what it is waiting for, and a per-frame handler sends the
+answer once it is due. Nothing further is read while one is outstanding, so
+replies always come back in the order they were asked for — and a client that
+disconnects mid-request clears the state and unfreezes the world, so the next one
+does not inherit a game that never advances.
+
+`FREEZE` stops the world by deactivating every instance except the bridge, which
+keeps answering while nothing else moves. A deactivated instance is not drawn, so
+`SHOT` reactivates, calls `screen_redraw()`, saves, and deactivates again: a
+redraw runs no step events, so a screenshot of a frozen game shows the real frame
+without advancing it.
 
 ## The full build
 
@@ -148,18 +185,52 @@ asserts the result is byte-identical.
 
 ## The launcher
 
-`tools/launcher.js` starts the game and stays resident, because GM8 answers two
-ordinary situations with a modal dialog — no audio device, and any GML runtime
-error — and a modal dialog freezes the game along with every pending MCP call.
-Nothing inside the game can clear its own modal.
+`tools/launcher.js` starts the game and stays resident, because GM8 answers three
+ordinary situations with a modal dialog — no audio device, any GML runtime error,
+and every call to `show_message` — and a modal dialog freezes the game along with
+every pending MCP call. Nothing inside the game can clear its own modal.
 
 It watches for `TErrorForm`, `TMessageForm` and `#32770` belonging to the game's
-process. `TErrorForm` is the one that matters: it offers **Abort** next to
-**Ignore**, so the button is chosen by name rather than by position, and the
-error text is read out of the dialog's memo and written to `agent_launcher.log`
-before it is dismissed. That log — `gg2_log` with `source: "launcher"` — is
-usually the only explanation you will get for a call that suddenly started
-timing out.
+process. `TErrorForm` is the one that matters most: it offers **Abort** next to
+**Ignore**, so the button is chosen by name rather than by position, and its
+error text lives in a `TMemo`, which is a real window and answers `WM_GETTEXT`.
+Every dialog's text is read out of its controls and written to
+`agent_launcher_<port>.log` before it is dismissed, marked `E|` for an error and
+`M|` for a message — a distinction the tooling depends on, since the game's unit
+tests report through `show_message` and a failed assertion must not be reported
+as a crash. That log — `gg2_log` with `source: "launcher"` — is usually the only
+explanation you will get for a call that suddenly started timing out, and
+`tools/gmlerror.js` turns its errors back into `file:line`.
+
+`show_message` is the exception, and a hard one: its form holds exactly one
+windowed control, the OK button, and the message is painted onto the form
+itself. Nothing outside the process can read it, which is why `gg2_test` reads
+the assertion counters rather than the words.
+
+It also owns the game as a child process, which is what lets it register the
+instance on start and take the entry out again when the game exits.
 
 Everything is posted rather than sent, since `SendMessage` blocks until the
 target answers and these windows are by definition the ones that have stopped.
+
+## Sessions
+
+A dedicated server and its clients, started together and addressable by name:
+
+```powershell
+node tools/session.js start --clients 2 --map ctf_truefort
+node tools/session.js list
+node tools/session.js stop --name client2
+```
+
+Each game gets its own bridge port, its own logs and an entry in
+`agent_instances.json` beside the executable. The register holds no locks — a
+stale entry is pruned on the next read by asking the operating system whether the
+pid is still there.
+
+Three settings decide whether a local session works, and none of them has a
+command-line flag: `UseLobby` must be 0 or a dedicated server announces itself to
+the public lobby, `HostingPort` is where the server listens and therefore where
+clients must be pointed, and `MultiClientLimit` caps connections from one
+address — which every local client shares. `session.js` sets the first, reads the
+second and refuses politely against the third.
