@@ -28,23 +28,42 @@ In order, because each one is cheap and the later ones assume the earlier ones:
    the real frame rather than an empty room. This is the reactivate-redraw-
    deactivate trick in `agentBridgeShot`, and it is the one piece of the design
    most likely to disappoint.
-4. `gg2_input press right` plus `gg2_step 10` — the player moves.
-   `keyboard_key_press` is assumed to make `keyboard_check` true until released,
-   which is what `PlayerControl` reads. If it turns out to be a one-frame pulse,
-   `agentBridgeInput` needs to hold the key itself.
-5. `gg2_input click 1` — `mouse_button` is assumed to be assignable. If it is
-   read-only, drop `click` from `agentBridgeInput`: `PlayerControl` maps the
-   bound `attack` key to the same fire bit, so `press attack` already covers it.
-6. `gg2_wait`, `gg2_watch` — deferred replies come back in order, and a watch
-   trace appears in `gg2_log`.
-7. `gg2_test` — a suite reports a count like `45/45 assertions succeeded`. It
+4. ~~`gg2_input press right`~~ — **this does not work, and the assumption behind
+   it was wrong.** `keyboard_key_press` does not make `keyboard_check` true: not
+   in the same frame, not in the next one, not ever (proved with a `gg2_watch`
+   on `keyboard_check(ord("Z"))`, which stayed 0 on every frame). Since
+   `PlayerControl` builds its `keybyte` from `keyboard_check`, `press` and
+   `release` currently drive nothing. See "What input needs next" below.
+5. ~~`gg2_input aim`~~ — **hangs.** `window_views_mouse_set` and
+   `window_mouse_set` never return when the game window is not the foreground
+   window: no reply, no dialog, nothing in any error log, and the game carries
+   on normally afterwards. Focus could not be granted to test the other case
+   (Windows refuses `SetForegroundWindow` from a background process). Until this
+   is understood, `aim` costs a ten-second timeout and does nothing.
+6. `gg2_input click 1` — **works.** `mouse_button` is assignable and the value
+   sticks across frames.
+7. `gg2_wait`, `gg2_watch` — **both work.** (`agentBridgeWatch` read its
+   argument as `rest` rather than `argument0` and raised an error every call;
+   fixed and verified.)
+8. `gg2_test` — a suite reports a count like `45/45 assertions succeeded`. It
    works by evaluating the suite's source with `test_unit_end()` removed and
    reading the counters, because GM8's message box turned out to be unreadable
    from outside (see below). If the count comes back `-1`, the suite never
    reached `test_unit_begin` and something earlier went wrong.
-8. `gg2_session start --clients 1` — a server and a client come up on separate
+9. `gg2_session start --clients 1` — a server and a client come up on separate
    ports, `gg2_state` differs between them, and stopping one leaves the other
-   alone.
+   alone. **Not yet run.**
+
+## What input needs next
+
+`press`/`release` need a different mechanism. `PlayerControl.Begin Step` builds
+a `keybyte` from `keyboard_check` and assigns it to the character's `keyState`,
+and that byte is what gets sent to the server - so the promising route is for
+the bridge to hold a mask and OR it into `global.myself.object.keyState` from
+its own Step, which runs after every Begin Step. That drives the game through
+its own representation of held input rather than through the keyboard it cannot
+reach. Discrete actions already have a clean route today: the game's own
+`Scripts/Input/input*.gml` are callable, so `gg2_eval inputTaunt();` works now.
 
 ## Things worth not rediscovering
 

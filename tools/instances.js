@@ -107,4 +107,11 @@ function resolve(dir, want) {
 const bridgeLog = (dir, port) => path.join(dir, `agent_bridge_${port}.log`);
 const launcherLog = (dir, port) => path.join(dir, `agent_launcher_${port}.log`);
 
-module.exports = { list, prune, register, unregister, resolve, alive, bridgeLog, launcherLog, FILE };
+// GM8's own error log. Not ours and not per port - the engine picks the name
+// and writes it beside the executable, so two games in one directory share it.
+// It matters because it is the only record of a compilation error inside
+// execute_string: those raise no dialog at all, and the bridge replies "OK 0"
+// as though nothing had happened.
+const errorLog = (dir) => path.join(dir, 'game_errors.log');
+
+module.exports = { list, prune, register, unregister, resolve, alive, bridgeLog, launcherLog, errorLog, FILE };

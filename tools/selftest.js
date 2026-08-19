@@ -171,6 +171,15 @@ function startFakeBridge(port) {
               'at position 15: Unknown variable aTypoNobodyDefined',
             ]);
             reply('OK 0');
+          } else if (rest.includes('notAFunctionAnywhere')) {
+            // A compilation error inside execute_string: no dialog anywhere,
+            // just a line in the engine's own log and a cheerful "OK 0".
+            fs.appendFileSync(
+              path.join(BUILD, 'game_errors.log'),
+              'COMPILATION ERROR in string to be executedError in code at line 1:   ' +
+                'return notAFunctionAnywhere(1)         ^at position 8: Unknown function or script: notAFunctionAnywhere'
+            );
+            reply('OK 0');
           } else if (rest.trim() === 'test_unit_begin();') {
             counters = { total: 0, succeeded: 0 }; // the reset between suites
             reply('OK');
@@ -261,7 +270,13 @@ async function main() {
     mcp.callTool('gg2_eval', { code: 'array_length(x);' }), 'would not compile');
 
   await throws('a GML error turns a plausible 0 into a failure', async () =>
-    mcp.callTool('gg2_evalx', { expr: 'global.aTypoNobodyDefined' }), 'raised a GML error');
+    mcp.callTool('gg2_evalx', { expr: 'global.aTypoNobodyDefined' }), 'reported an error');
+
+  // The other error channel: a compilation error inside execute_string raises
+  // no dialog and is only ever written to the engine's own log.
+  fs.writeFileSync(path.join(BUILD, 'game_errors.log'), '');
+  await throws('a silent compilation error is caught too', async () =>
+    mcp.callTool('gg2_evalx', { expr: 'notAFunctionAnywhere(1)', skip_lint: true }), 'reported an error');
 
   const stepped = await mcp.callTool('gg2_step', { frames: 5 });
   contains('stepping advances exactly what was asked', stepped, 'advanced 5 frame(s)');

@@ -7,7 +7,7 @@
 //
 //   1. inject the agent bridge into the split source tree
 //   2. gmksplit    reassemble Source/gg2 into a .gmk
-//   3. Game Maker  open the project and wait for you to build it   (~35s)
+//   3. Game Maker  drive the IDE to create the executable            (~40s)
 //   4. gm8x_fix    patch the resulting executable
 //   5. template    keep this exe plus a manifest of the code it contains,
 //                  so build-fast.js can splice later code changes into it
@@ -17,11 +17,12 @@
 // Step 7 runs from a finally block, so an interrupted or failed build still
 // leaves the checkout clean.
 //
-// Step 3 needs a person. Game Maker 8 has no command-line compile, and the
-// automation that used to drive its IDE was retired once build-fast.js made
-// full builds rare - it lives in the gm8-build-automation repo if unattended
-// builds are ever needed again. This script opens the project for you, tells
-// you exactly what to save and where, and waits for the executable to appear.
+// Step 3 is the one Game Maker 8 gives no command-line for, so tools/gm8ide.js
+// drives the IDE with posted window messages instead: File > Create Executable,
+// the save dialog, and the confirmations either side of it. That needs an
+// interactive desktop session but not a person. If Game Maker cannot be found,
+// or driving it fails, this falls back to opening the project and waiting - the
+// behaviour it always had.
 //
 // You need this only to bootstrap a template, or after adding, removing or
 // renaming a resource. Code changes go through build-fast.js.
@@ -35,23 +36,28 @@ const { inject } = require('./inject.js');
 const { cleanup } = require('./cleanup.js');
 const { packageBuild } = require('./package.js');
 const { GAME_IMAGE } = require('./run-agent.js');
+const gm8ide = require('./tools/gm8ide.js');
 
 const USAGE = `
 usage: node build-agent.js [--repo <path>] [--keep-injected] [--package]
-                          [--wait <minutes>]
+                          [--wait <minutes>] [--manual] [--gm8 <dir>]
 
   --repo           the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
   --keep-injected  leave the bridge in the tree afterwards; run cleanup.js
                    before committing anything to the fork
   --package        also produce build.zip with music, licences and extensions
-  --wait           how long to wait for you to build in the IDE (default 15)
+  --wait           how long to allow for the IDE build (default 15 minutes)
+  --manual         do not drive the IDE; open the project and wait for a person
+  --gm8            the Game Maker 8 install (default: auto-detect, or GM8_DIR)
 
-Step 3 is manual: this opens the .gmk in Game Maker 8 and waits for you to
-choose File > Create Executable and save to the path it prints. Code-only
-changes do not need this - use build-fast.js.
+Step 3 drives the Game Maker 8 IDE, since GM8 has no command-line compile. It
+needs an interactive desktop session but not a person. If Game Maker cannot be
+found, or driving it fails, this falls back to opening the project and waiting
+for someone to choose File > Create Executable. Code-only changes do not need
+any of this - use build-fast.js.
 `;
 
-async function buildAgent({ repo, keepInjected = false, doPackage = false, waitMinutes = 15 }) {
+async function buildAgent({ repo, keepInjected = false, doPackage = false, waitMinutes = 15, manual = false, gm8Dir = null }) {
   const repoFull = path.resolve(repo);
   const source = path.join(repoFull, 'Source');
   const build = path.join(source, 'build');
@@ -97,20 +103,52 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
     lib.ok(`gg2.gmk (${fs.statSync(gmkOut).size} bytes)`);
 
     // --- 3. build it in the Game Maker 8 IDE ----------------------------------
-    lib.step('Opening the project in Game Maker 8');
-    lib.warn('this step needs you: File > Create Executable');
-    lib.detail(`project:  ${gmkOut}`);
-    lib.detail(`save as:  ${exeOut}`);
-    lib.openInShell(gmkOut);
+    // Automatic when Game Maker can be found, which is the usual case. When it
+    // cannot, or when driving it fails, this falls back to what it always did:
+    // open the project and wait for a person. A failed drive leaves the IDE up
+    // with the project loaded, so finishing by hand costs a menu click rather
+    // than another two-minute load.
+    let done = false;
+    let ideOpen = false;
+    const ide = manual ? null : gm8ide.find(gm8Dir);
 
-    const built = await lib.waitForStableFile(exeOut, waitMinutes * 60 * 1000, (waited) =>
-      lib.detail(`still waiting for the executable (${waited}s)`)
-    );
-    if (!built) {
-      throw new Error(
-        `no executable at ${exeOut} after ${waitMinutes} minutes. ` +
-          'Build it with File > Create Executable, or pass --wait <minutes>.'
+    if (ide) {
+      lib.step('Building in the Game Maker 8 IDE');
+      lib.detail(`project:  ${gmkOut}`);
+      lib.detail(`save as:  ${exeOut}`);
+      try {
+        await gm8ide.buildExe({
+          gmk: gmkOut,
+          exe: exeOut,
+          gm8: gm8Dir,
+          timeoutMinutes: waitMinutes,
+          log: lib.detail,
+        });
+        done = true;
+      } catch (e) {
+        lib.warn(`could not drive the IDE: ${e.message}`);
+        ideOpen = !!e.ideOpen;
+      }
+    } else if (!manual) {
+      lib.warn('Game Maker 8 not found, so this step cannot be automated - pass --gm8 <dir> or set GM8_DIR');
+    }
+
+    if (!done) {
+      lib.step('Waiting for the executable');
+      lib.warn('this step needs you: File > Create Executable');
+      lib.detail(`project:  ${gmkOut}`);
+      lib.detail(`save as:  ${exeOut}`);
+      if (!ideOpen) lib.openInShell(gmkOut);
+
+      const built = await lib.waitForStableFile(exeOut, waitMinutes * 60 * 1000, (waited) =>
+        lib.detail(`still waiting for the executable (${waited}s)`)
       );
+      if (!built) {
+        throw new Error(
+          `no executable at ${exeOut} after ${waitMinutes} minutes. ` +
+            'Build it with File > Create Executable, or pass --wait <minutes>.'
+        );
+      }
     }
     lib.ok(`built (${fs.statSync(exeOut).size} bytes)`);
 
@@ -146,7 +184,7 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
 }
 
 if (require.main === module) {
-  const { flags } = lib.parseArgs(process.argv.slice(2), ['repo', 'wait']);
+  const { flags } = lib.parseArgs(process.argv.slice(2), ['repo', 'wait', 'gm8']);
   if (flags.help) lib.helpAndExit(USAGE);
   lib.cli(async () =>
     buildAgent({
@@ -154,6 +192,8 @@ if (require.main === module) {
       keepInjected: !!flags['keep-injected'],
       doPackage: !!flags.package,
       waitMinutes: flags.wait ? Number(flags.wait) : 15,
+      manual: !!flags.manual,
+      gm8Dir: flags.gm8 || null,
     })
   );
 }

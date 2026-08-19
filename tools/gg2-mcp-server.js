@@ -292,18 +292,31 @@ function describeError(text) {
 
 const annotate = (block) => describeError(block) || block.split('\n')[0];
 
-// Run a bridge command and refuse to report success if the game raised a GML
+// Run a bridge command and refuse to report success if the game reported an
 // error while it ran.
+//
+// There are two channels, and both have to be read. A *runtime* error raises a
+// modal dialog, which the launcher dismisses and records. A *compilation* error
+// inside execute_string raises nothing at all: GM8 appends it to game_errors.log
+// beside the executable, execute_string returns 0, and the bridge replies
+// "OK 0" - which is precisely the plausible wrong answer this exists to stop.
 async function watched(where, fn) {
-  const mark = logSize(instances.launcherLog(BUILD_DIR, where.port));
+  const launcher = instances.launcherLog(BUILD_DIR, where.port);
+  const engine = instances.errorLog(BUILD_DIR);
+  const marks = [logSize(launcher), logSize(engine)];
+
   const reply = await fn();
-  const errors = dialogsSince(where.port, mark, 'E');
+
+  const errors = dialogsSince(where.port, marks[0], 'E').map((e) => ({ text: e, located: annotate(e) }));
+  const silent = logSince(engine, marks[1]).trim();
+  if (silent) errors.push({ text: silent, located: describeError(silent) || silent.slice(0, 200) });
   if (errors.length === 0) return reply;
+
   throw new Error(
-    'The game raised a GML error during this call, so the reply cannot be trusted.\n' +
-      errors.map((e) => '  ' + annotate(e)).join('\n') +
+    'The game reported an error during this call, so the reply cannot be trusted.\n' +
+      errors.map((e) => '  ' + e.located).join('\n') +
       '\n\n' +
-      errors.map((e) => e.split('\n').map((l) => '  | ' + l).join('\n')).join('\n') +
+      errors.map((e) => e.text.split('\n').map((l) => '  | ' + l).join('\n')).join('\n') +
       `\n\nThe bridge replied: ${JSON.stringify(reply)} - for a failed expression that is 0, not a real value.`
   );
 }
@@ -713,8 +726,11 @@ const TOOLS = [
         lines: { type: 'integer', description: 'How many trailing lines to return (default 40).' },
         source: {
           type: 'string',
-          enum: ['both', 'bridge', 'launcher'],
-          description: 'Which log to read (default both).',
+          enum: ['both', 'bridge', 'launcher', 'engine'],
+          description:
+            'Which log to read (default both). "engine" is the game engine\'s own game_errors.log, which is ' +
+            'where a compilation error inside execute_string goes - those raise no dialog at all and are ' +
+            'invisible everywhere else.',
         },
         ...INSTANCE_ARG,
       },
@@ -1030,6 +1046,7 @@ async function callTool(name, args) {
       const files = [];
       if (want === 'both' || want === 'bridge') files.push(['bridge', instances.bridgeLog(BUILD_DIR, where.port)]);
       if (want === 'both' || want === 'launcher') files.push(['launcher', instances.launcherLog(BUILD_DIR, where.port)]);
+      if (want === 'both' || want === 'engine') files.push(['engine', instances.errorLog(BUILD_DIR)]);
 
       const tails = files
         .map(([kind, file]) => {

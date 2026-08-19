@@ -6,7 +6,8 @@
 //
 //   WATCH add <expression>    WATCH clear    WATCH list
 
-var sp, verb, expr, i, out;
+var rest, sp, verb, expr, i, out;
+rest = argument0;
 
 sp = string_pos(" ", rest);
 if (sp == 0)
