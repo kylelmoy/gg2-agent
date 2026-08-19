@@ -2,12 +2,15 @@
 //=============================================================================
 // inject.js - add the agent bridge to a clean Gang Garrison 2 checkout.
 //
-// Copies the AgentBridge object and its scripts into the split source tree and
-// makes the three one-line edits the tree needs to see them:
+// Copies the payload's objects and scripts into the split source tree and makes
+// the three one-line edits the tree needs to see them:
 //
-//   Objects/_resources.list.xml   register the object
+//   Objects/_resources.list.xml   register the objects
 //   Scripts/_resources.list.xml   register the script group
 //   Scripts/Game/game_init.gml    create the instance at startup
+//
+// What the payload consists of lives in tools/payload.js, so this and
+// cleanup.js can never disagree about it.
 //
 // Idempotent: running it twice is harmless. Reverse it with cleanup.js.
 //=============================================================================
@@ -15,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
+const payloadSpec = require('./tools/payload.js');
 
 const USAGE = `
 usage: node inject.js [--repo <path>] [--quiet]
@@ -30,27 +34,30 @@ function inject(repo, quiet) {
   const payload = path.join(__dirname, 'payload');
 
   // --- 1. copy the payload -------------------------------------------------
-  fs.copyFileSync(path.join(payload, 'Objects', 'AgentBridge.xml'), path.join(tree, 'Objects', 'AgentBridge.xml'));
-  fs.cpSync(path.join(payload, 'Objects', 'AgentBridge.events'), path.join(tree, 'Objects', 'AgentBridge.events'), {
+  for (const name of payloadSpec.OBJECTS) {
+    fs.copyFileSync(path.join(payload, 'Objects', `${name}.xml`), path.join(tree, 'Objects', `${name}.xml`));
+    fs.cpSync(path.join(payload, 'Objects', `${name}.events`), path.join(tree, 'Objects', `${name}.events`), {
+      recursive: true,
+      force: true,
+    });
+  }
+  fs.cpSync(path.join(payload, 'Scripts', payloadSpec.SCRIPT_GROUP), path.join(tree, 'Scripts', payloadSpec.SCRIPT_GROUP), {
     recursive: true,
     force: true,
   });
-  fs.cpSync(path.join(payload, 'Scripts', 'AgentBridge'), path.join(tree, 'Scripts', 'AgentBridge'), {
-    recursive: true,
-    force: true,
-  });
-  lib.ok('copied object, events and scripts', quiet);
+  lib.ok(`copied ${payloadSpec.OBJECTS.length} object(s), their events and the scripts`, quiet);
 
   // --- 2. register the resources -------------------------------------------
   const objList = path.join(tree, 'Objects', '_resources.list.xml');
-  if (lib.addBeforeLine(objList, '</resources>', '  <resource name="AgentBridge" type="RESOURCE"/>')) {
-    lib.ok('registered object in Objects/_resources.list.xml', quiet);
-  } else {
-    lib.skip('object already registered', quiet);
+  let added = 0;
+  for (const name of payloadSpec.OBJECTS) {
+    if (lib.addBeforeLine(objList, '</resources>', `  <resource name="${name}" type="RESOURCE"/>`)) added++;
   }
+  if (added) lib.ok(`registered ${added} object(s) in Objects/_resources.list.xml`, quiet);
+  else lib.skip('objects already registered', quiet);
 
   const scrList = path.join(tree, 'Scripts', '_resources.list.xml');
-  if (lib.addBeforeLine(scrList, '</resources>', '  <resource name="AgentBridge" type="GROUP"/>')) {
+  if (lib.addBeforeLine(scrList, '</resources>', `  <resource name="${payloadSpec.SCRIPT_GROUP}" type="GROUP"/>`)) {
     lib.ok('registered script group in Scripts/_resources.list.xml', quiet);
   } else {
     lib.skip('script group already registered', quiet);
@@ -58,7 +65,7 @@ function inject(repo, quiet) {
 
   // --- 3. create the instance at startup ------------------------------------
   const init = path.join(tree, 'Scripts', 'Game', 'game_init.gml');
-  if (lib.addAfterLine(init, 'loadplugins();', '    instance_create(0, 0, AgentBridge);')) {
+  if (lib.addAfterLine(init, payloadSpec.INIT_ANCHOR, payloadSpec.INIT_LINE)) {
     lib.ok('added instance_create to game_init.gml', quiet);
   } else {
     lib.skip('game_init.gml already patched', quiet);

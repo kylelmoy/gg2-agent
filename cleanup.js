@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
+const payloadSpec = require('./tools/payload.js');
 
 const USAGE = `
 usage: node cleanup.js [--repo <path>] [--quiet]
@@ -29,30 +30,31 @@ function cleanup(repo, quiet) {
   lib.step(`Removing agent bridge from ${tree}`, quiet);
 
   // --- 1. undo the three line edits ----------------------------------------
-  if (lib.removeLine(path.join(tree, 'Scripts', 'Game', 'game_init.gml'), 'instance_create(0, 0, AgentBridge);')) {
+  if (lib.removeLine(path.join(tree, 'Scripts', 'Game', 'game_init.gml'), payloadSpec.INIT_LINE)) {
     lib.ok('removed instance_create from game_init.gml', quiet);
   } else {
     lib.skip('game_init.gml already clean', quiet);
   }
 
-  if (lib.removeLine(path.join(tree, 'Objects', '_resources.list.xml'), '<resource name="AgentBridge" type="RESOURCE"/>')) {
-    lib.ok('unregistered object', quiet);
-  } else {
-    lib.skip('object already unregistered', quiet);
+  const objList = path.join(tree, 'Objects', '_resources.list.xml');
+  let removed = 0;
+  for (const name of payloadSpec.OBJECTS) {
+    if (lib.removeLine(objList, `<resource name="${name}" type="RESOURCE"/>`)) removed++;
   }
+  if (removed) lib.ok(`unregistered ${removed} object(s)`, quiet);
+  else lib.skip('objects already unregistered', quiet);
 
-  if (lib.removeLine(path.join(tree, 'Scripts', '_resources.list.xml'), '<resource name="AgentBridge" type="GROUP"/>')) {
+  if (lib.removeLine(path.join(tree, 'Scripts', '_resources.list.xml'), `<resource name="${payloadSpec.SCRIPT_GROUP}" type="GROUP"/>`)) {
     lib.ok('unregistered script group', quiet);
   } else {
     lib.skip('script group already unregistered', quiet);
   }
 
   // --- 2. delete the payload -------------------------------------------------
-  const targets = [
-    path.join(tree, 'Objects', 'AgentBridge.xml'),
-    path.join(tree, 'Objects', 'AgentBridge.events'),
-    path.join(tree, 'Scripts', 'AgentBridge'),
-  ];
+  const targets = [path.join(tree, 'Scripts', payloadSpec.SCRIPT_GROUP)];
+  for (const name of payloadSpec.OBJECTS) {
+    targets.push(path.join(tree, 'Objects', `${name}.xml`), path.join(tree, 'Objects', `${name}.events`));
+  }
   for (const t of targets) {
     if (fs.existsSync(t)) {
       fs.rmSync(t, { recursive: true, force: true });
@@ -71,7 +73,7 @@ function cleanup(repo, quiet) {
 
   lib.warn('checkout is not clean; remaining changes:');
   for (const s of status) lib.detail(s);
-  const stray = status.filter((s) => /AgentBridge|agent_bridge/.test(s));
+  const stray = status.filter((s) => payloadSpec.STRAY.test(s));
   if (stray.length > 0) {
     lib.fail('bridge artefacts still present - cleanup did not fully reverse');
     return false;

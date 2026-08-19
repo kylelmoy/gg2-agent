@@ -4,6 +4,19 @@
 if (listener < 0)
     exit;
 
+// Sample the watch list first, so a trace records the frame as the game left it
+// rather than as this frame's requests have changed it.
+agentBridgeWatchTick();
+
+// A deferred reply owns the connection until it is sent. Reading further
+// requests before then would answer them out of order.
+if (deferKind != 0)
+{
+    agentBridgeDefer();
+    if (deferKind != 0)
+        exit;
+}
+
 // Accept a connection when we do not already have one.
 if (sock < 0)
 {
@@ -37,6 +50,15 @@ if (socket_has_error(sock) or tcp_eof(sock))
     agentBridgeLog("client disconnected");
     socket_destroy(sock);
     sock = -1;
+
+    // A client that vanishes mid-request must not leave the world stopped, or
+    // the next one finds a game that never advances.
+    deferKind = 0;
+    if (frozen)
+    {
+        frozen = false;
+        instance_activate_all();
+    }
     exit;
 }
 
@@ -69,9 +91,14 @@ while (guard < 32)
         if (!tcp_receive(sock, msgLen))
             exit;
 
-        var request;
+        var request, reply;
         request = read_string(sock, msgLen);
         readState = 0;
-        agentBridgeSend(agentBridgeDispatch(request));
+
+        reply = agentBridgeDispatch(request);
+        if (reply == "")
+            exit;               // deferred; agentBridgeDefer sends it
+
+        agentBridgeSend(reply);
     }
 }

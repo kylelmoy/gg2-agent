@@ -10,9 +10,25 @@ sock = -1;
 readState = 0;  // 0 = waiting for the 4 byte length header, 1 = waiting for the payload
 msgLen = 0;
 
+// A request that cannot be answered in the frame it arrives - STEP counts frames
+// down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer
+// sends the reply later. Nothing new is read while one is outstanding, so
+// replies always come back in the order they were asked for.
+deferKind = 0;      // 0 = nothing pending, 1 = stepping, 2 = waiting
+deferExpr = "";
+deferFrames = 0;
+deferTotal = 0;
+
+// The world is frozen by deactivating every instance except this one, so the
+// game stops advancing between agent calls while the bridge keeps answering.
+frozen = false;
+
+// Expressions sampled once a frame; a changed value is written to the log.
+watchExpr = ds_list_create();
+watchLast = ds_list_create();
+
 global.agentEnabled = false;
 global.agentPort = 17777;
-global.agentLogFile = working_directory + "\agent_bridge.log";
 
 var i;
 for (i = 1; i <= parameter_count(); i += 1)
@@ -22,6 +38,10 @@ for (i = 1; i <= parameter_count(); i += 1)
     else if (parameter_string(i) == "-agentport")
         global.agentPort = real(parameter_string(i+1));
 }
+
+// One log per port, so two instances of the game in one directory - a dedicated
+// server and its clients - do not interleave their logs into one file.
+global.agentLogFile = working_directory + "\agent_bridge_" + string(global.agentPort) + ".log";
 
 if (!global.agentEnabled)
     exit;

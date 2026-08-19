@@ -5,6 +5,12 @@
   <resource name="agentBridgeStep" type="RESOURCE"/>
   <resource name="agentBridgeSend" type="RESOURCE"/>
   <resource name="agentBridgeDispatch" type="RESOURCE"/>
+  <resource name="agentBridgeDefer" type="RESOURCE"/>
   <resource name="agentBridgeState" type="RESOURCE"/>
+  <resource name="agentBridgeShot" type="RESOURCE"/>
+  <resource name="agentBridgeKey" type="RESOURCE"/>
+  <resource name="agentBridgeInput" type="RESOURCE"/>
+  <resource name="agentBridgeWatch" type="RESOURCE"/>
+  <resource name="agentBridgeWatchTick" type="RESOURCE"/>
   <resource name="agentBridgeDestroy" type="RESOURCE"/>
 </resources>
