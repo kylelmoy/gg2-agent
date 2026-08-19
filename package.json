@@ -1,0 +1,16 @@
+{
+  "name": "gg2-agent",
+  "version": "1.0.0",
+  "description": "Tooling for developing Gang Garrison 2 with an AI agent",
+  "main": "build-agent.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kylelmoy/gg2-agent.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "koffi": "^3.1.5"
+  },
+  "private": true
+}

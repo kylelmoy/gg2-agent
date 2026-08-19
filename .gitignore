@@ -3,3 +3,5 @@
 # Third-party binaries, if you keep them here rather than in the game's Source/
 tools/*.exe
 tools/*.jar
+
+node_modules/
