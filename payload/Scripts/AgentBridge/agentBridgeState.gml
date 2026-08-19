@@ -33,6 +33,16 @@ if (variable_global_exists("players"))
         ds_map_add(pm, "name", string(p.name));
         ds_map_add(pm, "team", string(p.team));
         ds_map_add(pm, "class", string(p.class));
+        // The Character instance a player controls, when they have one -
+        // Player.object is -1 between deaths and respawns. Its position and hp
+        // answer most of what a test otherwise needs several gg2_evalx round
+        // trips for - "is this test position safe", "did that damage call land".
+        if (p.object != -1 and instance_exists(p.object))
+        {
+            ds_map_add(pm, "x", string(p.object.x));
+            ds_map_add(pm, "y", string(p.object.y));
+            ds_map_add(pm, "hp", string(p.object.hp));
+        }
         ds_map_add(players, string(n), pm);
         n += 1;
     }

@@ -269,6 +269,19 @@ exactly what broke.
   failed with access-denied/invalid-parameter errors; see `HANDOFF.md` before
   trying it again. Expect a ~10s timeout and no effect. `press`/`click` do not
   depend on focus and work fine.
+- **A frozen game's own instances cannot be read by field while they stay
+  frozen.** `gg2_step` (and `FREEZE` generally) works by calling
+  `instance_deactivate_all(true)`, and GM8 makes a deactivated instance's data
+  unreachable from anywhere else at all - not just a `with()`, even a plain
+  dot-access read of a built-in like `.x` on an instance id held in a
+  `global.` comes back "Unknown variable x" while frozen, for exactly the
+  instance that reads fine a moment after `gg2_resume`. `gg2_screenshot`
+  dodges this by reactivating before it draws and freezing again afterwards;
+  a `gg2_evalx` that needs one instance's own fields can do the same thing by
+  hand - `instance_activate_object(id)` before the read (verified: it does not
+  itself run any code or advance anything, since nothing steps again until the
+  game is actually resumed) - or just `gg2_resume` first if the whole game's
+  state is wanted anyway.
 - **A GML error does not kill the game any more, and it is not silent either.**
   `tools/launcher.js` presses Ignore on GM8's `TErrorForm` and logs the message;
   any call that runs while the game raises one comes back as an error carrying

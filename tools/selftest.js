@@ -171,6 +171,24 @@ function startFakeBridge(port) {
               'at position 15: Unknown variable aTypoNobodyDefined',
             ]);
             reply('OK 0');
+          } else if (rest.includes('sameErrorEveryFrame')) {
+            // The stuck-in-a-loop case: an identical dialog raised several
+            // times in a row within one call, the way CTFHUD's Step throws
+            // every frame once global.winners is unbound (see HANDOFF.md).
+            for (let i = 0; i < 4; i++) {
+              appendDialog(port, 'E', [
+                'ERROR in',
+                'action number 1',
+                'of  Step Event',
+                'for object CTFHUD:',
+                '',
+                'Error in code at line 36:',
+                '   if (global.winners == -1)',
+                '        ^',
+                'at position 8: Unknown variable winners',
+              ]);
+            }
+            reply('OK 0');
           } else if (rest.includes('notAFunctionAnywhere')) {
             // A compilation error inside execute_string: no dialog anywhere,
             // just a line in the engine's own log and a cheerful "OK 0".
@@ -257,6 +275,29 @@ async function main() {
     events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, '  ', { payload: false, lintFirst: false }), 'empty code');
   fs.writeFileSync(heavy, before);
 
+  process.stdout.write('\nlint cache invalidation\n');
+  {
+    const gmllint = require('./gml-lint.js');
+    const newScript = path.join(TREE, 'Scripts', 'someBrandNewScript.gml');
+    const manifestDir = path.join(BUILD, 'template');
+    const manifestFile = path.join(manifestDir, 'gamedata.manifest.json');
+
+    const before = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    check('a call to an unknown script is refused', !before.ok, JSON.stringify(before.errors));
+
+    fs.writeFileSync(newScript, 'return 1;');
+    const stillCached = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    check('adding the script alone does not invalidate the cache', !stillCached.ok);
+
+    fs.mkdirSync(manifestDir, { recursive: true });
+    fs.writeFileSync(manifestFile, '{}');
+    const afterBuild = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    check('a rewritten build manifest invalidates it', afterBuild.ok, JSON.stringify(afterBuild.errors));
+
+    fs.rmSync(newScript, { force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+  }
+
   process.stdout.write('\nimages\n');
   const png = image.toPng(tinyBmp());
   check('a bitmap becomes a PNG', png.converted && png.width === 2 && png.height === 2);
@@ -271,6 +312,19 @@ async function main() {
 
   await throws('a GML error turns a plausible 0 into a failure', async () =>
     mcp.callTool('gg2_evalx', { expr: 'global.aTypoNobodyDefined' }), 'reported an error');
+
+  {
+    let message = '';
+    try {
+      await mcp.callTool('gg2_evalx', { expr: 'global.sameErrorEveryFrame' });
+    } catch (e) {
+      message = e.message;
+    }
+    contains('repeated identical dialogs are collapsed', message, '(x4)');
+    // Once in the located summary line, once in the raw dialog dump - not four
+    // times each, which is what a message like this looked like before the fix.
+    check('and the raw dialog text is not repeated four times', message.split('Unknown variable winners').length - 1 === 2, message);
+  }
 
   // The other error channel: a compilation error inside execute_string raises
   // no dialog and is only ever written to the engine's own log.

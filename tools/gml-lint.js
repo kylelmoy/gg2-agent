@@ -484,12 +484,38 @@ function walk(dir, exts) {
 // context means reading GM8's fnames and walking the tree, so it is cached -
 // keyed on the trees it was built from, since the payload adds symbols the
 // game's own tree does not have.
+//
+// That cache used to live for the life of the process, which is wrong: a
+// long-running MCP server keeps a lint context around for as long as it is
+// up, but a full build-agent.js run - a separate process - can add or remove
+// scripts and objects underneath it at any time. The manifest a full build
+// writes (Source/build/template/gamedata.manifest.json, the same one
+// build-fast.js checks a tree hash against) changes exactly when that
+// happens, so its mtime is folded into the cache key: one stat() per lint
+// call instead of one full tree walk, but no longer stale after a build.
 //---------------------------------------------------------------------------
+
+// Where a full build leaves its manifest, relative to a split source tree
+// (Source/gg2 -> Source/build/template/gamedata.manifest.json). Trees that
+// are not laid out this way - the bridge payload, a scratch tree in tests -
+// have no such file, which is fine: they never gain or lose symbols outside
+// a lint call's own edit.
+function manifestMtime(trees) {
+  for (const tree of trees) {
+    const manifest = path.resolve(tree, '..', 'build', 'template', 'gamedata.manifest.json');
+    try {
+      return `${manifest}@${fs.statSync(manifest).mtimeMs}`;
+    } catch (e) {
+      continue;
+    }
+  }
+  return '';
+}
 
 let ctxCache = { key: null, ctx: null };
 
 function context(trees, gm8Dir) {
-  const key = JSON.stringify([trees, gm8Dir]);
+  const key = JSON.stringify([trees, gm8Dir, manifestMtime(trees)]);
   if (ctxCache.key === key) return ctxCache.ctx;
 
   const syms = loadProject(trees[0]);

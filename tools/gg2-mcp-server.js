@@ -312,11 +312,23 @@ async function watched(where, fn) {
   if (silent) errors.push({ text: silent, located: describeError(silent) || silent.slice(0, 200) });
   if (errors.length === 0) return reply;
 
+  // A stuck-in-a-loop error (the same dialog raised every frame of a call
+  // that ran for a while) produces many byte-identical entries here - all
+  // signal-free repeats past the first. The count is still useful, as a cheap
+  // proxy for how many frames the call took, so it is kept - just not the text.
+  const collapsed = [];
+  for (const e of errors) {
+    const last = collapsed[collapsed.length - 1];
+    if (last && last.text === e.text) last.count++;
+    else collapsed.push({ ...e, count: 1 });
+  }
+  const suffix = (e) => (e.count > 1 ? ` (x${e.count})` : '');
+
   throw new Error(
     'The game reported an error during this call, so the reply cannot be trusted.\n' +
-      errors.map((e) => '  ' + e.located).join('\n') +
+      collapsed.map((e) => '  ' + e.located + suffix(e)).join('\n') +
       '\n\n' +
-      errors.map((e) => e.text.split('\n').map((l) => '  | ' + l).join('\n')).join('\n') +
+      collapsed.map((e) => e.text.split('\n').map((l) => '  | ' + l).join('\n') + suffix(e)).join('\n') +
       `\n\nThe bridge replied: ${JSON.stringify(reply)} - for a failed expression that is 0, not a real value.`
   );
 }
@@ -451,8 +463,9 @@ const TOOLS = [
     description:
       'Run GML code inside the running game for its side effects. Returns nothing on success. ' +
       'GM8-era GML only: no ternary, no try/catch, no structs, no modern functions like array_length. ' +
-      'The code is linted against the installed Game Maker 8 before being sent, and refused if it ' +
-      'would not compile, because a syntax error freezes the game on a modal dialog.',
+      'Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants ' +
+      'escaped text. The code is linted against the installed Game Maker 8 before being sent, and ' +
+      'refused if it would not compile, because a syntax error freezes the game on a modal dialog.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -468,7 +481,8 @@ const TOOLS = [
     name: 'gg2_evalx',
     description:
       'Evaluate a single GML expression in the running game and return its value as a string. ' +
-      'Use this to inspect live state, e.g. "room_speed", "instance_number(Player)", "global.currentMap".',
+      'Use this to inspect live state, e.g. "room_speed", "instance_number(Player)", "global.currentMap". ' +
+      'Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -484,7 +498,9 @@ const TOOLS = [
     name: 'gg2_state',
     description:
       'Return a structured snapshot of the running game: current room, fps, room speed, host/dedicated flags, ' +
-      'and the connected players with their name, team and class. Encoded as GGON, the game\'s own JSON-like format.',
+      'and the connected players with their name, team and class - plus x, y and hp for any player who ' +
+      'currently has a Character (omitted between a death and a respawn). Encoded as GGON, the game\'s own ' +
+      'JSON-like format.',
     inputSchema: { type: 'object', properties: { ...INSTANCE_ARG }, additionalProperties: false },
   },
   {
@@ -556,7 +572,8 @@ const TOOLS = [
       'Let the game run until a GML expression becomes true, or give up after a number of frames. Use it instead ' +
       'of polling gg2_evalx: the condition is tested every frame inside the game, so nothing that is true for ' +
       'two frames is missed. The expression is linted first - a broken one would raise an error dialog on every ' +
-      'frame of the budget.',
+      'frame of the budget. Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event ' +
+      'which wants escaped text.',
     inputSchema: {
       type: 'object',
       properties: {

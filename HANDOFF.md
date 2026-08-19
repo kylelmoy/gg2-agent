@@ -1,11 +1,13 @@
 # State of the live bridge
 
 Everything in [`CLAUDE.md`](CLAUDE.md) is built and the Node half is tested
-(`node tools/selftest.js`, ~3s, no Game Maker). The GML half has run against a
-real game repeatedly, most recently on 2026-08-19, and the two problems this
-document used to describe - the client bridge dying, and held movement input
-having no route into the game - are both fixed and verified live. Nothing here
-is currently blocked.
+(`node tools/selftest.js`, ~3s, no Game Maker; 46 checks as of this pass). The
+GML half has run against a real game repeatedly, most recently on 2026-08-19,
+and the problems this document used to describe - the client bridge dying,
+held movement input having no route into the game, the `AudioControl`/`CTFHUD`
+"winners" bug and the `fps:4` death spiral it caused, a stale lint cache after
+a full build, and `watched()`'s error reports repeating the same dialog dozens
+of times - are all fixed and verified live. Nothing here is currently blocked.
 
 Also re-checked this pass: `node tools/session.js start --clients 2` comes up
 clean (zero `AgentBridge` errors in either client's log, both bridges answer
@@ -44,12 +46,11 @@ not needed to fix the client case above - the anchor move alone did that - but
 costs one check a frame and turns any future "Create didn't run" into a working
 bridge instead of a dialog-per-frame loop.
 
-Related, not fixed (out of scope - pre-existing game code, unrelated to the
-bridge): `CTFHUD` raised "Unknown variable winners" for a few frames early in
-the same client session. Never chased down; possibly the same
-create-during-a-pending-room-change pattern showing up somewhere else in the
-game's own flow (a `Menu` -> map transition, say), possibly unrelated. Worth
-keeping in mind if something else is ever found "created but uninitialized."
+Related, and now also fixed - see "The `AudioControl`/`CTFHUD` 'winners' bug,
+and the `fps:4` mystery" below: `AudioControl`, created a few lines after
+`Client` in `game_init.gml`, fell in the exact same corrupted window and
+stayed broken for the rest of every session, with consequences well beyond
+itself.
 
 ## Held movement input - implemented and verified live
 
@@ -173,9 +174,135 @@ for the read.
 - **Freezing stops the network.** `FREEZE` deactivates the objects that service
   connections too, so a frozen client or server falls behind and may drop. Fine
   for inspecting one game, needs care inside a session.
-- **A dedicated server + one client on the same box runs noticeably slower
-  than 30fps** under some conditions seen this pass (`STATE` reported `fps:4`
-  briefly on the client). Not chased down - possibly two GM8 processes
-  contending for the same core, possibly unrelated. If a `gg2_wait`/`STEP` call
-  seems to be taking far longer in wall-clock time than its frame count should,
-  check `STATE`'s `fps` before assuming something is stuck.
+- **A frozen instance's own fields cannot be read from outside it - confirmed,
+  root-caused and now documented in `CLAUDE.md`.** `FREEZE` calls
+  `instance_deactivate_all(true)`, and GM8 makes a deactivated instance's data
+  unreachable by any external reference at all, `with()` included - not just
+  the built-ins a Create event would have set, but plain built-ins like `.x`
+  too. Clean repro: create a throwaway instance, `gg2_step 1`, then
+  `gg2_evalx` its `.x` with no `gg2_screenshot` in between - "Unknown variable
+  x" every time, for an instance that reads fine a frame later after
+  `gg2_resume`. `instance_activate_object(id)` before the read works and does
+  not itself advance anything, since nothing steps again until the game is
+  actually resumed - the same trick `gg2_screenshot` already uses, just
+  aimed at one instance instead of everything.
+
+## The `AudioControl`/`CTFHUD` "winners" bug, and the `fps:4` mystery - fixed (2026-08-19)
+
+This turned out to be one root cause with three visible symptoms, all
+previously logged separately in this document and elsewhere as unrelated:
+`AudioControl.currentSong` reads as "Unknown variable" forever once a session
+hits it, `CTFHUD` (and every other gamemode HUD reading `global.winners`)
+throws "Unknown variable winners" every single frame from room start onward,
+and a client or server sharing a box with another instance was seen running
+at a hard `fps:4` with no obvious cause.
+
+**Root cause**, found by tracing the error chain in `game_errors.log` rather
+than treating the three as independent: `game_init.gml` used to create
+`AudioControl` and `SSControl` at lines 342-343, well after
+`instance_create(0,0,Client)` at line 322 - and `Client`'s Create event queues
+a deferred `room_goto_fix`, the exact corrupted-window quirk this document
+already diagnosed and fixed for `AgentBridge` (see "The client bridge dying"
+above). `AudioControl` came out of that window with `currentSong` never set.
+Every room's own creation code (`Scripts/Maps/basicRoomSetup.gml`) calls
+`AudioControlPlaySong` near its end, which throws on `AudioControl.currentSong`
+- and a runtime error inside a called script aborts the rest of *that* script,
+which is why `global.winners = -1;` two lines later in the same
+`basicRoomSetup.gml` never ran. `global.winners` stayed permanently unbound,
+so every gamemode HUD's `Step` event - `CTFHUD`, `ArenaHUD`, `ControlPointHUD`,
+`KothHUD`, ... - threw on every single frame for the rest of the room's life.
+Each throw is a real GM8 modal, the game's own loop blocks on it, and
+`launcher.js`'s dialog-clearing loop (`tools/launcher.js`) only polls every
+`POLL_MS` (250ms): error → modal → block → dismissed on the next tick → one
+frame runs → error again. That closed loop is exactly what caps a game at
+`~1000/POLL_MS` ≈ 4 fps for as long as the bug is live - the unexplained
+`fps:4` this document and others had separately shrugged off as "possibly two
+GM8 processes contending for a core."
+
+**Fix**: moved both `instance_create(0, 0, AudioControl);` and
+`instance_create(0, 0, SSControl);` to right after
+`instance_create(0,0,RoomChangeObserver);`, the first line of `game_init()` -
+before `Client` and its deferred room change can exist, mirroring the
+`AgentBridge`/`INIT_ANCHOR` fix exactly. Neither object's Create event depends
+on anything set up between the old and new positions (both just guard against
+a duplicate instance and touch `working_directory`).
+
+**Verified live**, `node build-fast.js --launch` then `gg2_session start
+--clients 1 --map ctf_truefort`: `gg2_state` on both `server` and `client1`
+stayed clean (no "the game reported an error" from `watched()`) through a
+player join, a `gg2_eval`-driven `botAdd` spawning a real Character, and
+`gg2_wait`/`gg2_state` polling throughout - `fps:30` the entire time, where
+the same sequence used to degrade to `fps:4` and every call after the first
+error carried a growing dialog banner. `gg2_test` still reports `test_ggon:
+31/31` afterward.
+
+## Smaller fixes verified live this same pass (2026-08-19)
+
+- **The lint gate went stale after a full `build-agent.js` build.**
+  `gml-lint.js`'s `context()` cached GM8's fnames and the project's script/
+  object list for the life of the process, keyed only on `(trees, gm8Dir)` -
+  which never changes across a build, so a script added by a later full build
+  kept reporting `"newScript" is not a GM8 built-in, a project script, or a
+  known extension function` until the `gg2` MCP server itself was restarted.
+  Fixed by folding the mtime of `Source/build/template/gamedata.manifest.json`
+  - the file a full build already writes, and the same one `build-fast.js`
+  checks a tree hash against - into the cache key: one `stat()` per lint call
+  instead of one full tree walk, but no longer stale. Covered by a new
+  `tools/selftest.js` case (adding a script alone doesn't invalidate the
+  cache; rewriting the manifest does).
+- **`watched()`'s error report had no deduplication.** A stuck-in-a-loop error
+  (the `winners` bug above, before it was fixed, is exactly this case)
+  produced many byte-identical copies of the same dialog block in one
+  response. Consecutive identical entries now collapse to one copy plus an
+  `(xN)` count - verified live against the real bug before it was fixed
+  (`(x3)`/`(x14)`-style collapses in the actual error text) and with a
+  `tools/selftest.js` case using a fake bridge that raises the same dialog
+  four frames running.
+- **`gg2_state` now includes `x`, `y` and `hp`** for any player whose
+  `Player.object` currently points at a live Character (omitted between a
+  death and a respawn, the same guard the game's own code uses before
+  touching `.object`). Verified live: a spectator shows no `x`/`y`/`hp`, a
+  `botAdd`-spawned Heavy shows `{x:1632,y:474.47,hp:120,...}`.
+- **`gg2_eval`/`gg2_evalx`/`gg2_wait`'s descriptions now say outright** not to
+  HTML/XML-escape `<`/`>`/`&` - the opposite of what `gg2_event` wants - since
+  a session alternating between the two had twice sent `&gt;`/`&amp;`
+  literally instead of `>`/`&`.
+- **Checked and found already fixed, not a live bug**: a report that
+  `gg2_wait`'s `expr` skips the lint gate `gg2_eval`'s `code` goes through.
+  Current code (`gg2-mcp-server.js`, `case 'gg2_wait'`) calls `lintOrThrow`
+  before sending `WAIT`, and has since commit `ae31907` - the same day the
+  report was written. Most likely explanation: the report came from an MCP
+  server process that had been running since before that commit landed, which
+  is the same class of staleness as the lint-cache bug above, just for this
+  file's own code instead of the game's. Node does not hot-reload a required
+  module - a `tools/gg2-mcp-server.js` edit needs the MCP server process
+  restarted to take effect, same as a game code edit needs `gg2_rebuild`.
+  Worth remembering if a bug report and the code on disk ever disagree again.
+
+## Still open
+
+- **Detect an RDP session before attempting to launch, and fail fast with the
+  actual fix**, instead of a ~10-60s generic timeout. GM8 hangs on a "no audio
+  device" modal over RDP (see "An audio device is required" in `CLAUDE.md`),
+  and the only diagnosis an agent currently gets is a `gg2_session`/`gg2_ping`
+  timeout suggesting a stuck modal - it has to separately notice the pattern
+  and know it is RDP-specific. `query session` (or `GetSystemMetrics(
+  SM_REMOTESESSION)` via `win32.js`, which already talks Win32) before
+  spawning the game is one deterministic check; `run-agent.js`/`launcher.js`
+  could refuse up front with the actual fix (`tscon <id> /dest:console`), or
+  at least put that sentence in the timeout error. Checked for an existing
+  escape hatch first: `global.forceAudioFix`/`Scripts/Sound/playsound.gml` is
+  a Windows-8-crash workaround for `sound_play`, not a device-init guard - the
+  crash this hits is in the initial `sound_add()` calls in `game_init.gml`,
+  before any ini flag could matter. Not done this pass.
+- **Pre-allocated "spare" script slots, mirroring `AgentSpare0..3` for
+  objects, would remove the single biggest recurring build cost in a
+  milestone-shaped session.** `gg2_rebuild`'s ~3s splice correctly refuses
+  when a resource list changes, so every *new* named script still costs a
+  full ~1-minute `build-agent.js` run. The same pre-compiled-placeholder trick
+  that already exists for objects (`AgentSpare0..3`) would work for scripts -
+  a handful of `AgentScriptSpare0..N` `.gml` files with placeholder bodies,
+  registered once, spliceable at ~3s thereafter. Should be simpler than
+  `AgentSpare` was, since a script has no id/parent/sprite to register. Not
+  done this pass - would need a full build to add the slots in the first
+  place, then verification that a splice into one actually works.
