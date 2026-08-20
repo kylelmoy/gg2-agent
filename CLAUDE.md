@@ -45,7 +45,8 @@ Then drive the running game with the MCP tools:
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
 | `gg2_screenshot` | look at the game; works while it is frozen |
-| `gg2_nav_map` | visualise bot nav-graph reachability (green/red overlay) over the real map |
+| `gg2_map_image` | full-resolution map art, no camera involved; `overlay: true` adds bot nav-graph reachability |
+| `gg2_area_shot` | full-resolution **live** screenshot of an area bigger than one window, tiled and stitched |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
 | `gg2_input` | press, release and click; `aim` is currently broken, see below |
@@ -75,18 +76,45 @@ that gap, and between them they cover almost every "why did it do that":
 - **`gg2_watch`** samples up to eight expressions every frame and writes changes
   to the bridge log; `gg2_log` is how you read the trace back.
 
-**`gg2_nav_map`** is `gg2_screenshot` plus a purpose-built overlay for one recurring
-question: "why can't a bot get from here to there?" It runs a directed BFS over the bot
-nav graph (`Gang-Garrison-2`'s `Scripts/BotNav/`) from a start point — a bot's own
-position by default — and renders every node as a bar, green if reached and red if not,
-at whatever view you ask for (the whole map by default). A screenshot answers in one look
-what used to take a dozen `gg2_eval` round-trips summing edges by hand: green stopping
-dead at a wall or a platform edge is immediately visible, and it is what root-caused a
-real bug in `navJumpFlight` this way (2026-08-20 — a steep jump-up was being rejected;
-see `Gang-Garrison-2`'s bot plan for the detail). It also hides `TeamSelectController`
-for the shot — that HUD panel is fixed in screen space over the top of the room
-regardless of the view, and covers most of a full-map screenshot otherwise — and
-restores it afterward. The underlying pieces (`agentNavReach`, `agentBridgeDraw`) live
+**`gg2_map_image` and `gg2_area_shot` answer two different questions that look similar.**
+The first is "what does the map look like" (or "why is the nav graph disconnected here");
+the second is "what is actually happening on the map right now."
+
+- **`gg2_map_image`** doesn't touch the camera at all — it reads the map's own
+  `Included Files/<name>.png` directly off disk (every built-in map ships as exactly this
+  art, at native map-pixel resolution, e.g. `koth_valley` is 804×170 - checked against all
+  22) and, if asked, plots the bot nav graph on top: a directed BFS from a start point
+  (a bot's own position by default), green if reached and red if not, one bar per node.
+  A nav cell is exactly one map pixel (F10's ×6 world-scale constant is the same
+  `NAV_CELL_SIZE`), so the overlay needs no coordinate conversion. This is what
+  root-caused a real `navJumpFlight` bug (2026-08-20 — a steep jump-up was being
+  rejected; see `Gang-Garrison-2`'s bot plan for the detail): a screenshot answered in
+  one look what used to take a dozen `gg2_eval` round-trips summing edges by hand, and
+  because it never goes through the game's own renderer there is no camera distortion,
+  no window-resolution cap, and nothing to stitch. This replaced an earlier `gg2_nav_map`
+  that *did* screenshot the live camera, and had exactly those problems - most visibly,
+  a wide map squashed to fit an ~4:3 window (GM8 scales each view axis independently, so
+  a rectangle whose aspect ratio doesn't already match the window comes out warped) -
+  worth knowing if `gg2_nav_map` shows up in an old transcript. It only knows built-in
+  maps; a custom (player-uploaded) one has no fixed path on disk and gets a clear error
+  rather than a wrong image.
+- **`gg2_area_shot`** is for when the *live* game is what needs seeing at more than one
+  window's worth at a time - players, projectiles, capture progress, an actual running
+  match - which `gg2_map_image` fundamentally cannot show, since it never asks the game
+  anything beyond its current map name. It freezes the game (a camera-follow Step event
+  would otherwise reset the view before every tile's redraw - confirmed live: two tiles
+  taken without freezing came back pixel-identical), tiles the requested area into
+  window-sized shots at exact 1:1 zoom so nothing warps, and stitches them into one
+  image before resuming. Verified live: two adjacent tiles of `koth_valley` stitched with
+  a seamless terrain boundary at the tile edge. Both tools hide `TeamSelectController`
+  for the shot, since that panel is fixed in screen space over the room regardless of
+  view and would otherwise cover most of a full-map capture; `gg2_area_shot` additionally
+  documents (but does not fix) that other screen-space HUD — the gamemode's own timer
+  bar, confirmed live to repeat at the same screen position in every tile — is not
+  suppressed, so a capturing connection that is actually playing (not spectating) will
+  see its own HUD tiled across the image.
+
+The underlying pieces (`agentNavReach`, `agentNavDump`, `agentBridgeDraw`) live
 permanently in the bridge payload, not a spare, since this is meant to be reached for
 again rather than rebuilt from scratch each time.
 

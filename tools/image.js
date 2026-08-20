@@ -125,4 +125,226 @@ function toPng(buf) {
   return { png: encodePng(width, height, rgb), converted: true, width, height };
 }
 
-module.exports = { toPng, encodePng, decodeBmp, isPng, isBmp, crc32 };
+//---------------------------------------------------------------------------
+// PNG decoding
+//
+// Written for the shipped map art (Source/gg2/Included Files/*.png): every one
+// of the 22 built-in maps is 8-bit indexed, 8-bit truecolour or 4-bit indexed,
+// none interlaced (checked directly against every file in that directory).
+// Covers the other standard colour types too since it costs little more, but
+// deliberately refuses Adam7 interlacing and 16-bit samples rather than
+// guessing - neither shows up in this project's own art, so getting either
+// wrong silently would be worse than an error naming what happened.
+//---------------------------------------------------------------------------
+
+function readChunks(buf) {
+  const chunks = [];
+  let at = 8;
+  while (at + 8 <= buf.length) {
+    const len = buf.readUInt32BE(at);
+    const type = buf.toString('latin1', at + 4, at + 8);
+    const data = buf.slice(at + 8, at + 8 + len);
+    chunks.push({ type, data });
+    at += 8 + len + 4; // length + type + data + crc
+    if (type === 'IEND') break;
+  }
+  return chunks;
+}
+
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+// Reverses the per-scanline filter (PNG spec section 9), one row at a time.
+// bpp is bytes-per-pixel for filtering purposes - the distance back to "the
+// pixel to the left", which the spec defines as ceil(bitDepth*channels/8),
+// never less than 1 even when a pixel is only a few bits wide.
+function unfilterRows(inflated, width, height, bpp, stride) {
+  const out = Buffer.alloc(height * stride);
+  let at = 0;
+  for (let y = 0; y < height; y++) {
+    const filterType = inflated[at];
+    at += 1;
+    const rowIn = inflated.slice(at, at + stride);
+    at += stride;
+    const rowOut = out.slice(y * stride, y * stride + stride);
+    const prevOut = y > 0 ? out.slice((y - 1) * stride, (y - 1) * stride + stride) : null;
+
+    for (let i = 0; i < stride; i++) {
+      const x = rowIn[i];
+      const a = i >= bpp ? rowOut[i - bpp] : 0;
+      const b = prevOut ? prevOut[i] : 0;
+      const c = prevOut && i >= bpp ? prevOut[i - bpp] : 0;
+      let v;
+      switch (filterType) {
+        case 0:
+          v = x;
+          break;
+        case 1:
+          v = x + a;
+          break;
+        case 2:
+          v = x + b;
+          break;
+        case 3:
+          v = x + Math.floor((a + b) / 2);
+          break;
+        case 4:
+          v = x + paeth(a, b, c);
+          break;
+        default:
+          throw new Error(`unknown PNG filter type ${filterType} on row ${y}`);
+      }
+      rowOut[i] = v & 0xff;
+    }
+  }
+  return out;
+}
+
+// The k-th sample (0-based) in a row, for bit depths below a whole byte packed
+// MSB-first - which is only ever the index channel of a low-depth indexed
+// image here, but the unpacking is the same for grayscale too.
+function readSample(row, k, bitDepth) {
+  if (bitDepth === 8) return row[k];
+  const perByte = 8 / bitDepth;
+  const byte = row[Math.floor(k / perByte)];
+  const shift = 8 - bitDepth * ((k % perByte) + 1);
+  return (byte >> shift) & ((1 << bitDepth) - 1);
+}
+
+function decodePng(buf) {
+  if (!isPng(buf)) throw new Error('not a PNG');
+
+  const chunks = readChunks(buf);
+  const ihdr = chunks.find((c) => c.type === 'IHDR');
+  if (!ihdr) throw new Error('PNG has no IHDR');
+
+  const width = ihdr.data.readUInt32BE(0);
+  const height = ihdr.data.readUInt32BE(4);
+  const bitDepth = ihdr.data[8];
+  const colorType = ihdr.data[9];
+  const interlace = ihdr.data[12];
+
+  if (interlace !== 0) throw new Error('interlaced PNGs are not supported');
+  if (bitDepth === 16) throw new Error('16-bit-per-sample PNGs are not supported');
+  if (![0, 2, 3, 4, 6].includes(colorType)) throw new Error(`unsupported PNG colour type ${colorType}`);
+
+  const palette = chunks.find((c) => c.type === 'PLTE');
+  const trns = chunks.find((c) => c.type === 'tRNS');
+  const idat = Buffer.concat(chunks.filter((c) => c.type === 'IDAT').map((c) => c.data));
+  const inflated = zlib.inflateSync(idat);
+
+  const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
+  const bpp = Math.max(1, Math.ceil((bitDepth * channels) / 8));
+  const stride = Math.ceil((width * channels * bitDepth) / 8);
+  const rows = unfilterRows(inflated, width, height, bpp, stride);
+
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const row = rows.slice(y * stride, y * stride + stride);
+    for (let x = 0; x < width; x++) {
+      const px = (y * width + x) * 4;
+      if (colorType === 3) {
+        const idx = readSample(row, x, bitDepth);
+        if (!palette) throw new Error('indexed PNG has no PLTE chunk');
+        rgba[px] = palette.data[idx * 3];
+        rgba[px + 1] = palette.data[idx * 3 + 1];
+        rgba[px + 2] = palette.data[idx * 3 + 2];
+        rgba[px + 3] = trns && idx < trns.data.length ? trns.data[idx] : 255;
+      } else if (colorType === 0) {
+        const v = readSample(row, x, bitDepth) * (255 / (2 ** bitDepth - 1));
+        rgba[px] = rgba[px + 1] = rgba[px + 2] = v;
+        rgba[px + 3] = 255;
+      } else if (colorType === 4) {
+        const base = x * 2;
+        rgba[px] = rgba[px + 1] = rgba[px + 2] = row[base];
+        rgba[px + 3] = row[base + 1];
+      } else if (colorType === 2) {
+        const base = x * 3;
+        rgba[px] = row[base];
+        rgba[px + 1] = row[base + 1];
+        rgba[px + 2] = row[base + 2];
+        rgba[px + 3] = 255;
+      } else {
+        // colorType 6: truecolour with alpha
+        const base = x * 4;
+        rgba[px] = row[base];
+        rgba[px + 1] = row[base + 1];
+        rgba[px + 2] = row[base + 2];
+        rgba[px + 3] = row[base + 3];
+      }
+    }
+  }
+
+  return { width, height, rgba };
+}
+
+// 8-bit RGBA, no interlacing, filter type 0 throughout - the write-side twin
+// of decodePng's general case, used when the caller wants to keep whatever
+// transparency the source had (compositing an overlay onto map art, say)
+// rather than flattening it.
+function encodePngRgba(width, height, rgba) {
+  const raw = Buffer.alloc(height * (1 + width * 4));
+  for (let y = 0; y < height; y++) {
+    const at = y * (1 + width * 4);
+    raw[at] = 0;
+    rgba.copy(raw, at + 1, y * width * 4, (y + 1) * width * 4);
+  }
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type: truecolour + alpha
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  return Buffer.concat([
+    PNG_MAGIC,
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+// Nearest-neighbour upscale: exact pixel replication, no blur, which is what
+// pixel art wants. factor must be a positive integer.
+function scaleNearest(width, height, rgba, factor) {
+  if (!Number.isInteger(factor) || factor < 1) throw new Error('scale factor must be a positive integer');
+  if (factor === 1) return { width, height, rgba };
+
+  const outW = width * factor;
+  const outH = height * factor;
+  const out = Buffer.alloc(outW * outH * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const src = (y * width + x) * 4;
+      for (let dy = 0; dy < factor; dy++) {
+        const rowAt = ((y * factor + dy) * outW + x * factor) * 4;
+        for (let dx = 0; dx < factor; dx++) {
+          rgba.copy(out, rowAt + dx * 4, src, src + 4);
+        }
+      }
+    }
+  }
+  return { width: outW, height: outH, rgba: out };
+}
+
+module.exports = {
+  toPng,
+  encodePng,
+  encodePngRgba,
+  decodePng,
+  decodeBmp,
+  scaleNearest,
+  isPng,
+  isBmp,
+  crc32,
+};

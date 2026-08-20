@@ -674,29 +674,53 @@ const TOOLS = [
     },
   },
   {
-    name: 'gg2_nav_map',
+    name: 'gg2_map_image',
     description:
-      'Visualise the bot nav graph\'s reachability over the real map: every node drawn as a bar, green if a ' +
-      'directed BFS from a start point can reach it, red if not, plus a yellow circle at the start. Built for ' +
-      'diagnosing "the nav graph looks disconnected" - it turns a wall of node/edge numbers into one picture, ' +
-      'and green stopping exactly at a wall or a gap is a much faster read than tracing edges by hand. The BFS ' +
-      'is independent of team, gates and intel-carriage (it answers "can anything reach this", not "can this ' +
-      'bot") and ignores gate costs entirely. Also hides the team-select panel for the shot, since that HUD ' +
-      'sits fixed in screen space over the top of the room and would otherwise cover most of it - restored ' +
-      'afterwards. The requested rectangle (the whole map by default) is fit to the window\'s aspect ratio ' +
-      'rather than stretched to it, since GM8 scales each axis independently and a wide map straight into an ' +
-      '~4:3 window comes out visibly squashed otherwise; the extra margin this can add is letterboxed, pinned ' +
-      'to the map\'s top-left corner since GM8 will not let a view go negative to centre it. Needs ' +
-      'global.navReady (wait for it first if the map just loaded).',
+      'Full-resolution image of the map itself, straight from the game\'s own Included Files PNG - not a ' +
+      'screenshot, so there is no camera, no window-resolution cap and nothing to stitch. Every built-in map ' +
+      'ships as exactly this art at its native size (checked against all 22: e.g. koth_valley is 804x180 - ' +
+      'the map-pixel size, 1/6th of world coordinates, F10). Pass overlay: true to additionally plot the bot ' +
+      'nav graph on top, green/red by reachability from a start point (default: the first Character in the ' +
+      'room) via the same BFS gg2_nav_map used to have, plus a marker at the start - a nav cell is exactly one ' +
+      'map pixel, so this needs no unit conversion either. Built for "what does the map actually look like" ' +
+      'and "why is the nav graph disconnected here" without touching the live game beyond reading its current ' +
+      'map name and, if overlay is on, the nav graph. Custom (player-uploaded) maps are not resolvable from ' +
+      'disk yet and return a clear error rather than a wrong image - only the maps shipped in this repo work.',
     inputSchema: {
       type: 'object',
       properties: {
-        x: { type: 'number', description: 'World x to start the reachability BFS from. Default: the first Character in the room.' },
-        y: { type: 'number', description: 'World y to start the reachability BFS from. Default: the first Character in the room.' },
-        view_x: { type: 'number', description: 'Left edge of the viewport, world px. Default: 0.' },
-        view_y: { type: 'number', description: 'Top edge of the viewport, world px. Default: 0.' },
-        view_width: { type: 'number', description: 'Viewport width, world px. Default: the whole map.' },
-        view_height: { type: 'number', description: 'Viewport height, world px. Default: the whole map.' },
+        overlay: { type: 'boolean', description: 'Plot the nav graph on top, coloured by reachability. Default: false (map art alone).' },
+        x: { type: 'number', description: 'World x to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
+        y: { type: 'number', description: 'World y to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
+        scale: { type: 'integer', description: 'Nearest-neighbour upscale factor - the native map-pixel art is often small. Default: 3.' },
+        save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
+        ...INSTANCE_ARG,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'gg2_area_shot',
+    description:
+      'A full-resolution screenshot of live game state - players, projectiles, capture progress, whatever is ' +
+      'actually happening - across an area larger than one window. gg2_map_image is faster and sharper for the ' +
+      'static map itself, but it cannot show anything that moves; this is for when the *game*, not the map, is ' +
+      'what needs seeing at more than one window\'s worth at a time. Freezes the game, tiles the requested area ' +
+      '(the whole map by default) into window-sized shots at 1:1 zoom - never scaled, so nothing warps - and ' +
+      'stitches them into one image, then resumes. Freezing first means every tile comes from the same instant ' +
+      'instead of a game that kept moving between shots, which would otherwise show as seams. Hides the ' +
+      'team-select panel for the same reason gg2_map_image and the old gg2_nav_map did; other screen-space HUD ' +
+      '(kill log, the gamemode\'s own timer bar, a HUD tied to a character the capturing connection itself is ' +
+      'playing) is not suppressed and will repeat at the same screen position in every tile if visible - using ' +
+      'a spectating/non-playing connection to capture avoids most of it. Large areas mean many tiles: a big map ' +
+      'at the default window size can take a couple of dozen round trips, seconds not milliseconds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Left edge of the area to cover, world px. Default: 0.' },
+        y: { type: 'number', description: 'Top edge of the area to cover, world px. Default: 0.' },
+        width: { type: 'number', description: 'Area width, world px. Default: the whole map.' },
+        height: { type: 'number', description: 'Area height, world px. Default: the whole map.' },
         save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
         ...INSTANCE_ARG,
       },
@@ -1070,113 +1094,181 @@ async function callTool(name, args) {
       ];
     }
 
-    case 'gg2_nav_map': {
+    case 'gg2_map_image': {
+      const where = target(args.instance);
+      const scale = args.scale ?? 3;
+      if (!Number.isInteger(scale) || scale < 1) throw new Error('scale must be a positive integer');
+
+      const mapName = await watched(where, () => command(where, 'EVALX global.currentMap'));
+      const mapFile = path.join(TREE, 'Included Files', `${mapName}.png`);
+      if (!fs.existsSync(mapFile)) {
+        throw new Error(
+          `no map art at ${mapFile} - custom (player-uploaded) maps are not resolvable from disk yet, ` +
+            'only maps shipped in this repo'
+        );
+      }
+
+      let overlayText = '';
+      let nodes = null;
+      if (args.overlay) {
+        let sx = args.x;
+        let sy = args.y;
+        if (sx === undefined || sy === undefined) {
+          const has = await watched(where, () => command(where, 'EVALX instance_exists(Character)'));
+          if (has !== '1') {
+            throw new Error(
+              'no Character in the room to default a start point from - pass x and y explicitly, ' +
+                'or add one first (botAdd, or have a client join)'
+            );
+          }
+          const pos = await watched(where, () => command(where, 'EVALX string(Character.x) + "," + string(Character.y)'));
+          const [cx, cy] = pos.split(',').map(Number);
+          if (sx === undefined) sx = cx;
+          if (sy === undefined) sy = cy;
+        }
+
+        const reached = await watched(where, () => command(where, `EVALX agentNavReach(${sx}, ${sy})`));
+        if (reached === '-1') {
+          throw new Error(
+            'agentNavReach returned -1: either the nav graph is not built yet (wait on global.navReady) ' +
+              `or (${sx}, ${sy}) does not resolve to a node at all`
+          );
+        }
+
+        const dump = await watched(where, () => command(where, 'EVALX agentNavDump()'));
+        nodes = dump
+          .split(';')
+          .filter(Boolean)
+          .map((entry) => {
+            const [anchorY, x0, x1, r] = entry.split(',').map(Number);
+            return { anchorY, x0, x1, r };
+          });
+        overlayText = `, ${reached} nodes reached from (${sx}, ${sy})`;
+      }
+
+      const { width, height, rgba } = image.decodePng(fs.readFileSync(mapFile));
+
+      if (nodes) {
+        const GREEN = [0, 255, 0, 255];
+        const RED = [255, 0, 0, 255];
+        const UNKNOWN = [80, 140, 255, 255];
+        const setPx = (x, y, color) => {
+          if (x < 0 || x >= width || y < 0 || y >= height) return;
+          const at = (y * width + x) * 4;
+          rgba[at] = color[0];
+          rgba[at + 1] = color[1];
+          rgba[at + 2] = color[2];
+          rgba[at + 3] = color[3];
+        };
+        for (const n of nodes) {
+          const color = n.r === 1 ? GREEN : n.r === 0 ? RED : UNKNOWN;
+          for (let x = n.x0; x <= n.x1; x++) {
+            setPx(x, n.anchorY, color);
+            setPx(x, n.anchorY - 1, color);
+          }
+        }
+      }
+
+      const scaled = image.scaleNearest(width, height, rgba, scale);
+      const png = image.encodePngRgba(scaled.width, scaled.height, scaled.rgba);
+      if (args.save_to) fs.writeFileSync(args.save_to, png);
+
+      return [
+        { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
+        {
+          type: 'text',
+          text:
+            `${mapName}: ${scaled.width}x${scaled.height} (native ${width}x${height}, ${scale}x)${overlayText}` +
+            (args.save_to ? `, saved to ${args.save_to}` : ''),
+        },
+      ];
+    }
+
+    case 'gg2_area_shot': {
       const where = target(args.instance);
 
-      // Ports and map size, always needed for the view defaults.
       const dims = await watched(where, () =>
         command(where, 'EVALX string(view_wport[0]) + "," + string(view_hport[0]) + "," + string(map_width()) + "," + string(map_height())')
       );
       const [wport, hport, mapW, mapH] = dims.split(',').map(Number);
 
-      let sx = args.x;
-      let sy = args.y;
-      if (sx === undefined || sy === undefined) {
-        const has = await watched(where, () => command(where, 'EVALX instance_exists(Character)'));
-        if (has !== '1') {
-          throw new Error(
-            'no Character in the room to default a start point from - pass x and y explicitly, ' +
-              'or add one first (botAdd, or have a client join)'
-          );
-        }
-        const pos = await watched(where, () => command(where, 'EVALX string(Character.x) + "," + string(Character.y)'));
-        const [cx, cy] = pos.split(',').map(Number);
-        if (sx === undefined) sx = cx;
-        if (sy === undefined) sy = cy;
-      }
+      const rx0 = args.x ?? 0;
+      const ry0 = args.y ?? 0;
+      const rw = Math.ceil(args.width ?? mapW);
+      const rh = Math.ceil(args.height ?? mapH);
+      const cols = Math.ceil(rw / wport);
+      const rows = Math.ceil(rh / hport);
 
-      // The requested content rectangle, before fitting it to the port.
-      const cx0 = args.view_x ?? 0;
-      const cy0 = args.view_y ?? 0;
-      const cw = args.view_width ?? mapW;
-      const ch = args.view_height ?? mapH;
+      const canvas = Buffer.alloc(rw * rh * 4);
+      const shot = path.join(BUILD_DIR, `agent_shot_${where.port}.png`);
 
-      // GM8 stretches view_w/hview to fill view_w/hport independently on each axis, so
-      // handing it the content rectangle as-is warps anything whose aspect ratio does
-      // not already match the port (a wide map into an ~4:3 window comes out visibly
-      // squashed horizontally). Expand the shorter axis to match the port's aspect
-      // ratio instead - a letterbox/pillarbox fit, centred on the requested rectangle -
-      // so the map's own proportions are preserved and the extra margin is just more
-      // room background, not a distortion.
-      const portAspect = wport / hport;
-      const contentAspect = cw / ch;
-      let vw, vh;
-      if (contentAspect > portAspect) {
-        vw = cw;
-        vh = cw / portAspect;
-      } else {
-        vh = ch;
-        vw = ch * portAspect;
-      }
-      const vx = cx0 - (vw - cw) / 2;
-      const vy = cy0 - (vh - ch) / 2;
-
-      const reached = await watched(where, () => command(where, `EVALX agentNavReach(${sx}, ${sy})`));
-      if (reached === '-1') {
-        throw new Error(
-          'agentNavReach returned -1: either the nav graph is not built yet (wait on global.navReady) ' +
-            `or (${sx}, ${sy}) does not resolve to a node at all`
-        );
-      }
-
-      const setup =
-        `with(TeamSelectController) visible = false;\n` +
-        `view_enabled = true;\n` +
-        `view_visible[0] = true;\n` +
-        `view_object[0] = -1;\n` +
-        `view_xview[0] = ${vx};\n` +
-        `view_yview[0] = ${vy};\n` +
-        `view_wview[0] = ${vw};\n` +
-        `view_hview[0] = ${vh};\n` +
-        `view_wport[0] = ${wport};\n` +
-        `view_hport[0] = ${hport};\n` +
-        `global.agentNavOverlay = true;`;
-      lintOrThrow(setup);
-
-      const cleanup = `global.agentNavOverlay = false;\nwith(TeamSelectController) visible = true;`;
-      lintOrThrow(cleanup);
-
-      let result;
+      let frozen = false;
       try {
-        await watched(where, () => command(where, 'EVAL ' + setup));
+        await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = false;'));
+        await watched(where, () => command(where, 'FREEZE'));
+        frozen = true;
 
-        const shot = path.join(BUILD_DIR, `agent_shot_${where.port}.png`);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const tileX = rx0 + c * wport;
+            const tileY = ry0 + r * hport;
+            const view =
+              `view_enabled = true;\n` +
+              `view_visible[0] = true;\n` +
+              `view_object[0] = -1;\n` +
+              `view_xview[0] = ${tileX};\n` +
+              `view_yview[0] = ${tileY};\n` +
+              `view_wview[0] = ${wport};\n` +
+              `view_hview[0] = ${hport};\n` +
+              `view_wport[0] = ${wport};\n` +
+              `view_hport[0] = ${hport};`;
+            lintOrThrow(view);
+            await watched(where, () => command(where, 'EVAL ' + view));
+
+            try {
+              fs.rmSync(shot, { force: true });
+            } catch (e) {
+              /* an old shot that cannot be removed is about to be overwritten */
+            }
+            await watched(where, () => command(where, 'SHOT ' + shot));
+            if (!fs.existsSync(shot)) throw new Error(`the game reported success but wrote no file to ${shot} (tile ${c},${r})`);
+            const { png } = image.toPng(fs.readFileSync(shot));
+            const tile = image.decodePng(png);
+
+            // Place this tile into the canvas, clipped to both the tile's own bounds
+            // and the canvas's - the rightmost/bottommost tiles usually overshoot the
+            // requested area, since it need not be a multiple of the window size.
+            const destX = c * wport;
+            const destY = r * hport;
+            const copyW = Math.min(tile.width, rw - destX);
+            const copyH = Math.min(tile.height, rh - destY);
+            if (copyW > 0 && copyH > 0) {
+              for (let ty = 0; ty < copyH; ty++) {
+                tile.rgba.copy(canvas, ((destY + ty) * rw + destX) * 4, ty * tile.width * 4, ty * tile.width * 4 + copyW * 4);
+              }
+            }
+          }
+        }
+      } finally {
         try {
           fs.rmSync(shot, { force: true });
         } catch (e) {
-          /* an old shot that cannot be removed is about to be overwritten */
+          /* best effort */
         }
-        await watched(where, () => command(where, 'SHOT ' + shot));
-        if (!fs.existsSync(shot)) throw new Error(`the game reported success but wrote no file to ${shot}`);
-        const raw = fs.readFileSync(shot);
-        const { png, converted, width, height } = image.toPng(raw);
-        fs.rmSync(shot, { force: true });
-        if (args.save_to) fs.writeFileSync(args.save_to, png);
-
-        result = [
-          { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
-          {
-            type: 'text',
-            text:
-              `${where.name}: ${width}x${height}${converted ? ' (converted from the bitmap GM8 wrote)' : ''}, ` +
-              `${reached} nodes reached from (${sx}, ${sy})` +
-              (args.save_to ? `, saved to ${args.save_to}` : ''),
-          },
-        ];
-      } finally {
-        await watched(where, () => command(where, 'EVAL ' + cleanup));
+        if (frozen) await watched(where, () => command(where, 'RESUME'));
+        await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = true;'));
       }
-      return result;
+
+      const png = image.encodePngRgba(rw, rh, canvas);
+      if (args.save_to) fs.writeFileSync(args.save_to, png);
+
+      return [
+        { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
+        {
+          type: 'text',
+          text: `${where.name}: ${rw}x${rh} (${cols}x${rows} tiles of ${wport}x${hport})` + (args.save_to ? `, saved to ${args.save_to}` : ''),
+        },
+      ];
     }
 
     case 'gg2_step': {
