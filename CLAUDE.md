@@ -224,11 +224,15 @@ together and reports `file:line`.
 running game and reports how many assertions passed. The game's code is not
 modified to accommodate it, and must not be.
 
-Getting an answer out takes one trick, because the obvious route is closed.
-**GM8's message box cannot be read.** Its form holds exactly one windowed
-control, the OK button; the text is drawn straight onto the form, so no Win32
-call will produce it — the launcher can count the boxes and nothing more. The
-assertion *counters* behind those messages are readable, though:
+Getting an answer out takes one trick, because the obvious route is unreliable.
+**GM8's message box is only sometimes readable.** The launcher watches
+`TMessageForm` alongside the error dialog and reads its child controls the same
+way, so an assertion's text often does come through and lands in the launcher
+log — but Delphi paints some captions with no window handle at all, and those
+come back as `(dialog had no readable text)`. Good enough to report against,
+never enough to depend on; if a failure is not named, look at `gg2_log` with
+`source: "launcher"` before assuming the text was lost. The assertion
+*counters* behind those messages are exact, though:
 `test_unit_begin` zeroes them, every assertion moves them, and `test_unit_end`
 is the only thing that resets them — after it has shown its message. So the tool
 evaluates the suite's own source with its `test_unit_end()` call removed, then
@@ -236,8 +240,10 @@ reads `global.testAssertions` and `global.testAssertionsSucceeded` directly.
 Same code, minus the one line whose only job is to report and forget.
 
 A failed assertion still shows a box; the launcher dismisses it, so a failing
-suite does not hang the game, and the count of boxes says how many failed even
-though their text does not survive.
+suite does not hang the game, and the counters say how many failed even when the
+text of a particular box did not survive. A suite that stops mid-run — an error,
+or a call that never comes back — fails by name, since a whole-run call cannot
+otherwise say which suite it stopped in.
 
 `node tools/selftest.js` is the other half: it exercises this repo's own Node
 modules against a fake bridge and a scratch copy of the tree, in about three
@@ -248,7 +254,12 @@ seconds and with no Game Maker anywhere. Run it after changing anything under
 
 GM8 has no exceptions. A GML error raises a **modal dialog** that freezes the
 game and every pending MCP call. If a tool call times out, that is almost
-certainly what happened — check `gg2_log`, then look at the game window.
+certainly what happened — and the timeout says so itself: the launcher writes
+every dialog it dismisses to disk while a call is in flight, so a call that
+never gets a reply is explained from the same evidence as one that fails
+normally, repeat counts and `file:line` included. A timeout that reports *no*
+dialog is a different animal — a long loop, a stopped game, or a dead one — and
+says that instead of guessing.
 
 `gg2_eval` guards against this: it lints your code against the installed Game
 Maker 8 first and refuses anything that would not compile, so the freeze mostly
@@ -305,6 +316,19 @@ exactly what broke.
   that text, instead of the `0` the bridge would otherwise report, and located as
   `file:line` by `tools/gmlerror.js`. `gg2_log` with `source: "launcher"` shows
   the same history.
+- **A live server runs its own code every tick, and an out-of-band call that
+  touches the same global corrupts it.** `gg2_eval`/`gg2_test` run inside the
+  same process as whatever the game is doing on its own schedule — a Step event,
+  a server's per-frame service, a chunked background build. Anything they share
+  (a `global.` accumulator, a data structure id) can be destroyed out from under
+  the server mid-use, and from then on the server's *own* per-tick code raises
+  the same error every frame, forever, with nothing to do with the call that
+  caused it. No amount of waiting fixes it: `gg2_session stop` then `start` is
+  the only cure, and the tooling now says so when it sees an error repeating
+  frame after frame. Before the first risky call of a session, check the
+  relevant script's docstring for a warning like `navEdgesBegin`'s, and
+  `gg2_wait` on whatever says that background job is idle. Freezing instead
+  would trade this hazard for another — `FREEZE` drops network clients.
 - **`E|` is an error, `M|` is a message.** The launcher marks the two kinds of
   dialog differently in its log, because the game's unit tests report through
   `show_message` and a failed assertion is a result, not a crash. Anything

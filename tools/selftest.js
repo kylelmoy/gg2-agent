@@ -190,7 +190,33 @@ function startFakeBridge(port) {
               ]);
             }
             reply('OK 0');
-          } else if (rest.includes('notAFunctionAnywhere')) {
+          } else if (rest.includes('neverAnswers')) {
+          // A game that is wedged: dialogs pile up in the launcher log while
+          // the call is in flight, and no reply ever comes. Everything the
+          // caller will be told has to come out of that log.
+          for (let i = 0; i < 3; i++) {
+            appendDialog(port, 'E', [
+              'ERROR in',
+              'action number 1',
+              'of  Step Event',
+              'for object CTFHUD:',
+              '',
+              'Error in code at line 36:',
+              '   if (global.winners == -1)',
+              '        ^',
+              'at position 8: Unknown variable winners',
+            ]);
+          }
+          appendDialog(port, 'M', ['Assertion 7 failed: 1 should be equal to 2']);
+          // no reply, on purpose
+        } else if (rest.includes('quietlyNeverAnswers')) {
+          // The other wedge: nothing in the log at all, which means the game is
+          // not stopped on a dialog and the caller must be told something else.
+        } else if (rest.includes('answersTooLate')) {
+          // A game that was only slow. Its reply arrives after the caller has
+          // given up, and must not be handed to whoever asks next.
+          setTimeout(() => reply('OK stale'), 400);
+        } else if (rest.includes('notAFunctionAnywhere')) {
             // A compilation error inside execute_string: no dialog anywhere,
             // just a line in the engine's own log and a cheerful "OK 0".
             fs.appendFileSync(
@@ -202,6 +228,10 @@ function startFakeBridge(port) {
           } else if (rest.trim() === 'test_unit_begin();') {
             counters = { total: 0, succeeded: 0 }; // the reset between suites
             reply('OK');
+          } else if (rest.includes('test_wedged')) {
+            // A suite that goes wrong mid-run. Which suite it was is the one
+            // thing a whole-run failure cannot say for itself.
+            reply('ERR the game gave up on this one');
           } else if (rest.includes('file_text_open_read')) {
             // gg2_test's default path: the game opens its own suite file
             // rather than being sent its source. A wrong path here should
@@ -426,6 +456,53 @@ async function main() {
     check('and the raw dialog text is not repeated four times', message.split('Unknown variable winners').length - 1 === 2, message);
   }
 
+  // A call that never comes back used to throw away every diagnostic the
+  // launcher had already written down, and guess instead - so the same failure
+  // read as a full report or as nothing at all, depending only on whether the
+  // reply beat the clock. These go through command() directly: every tool's
+  // timeout is measured in seconds, and a test that waits one out is a test
+  // nobody runs.
+  process.stdout.write('\ntimeout diagnosis\n');
+  {
+    const fake = { name: 'fake', port: PORT };
+    const failed = async (text, timeoutMs) => {
+      try {
+        await mcp.command(fake, text, timeoutMs);
+        return '';
+      } catch (e) {
+        return e.message;
+      }
+    };
+
+    // The game answers in order, one reply per request, so a reply that arrives
+    // after its caller gave up must be swallowed rather than handed to whoever
+    // asks next - an answer that belongs to the previous call is exactly the
+    // plausible wrong answer the rest of this file exists to prevent.
+    contains('a slow reply times out', await failed('EVALX global.answersTooLate', 200), 'did not reply');
+    await new Promise((r) => setTimeout(r, 400));
+    contains('and a late reply is not handed to the next caller', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+
+    const message = await failed('EVALX global.neverAnswers', 300);
+    contains('a call that never answers still reports what the launcher saw', message, 'Unknown variable winners');
+    contains('and locates it', message, '.xml:');
+    contains('and counts the repeats', message, '(x3)');
+    contains('and says a per-frame error needs a restart', message, 'gg2_session stop');
+    contains('and message boxes are reported here too', message, 'Assertion 7 failed');
+    contains('and it still says how long it waited', message, '300ms');
+
+    // Queued behind that one, which never answered: the game reads requests in
+    // order, so this call was never looked at and nothing about it is at fault.
+    const queued = await failed('EVALX global.quietlyNeverAnswers', 300);
+    contains('a silent hang is not blamed on a dialog that did not happen', queued, 'dismissed no dialog');
+    check('and does not invent one', !queued.includes('| ERROR in'), queued);
+    contains('and says it was stuck behind an earlier call', queued, '1 earlier call(s) never answered');
+
+    // Two requests are still outstanding against a game that will never answer
+    // them; the rest of the file needs a bridge that is not queued behind them.
+    mcp.disconnectAll('selftest: clearing a deliberately wedged bridge');
+    contains('a fresh connection recovers', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+  }
+
   // The other error channel: a compilation error inside execute_string raises
   // no dialog and is only ever written to the engine's own log.
   fs.writeFileSync(path.join(BUILD, 'game_errors.log'), '');
@@ -458,6 +535,24 @@ async function main() {
     seen.slice(beforeTest).some((s) => s.includes('file_text_open_read')),
     seen.slice(beforeTest).join(' | ')
   );
+
+  {
+    // A run of every suite stops at the first one that goes wrong, and the
+    // counters cannot be read back from a game that is not answering - so the
+    // failure has to name the suite itself.
+    const wedged = path.join(TREE, 'Scripts', 'Unit tests', 'test_wedged.gml');
+    fs.writeFileSync(wedged, 'test_unit_begin();\ntest_assert_equals(1, 1);\ntest_unit_end();\n');
+    let message = '';
+    try {
+      await mcp.callTool('gg2_test', { suite: 'test_wedged' });
+    } catch (e) {
+      message = e.message;
+    }
+    contains('a suite that fails mid-run says which suite it was', message, 'test_wedged');
+    contains('and names its file', message, 'Unit tests/test_wedged.gml');
+    contains('and carries what the game said', message, 'gave up on this one');
+    fs.rmSync(wedged, { force: true });
+  }
 
   const beforeSendSource = seen.length;
   const testedSendSource = await mcp.callTool('gg2_test', { suite: 'test_ggon', send_source: true });

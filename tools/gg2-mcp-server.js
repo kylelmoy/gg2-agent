@@ -124,7 +124,14 @@ class Bridge {
             const payload = this.rx.slice(4, 4 + n).toString('latin1');
             this.rx = this.rx.slice(4 + n);
             const p = this.pending.shift();
-            if (p) p.resolve(payload);
+            // A call that timed out leaves its slot behind rather than removing
+            // it, because the game may still answer: the game replies in order,
+            // one reply per request, so dropping the slot would hand a late
+            // reply to the next caller and every answer after it would belong
+            // to the call before. Swallowing it here keeps the two sides lined
+            // up - a wrong answer that looks right is the worst thing this
+            // bridge can produce.
+            if (p && !p.abandoned) p.resolve(payload);
           }
         });
         s.on('error', (e) => this.disconnect('bridge socket error: ' + e.message));
@@ -139,17 +146,23 @@ class Bridge {
   // know how long they are asking for say so.
   async request(text, timeoutMs = CALL_TIMEOUT_MS) {
     await this.connect();
+    // Where the logs stood before the command went out. The launcher writes
+    // every dialog it dismisses to disk while a call is in flight, and that
+    // happens whether or not the reply ever arrives - so a call that times out
+    // can be explained from the same evidence watched() uses after a call that
+    // returns, instead of guessing. This is the one thing the transport knows
+    // about the world outside the socket, and it is why: without it, the same
+    // failure reads as a full diagnosis or as nothing at all, depending only on
+    // whether the reply beat the clock.
+    const marks = logMarks(this.port);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const i = this.pending.findIndex((p) => p.timer === timer);
-        if (i >= 0) this.pending.splice(i, 1);
-        reject(
-          new Error(
-            `The game on port ${this.port} did not reply within ${timeoutMs}ms. It is most likely blocked on a ` +
-              'modal dialog (GM8 does this when a GML error occurs, or when no audio device is available). ' +
-              'Check gg2_log, then the game window.'
-          )
-        );
+        const at = this.pending.findIndex((p) => p.timer === timer);
+        // Requests are answered in order, so anything still abandoned ahead of
+        // this one means the game never got as far as looking at this one.
+        const behind = at < 0 ? 0 : this.pending.slice(0, at).filter((p) => p.abandoned).length;
+        if (at >= 0) this.pending[at].abandoned = true;
+        reject(new Error(timedOut(this.port, marks, timeoutMs, behind)));
       }, timeoutMs);
 
       this.pending.push({
@@ -292,44 +305,153 @@ function describeError(text) {
 
 const annotate = (block) => describeError(block) || block.split('\n')[0];
 
-// Run a bridge command and refuse to report success if the game reported an
-// error while it ran.
+// Where both logs stood at a moment. Everything a call can be blamed for is the
+// difference between one of these and the same reading later, so a caller that
+// might need to explain itself takes one before it starts.
+const logMarks = (port) => ({
+  launcher: logSize(instances.launcherLog(BUILD_DIR, port)),
+  engine: logSize(instances.errorLog(BUILD_DIR)),
+});
+
+// A stuck-in-a-loop error (the same dialog raised every frame of a call that
+// ran for a while) produces many byte-identical entries - all signal-free
+// repeats past the first. The count is still useful, as a cheap proxy for how
+// many frames the call took, so it is kept - just not the text.
+function collapse(entries) {
+  const out = [];
+  for (const e of entries) {
+    const last = out[out.length - 1];
+    if (last && last.text === e.text) last.count++;
+    else out.push({ ...e, count: 1 });
+  }
+  return out;
+}
+
+// Everything the game complained about since `marks`, collapsed.
 //
 // There are two channels, and both have to be read. A *runtime* error raises a
 // modal dialog, which the launcher dismisses and records. A *compilation* error
 // inside execute_string raises nothing at all: GM8 appends it to game_errors.log
 // beside the executable, execute_string returns 0, and the bridge replies
 // "OK 0" - which is precisely the plausible wrong answer this exists to stop.
-async function watched(where, fn) {
-  const launcher = instances.launcherLog(BUILD_DIR, where.port);
-  const engine = instances.errorLog(BUILD_DIR);
-  const marks = [logSize(launcher), logSize(engine)];
+//
+// Message boxes are a third thing and are off by default: show_message is how
+// the game's own assertions report, and a failed assertion is a result, not a
+// crash. They are worth having when explaining why nothing answered, since a
+// box the launcher has not reached yet is exactly what a frozen game looks like.
+function troublesSince(port, marks, { messages = false } = {}) {
+  const found = dialogsSince(port, marks.launcher, 'E').map((e) => ({ kind: 'error', text: e, located: annotate(e) }));
+  if (messages) {
+    // Said, not raised: labelled so a reader does not take an assertion's own
+    // report for a crash just because it is in the same list.
+    for (const m of dialogsSince(port, marks.launcher, 'M')) {
+      found.push({ kind: 'message', text: m, located: 'message box: ' + m.split('\n')[0] });
+    }
+  }
+  const silent = logSince(instances.errorLog(BUILD_DIR), marks.engine).trim();
+  if (silent) found.push({ kind: 'error', text: silent, located: describeError(silent) || silent.slice(0, 200) });
+  return collapse(found);
+}
 
+// How many dialogs of each kind, counting the collapsed repeats.
+const totalOf = (collapsed, kind) =>
+  collapsed.filter((e) => e.kind === kind).reduce((sum, e) => sum + e.count, 0);
+
+const MAX_REPORTED = 10;
+
+// Two views of the same list: one located line each, then the raw text, so a
+// reader who does not trust the located guess can still see what was said.
+function renderTroubles(collapsed) {
+  const suffix = (e) => (e.count > 1 ? ` (x${e.count})` : '');
+  const shown = collapsed.slice(0, MAX_REPORTED);
+  const rest = collapsed.length - shown.length;
+  return (
+    shown.map((e) => '  ' + e.located + suffix(e)).join('\n') +
+    (rest > 0 ? `\n  ... and ${rest} more, see gg2_log` : '') +
+    '\n\n' +
+    shown.map((e) => e.text.split('\n').map((l) => '  | ' + l).join('\n') + suffix(e)).join('\n')
+  );
+}
+
+// An identical dialog raised over and over inside one call is not that call
+// failing once: it is code the game runs on its own schedule - a Step event, a
+// server's per-tick service - failing every frame, and it will go on failing
+// after the call returns. Nothing that can be sent over the bridge clears that.
+const STUCK_REPEATS = 3;
+
+function hints(collapsed) {
+  const out = [];
+  if (collapsed.some((e) => e.kind === 'error' && e.count >= STUCK_REPEATS)) {
+    out.push(
+      'The same error came back every frame, so something the game runs on its own - a Step event, a server ' +
+        'tick - is raising it, not only this call. It will not clear on its own and no later call will ' +
+        'succeed either: restart the instance (gg2_session stop, then start). The usual cause is an ' +
+        'out-of-band call having touched a global that a live server object also uses every tick.'
+    );
+  }
+  if (totalOf(collapsed, 'message') >= STUCK_REPEATS) {
+    out.push(
+      `${totalOf(collapsed, 'message')} message box(es) were shown. The game is frozen inside each until the ` +
+        'launcher notices it, up to 250ms apart, so a call that shows many of them is slow rather than stuck - ' +
+        'a longer timeout may be all it needs.'
+    );
+  }
+  return out.length ? '\n\n' + out.join('\n\n') : '';
+}
+
+// Why a call never came back, from what the game wrote down while it was in
+// flight. The launcher log is written independently of the socket, so this is
+// available on exactly the path that used to have nothing but a guess.
+function timedOut(port, marks, timeoutMs, behind = 0) {
+  const head = `The game on port ${port} did not reply within ${timeoutMs}ms.`;
+  const collapsed = troublesSince(port, marks, { messages: true });
+
+  // Queued behind a call that never answered, which is worth saying outright:
+  // this one may never have been read at all, and nothing about its own code
+  // explains the wait.
+  const queued =
+    behind > 0
+      ? `\n\n${behind} earlier call(s) never answered either. The game reads requests in order, so this one was ` +
+        'waiting behind them and may not have been looked at: the bridge has stopped being serviced altogether. ' +
+        'Restart the instance (gg2_session stop, then start).'
+      : '';
+
+  if (collapsed.length === 0) {
+    return (
+      `${head} The launcher dismissed no dialog while the call was in flight, so the game is probably not ` +
+      'blocked on a modal one: more likely it is still working (ask for a longer timeout), it stopped stepping, ' +
+      'or it is gone. gg2_ping says which; gg2_log with source: "launcher" shows the whole log.' +
+      queued
+    );
+  }
+
+  const counts = [
+    totalOf(collapsed, 'error') ? `${totalOf(collapsed, 'error')} error dialog(s)` : '',
+    totalOf(collapsed, 'message') ? `${totalOf(collapsed, 'message')} message box(es)` : '',
+  ].filter(Boolean);
+
+  return (
+    `${head} While it was in flight the launcher dismissed ${counts.join(' and ')}, which is very likely why:\n` +
+    renderTroubles(collapsed) +
+    hints(collapsed) +
+    queued
+  );
+}
+
+// Run a bridge command and refuse to report success if the game reported an
+// error while it ran.
+async function watched(where, fn) {
+  const marks = logMarks(where.port);
   const reply = await fn();
 
-  const errors = dialogsSince(where.port, marks[0], 'E').map((e) => ({ text: e, located: annotate(e) }));
-  const silent = logSince(engine, marks[1]).trim();
-  if (silent) errors.push({ text: silent, located: describeError(silent) || silent.slice(0, 200) });
-  if (errors.length === 0) return reply;
-
-  // A stuck-in-a-loop error (the same dialog raised every frame of a call
-  // that ran for a while) produces many byte-identical entries here - all
-  // signal-free repeats past the first. The count is still useful, as a cheap
-  // proxy for how many frames the call took, so it is kept - just not the text.
-  const collapsed = [];
-  for (const e of errors) {
-    const last = collapsed[collapsed.length - 1];
-    if (last && last.text === e.text) last.count++;
-    else collapsed.push({ ...e, count: 1 });
-  }
-  const suffix = (e) => (e.count > 1 ? ` (x${e.count})` : '');
+  const collapsed = troublesSince(where.port, marks);
+  if (collapsed.length === 0) return reply;
 
   throw new Error(
     'The game reported an error during this call, so the reply cannot be trusted.\n' +
-      collapsed.map((e) => '  ' + e.located + suffix(e)).join('\n') +
-      '\n\n' +
-      collapsed.map((e) => e.text.split('\n').map((l) => '  | ' + l).join('\n') + suffix(e)).join('\n') +
-      `\n\nThe bridge replied: ${JSON.stringify(reply)} - for a failed expression that is 0, not a real value.`
+      renderTroubles(collapsed) +
+      `\n\nThe bridge replied: ${JSON.stringify(reply)} - for a failed expression that is 0, not a real value.` +
+      hints(collapsed)
   );
 }
 
@@ -361,12 +483,13 @@ function lintOrThrow(code, skip) {
 // The game has assertion helpers and real suites, but no entry point an agent
 // can reach, and its code must not be changed to give it one.
 //
-// The helpers report through show_message, and that turned out to be a dead
-// end: GM8's message form holds exactly one windowed control, the OK button.
-// Its text is drawn straight onto the form, so no amount of asking Windows will
-// produce it - only the launcher's count of boxes dismissed.
+// The helpers report through show_message, which the launcher does read - its
+// DIALOGS table watches TMessageForm - but only best effort: Delphi paints some
+// captions with no window handle at all, so a box sometimes comes back as
+// "(dialog had no readable text)" and sometimes as the assertion in full. That
+// is enough to report against, never enough to rely on.
 //
-// The counters behind those messages are readable, though. test_unit_begin
+// The counters behind those messages are exact, though. test_unit_begin
 // zeroes global.testAssertions and global.testAssertionsSucceeded, every
 // assertion moves them, and test_unit_end is the only thing that resets them -
 // after it has shown its message. So the suite's own source is run here with
@@ -448,15 +571,21 @@ function summarise(name, { total, succeeded, messages, errors }) {
 
   const body = [...failures.map((f) => '  ' + f), ...errors.map((e) => '  GML error: ' + annotate(e))];
 
-  // Every failed assertion shows a message box. When the text of those boxes
-  // could not be read - which is the normal case, since GM8 draws it without a
-  // window handle - say how many there were rather than nothing at all.
+  // Every failed assertion shows a message box, and the launcher reads what it
+  // can out of each one before dismissing it. That is best effort - Delphi
+  // paints some captions with no window handle - so when nothing recognisable
+  // came back, say how many boxes there were and show whatever text did.
   if (!failures.length && succeeded < total) {
-    body.push(
-      `  ${total - succeeded} assertion(s) failed. The game shows a message box for each, but GM8 draws their ` +
-        'text with no window handle, so it cannot be read from outside - look at which assertion by running the ' +
-        'suite yourself with the game visible.'
-    );
+    const said = lines.filter((l) => l !== '(dialog had no readable text)');
+    body.push(`  ${total - succeeded} assertion(s) failed, but no "Assertion N failed:" line was read back.`);
+    if (said.length) body.push('  The boxes that could be read said:', ...said.map((l) => '    ' + l));
+    else {
+      body.push(
+        '  None of their text could be read this time (GM8 paints some captions with no window handle). ' +
+          'gg2_log with source: "launcher" shows every box it dismissed, in case one of them did come through; ' +
+          'failing that, run the suite with the game visible.'
+      );
+    }
   }
 
   return { name, passed, text: [`${name}: ${succeeded}/${total} assertions succeeded`, ...body].join('\n') };
@@ -1023,14 +1152,22 @@ async function callTool(name, args) {
         const mark = logSize(logFile);
         // Not watched(): a failed assertion is reported through show_message and
         // is a result, not a crash. Real errors are collected separately below.
+        let body;
         if (args.send_source) {
-          const body = stripReporting(lib.readText(suite.abs));
-          lintOrThrow(body, args.skip_lint);
-          await command(where, 'EVAL ' + body, timeout);
+          body = stripReporting(lib.readText(suite.abs));
         } else {
-          const loader = suiteLoader(suite.abs);
-          lintOrThrow(loader, args.skip_lint);
-          await command(where, 'EVAL ' + loader, timeout);
+          body = suiteLoader(suite.abs);
+        }
+        lintOrThrow(body, args.skip_lint);
+        try {
+          await command(where, 'EVAL ' + body, timeout);
+        } catch (e) {
+          // A run of every suite does not otherwise say which one it stopped in,
+          // and the counters cannot be read back from a game that is not
+          // answering - so name the suite here. What the game said on the way
+          // down is already in the message: the failure carries the launcher
+          // log, whether it timed out or came back as an error.
+          throw new Error(`${suite.name} (${suite.file}) did not finish.\n\n${e.message}`);
         }
         const text = logSince(logFile, mark);
 
@@ -1309,4 +1446,6 @@ function serve() {
 
 if (require.main === module) serve();
 
-module.exports = { callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll };
+// `command` is exported for the selftest: every tool's timeout is measured in
+// seconds, and a test that has to wait one out is a test nobody runs.
+module.exports = { callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll, command };
