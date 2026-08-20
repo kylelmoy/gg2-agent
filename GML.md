@@ -119,6 +119,28 @@ literal exactly as-is, backslashes and all.
 
 ---
 
+## Arithmetic that is not what the name suggests
+
+All three verified against a running exe rather than assumed. They matter most in
+grid and cell code, where a coordinate is computed thousands of times and a half-cell
+error stays invisible until something lands in the wrong place.
+
+- **`round()` is banker's rounding, not "half away from zero".** A `.5` goes to the
+  nearest *even* integer: `round(0.5) = 0`, `round(1.5) = 2`, `round(2.5) = 2`,
+  `round(3.5) = 4`, `round(6.5) = 6`, `round(72.5) = 72`, `round(-1.5) = -2`. So
+  `round(x)` is **not** `floor(x + 0.5)`. Write `floor(x + 0.5)` when you want
+  half-up — and do not lean on `round` to visit every integer a smoothly moving value
+  passes through, because consecutive samples can round to the same one twice or skip
+  one entirely.
+- **`div` truncates toward zero, so it is not `floor(a/b)` for negatives.**
+  `-7 div 2` is `-3`; `floor(-7/2)` is `-4`. Anything turning a world coordinate into
+  a cell index wants `floor(x / size)`, not `x div size`, or everything left of the
+  origin lands one cell too high.
+- **`mod` takes the sign of the dividend.** `-7 mod 3` is `-1`, not `2`, so a `mod`
+  used to wrap an index into a range hands back negative indices for negative inputs.
+
+---
+
 ## `ds_*` behaviour that is easy to assume wrong
 
 - **`ds_grid_read` is a procedure.** It returns nothing meaningful, so
@@ -234,6 +256,14 @@ still catches a custom map republished under an existing name).
 - Jump: `baseJumpStrength` 8.3 against gravity 0.6/tick gives height above takeoff
   `p(t) = 8.3t − 0.3t²` — an apex of **57.4 px** at t ≈ 13.8, and ≈ 27.7 ticks of
   airtime returning to the same height. Both match the empirically measured figures.
+- **Landing *lower* than you took off takes far longer than that**, and the difference
+  is not a detail. Airtime to a surface `d` px below the takeoff is the positive root
+  of `8.3t − 0.3t² = −d`, i.e. `t = (8.3 + sqrt(68.89 + 1.2d)) / 0.6`: **36.4 ticks**
+  for a 96 px drop against the 27.7 for a flat one, and it keeps growing with `d`.
+  Any code that asks "where will the character be when it gets there" has to use this
+  for a descending arc — reusing the flat-jump number, or the time to merely arrive
+  *over* the target horizontally, puts the answer a second of flight too early and
+  skips everything the character would actually hit on the way down.
 - Free 6 px (exactly one mask cell) step-up *and* step-down, both directions.
 
 ---
@@ -253,10 +283,17 @@ still catches a custom map republished under an existing name).
   `tools/launcher.js` watches for `TMessageForm` too and logs what it can read,
   marked `M|` (`source: launcher`, or `both`). Best effort, though: Delphi paints
   some captions with no window handle, and those are logged as `(dialog had no
-  readable text)`. A call that never comes back reports these too, so a timeout no
-  longer hides them. This includes the project's own `test_assert_equals`, which calls
-  `show_message` immediately on a failed assertion rather than only at the end — so
-  one wrong expected value in a test can freeze the whole game.
+  readable text)` with a screenshot saved alongside, since the pixels are there
+  even when `WM_GETTEXT` is not. This includes the project's own
+  `test_assert_equals`, which calls `show_message` immediately on a failed
+  assertion rather than only at the end. **This box has no button at all** - its
+  "OK" is painted, not a `TButton` - which used to freeze the whole game on one
+  wrong expected value: the launcher's dismissal loop only ever knew how to click
+  a button it found, so it found none and skipped the box forever, silently,
+  every 250 ms. Fixed 2026-08-20: a `TMessageForm` with no matching button child
+  is now force-closed with `WM_CLOSE` instead, logged distinctly as `M!` so a
+  box that had to be force-closed - and so was probably unreadable too - is
+  identifiable from the log alone.
 - **`var` locals are visible inside `with()` blocks** in the same script, which is
   what makes the `with(SomeObject) { ... other.field ... }` idiom work.
 - **Line endings are mixed in this tree** and GM8 accepts both LF and CRLF. When

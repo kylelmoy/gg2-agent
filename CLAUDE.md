@@ -241,7 +241,11 @@ Same code, minus the one line whose only job is to report and forget.
 
 A failed assertion still shows a box; the launcher dismisses it, so a failing
 suite does not hang the game, and the counters say how many failed even when the
-text of a particular box did not survive. A suite that stops mid-run — an error,
+text of a particular box did not survive. That box's "OK" is painted rather than
+a real button, unlike the startup dialogs, so the launcher force-closes it with
+`WM_CLOSE` instead of clicking - logged distinctly as `M!` - which is also why
+its text is worth trying to read as a screenshot when `WM_GETTEXT` comes back
+empty (`gg2_log` names the saved file). A suite that stops mid-run — an error,
 or a call that never comes back — fails by name, since a whole-run call cannot
 otherwise say which suite it stopped in.
 

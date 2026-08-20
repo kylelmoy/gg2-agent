@@ -307,6 +307,11 @@ async function main() {
 
   process.stdout.write('\nwin32\n');
   check('isRemoteSession answers without throwing', typeof win32.isRemoteSession() === 'boolean');
+  check('sessionState answers without throwing, string or null', (() => {
+    const s = win32.sessionState();
+    return s === null || typeof s === 'string';
+  })());
+  check('captureWindow on a bogus handle returns null rather than throwing', win32.captureWindow(0) === null);
 
   process.stdout.write('\ngg2.ini\n');
   fs.writeFileSync(path.join(BUILD, 'gg2.ini'), '[Settings]\r\nUseLobby=1\r\nHostingPort=8190\r\n\r\n[Server]\r\nDedicated=0\r\n');

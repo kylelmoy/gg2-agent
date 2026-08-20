@@ -205,16 +205,42 @@ async function main() {
           const target = spec.press
             ? buttons.find((b) => b.text.replace('&', '').includes(spec.press))
             : buttons[0];
-          if (!target) continue;
 
           // Read before clicking: once the box is gone, so is its text.
           const said = dialogText(w.hwnd);
-          if (said.length === 0) said.push('(dialog had no readable text)');
+          if (said.length === 0) {
+            said.push('(dialog had no readable text)');
+            // Delphi paints some captions with no window handle at all, so
+            // WM_GETTEXT gives up - but the pixels are there regardless.
+            try {
+              const bmp = win32.captureWindow(w.hwnd);
+              if (bmp) {
+                const shotPath = `${logFile.replace(/\.log$/, '')}-dialog-${Date.now()}.bmp`;
+                fs.writeFileSync(shotPath, bmp);
+                said.push(`(saved a screenshot of this dialog to ${shotPath})`);
+              }
+            } catch (e) {
+              /* the text-not-found line above already covers this case */
+            }
+          }
           for (const line of said) log(`  ${spec.mark}| ${line}`);
 
-          win32.clickButton(target.hwnd);
-          dismissed++;
-          log(`dismissed ${w.title || spec.cls}${spec.press ? ` (pressed ${spec.press})` : ''} - ${dismissed} so far`);
+          if (target) {
+            win32.clickButton(target.hwnd);
+            dismissed++;
+            log(`dismissed ${w.title || spec.cls}${spec.press ? ` (pressed ${spec.press})` : ''} - ${dismissed} so far`);
+          } else {
+            // No matching button child to click - GM8 produces TMessageForms
+            // whose "OK" is painted, not a control (test_assert_equals's box is
+            // one), and the loop used to skip these forever, freezing the game
+            // with nothing in any log saying so. WM_CLOSE unblocks it the same
+            // way clicking OK would; marked distinctly since a box that had to
+            // be force-closed is one whose text was probably unreadable too.
+            win32.closeWindow(w.hwnd);
+            dismissed++;
+            log(`  M!| forced closed (no ${spec.button} child to click)`);
+            log(`dismissed ${w.title || spec.cls} (forced closed) - ${dismissed} so far`);
+          }
         }
       } catch (e) {
         log('warning while clearing dialogs: ' + e.message);

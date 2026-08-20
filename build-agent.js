@@ -93,7 +93,24 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
         await lib.sleep(1000);
       }
     }
-    if (fs.existsSync(build)) throw new Error(`could not clear ${build} - is the game still running?`);
+    if (fs.existsSync(build)) {
+      const leftover = fs.readdirSync(build);
+      if (leftover.length > 0) {
+        throw new Error(
+          `could not clear ${build} (still contains ${leftover.length} item(s): ` +
+            `${leftover.slice(0, 5).join(', ')}${leftover.length > 5 ? ', ...' : ''}) - ` +
+            'something holds this directory as its working directory (the game, a shell, a file search)'
+        );
+      }
+      // A recursive remove deletes the contents before the directory itself,
+      // so a directory that will not delete because it is locked - almost
+      // always held as some process's current working directory, and the game
+      // is only one candidate - fails here having already been emptied. An
+      // empty directory is as clean a build target as a removed one, so carry
+      // on instead of throwing away a template, exe and nav cache that a full
+      // rebuild would then have to redo whether or not that was wanted.
+      lib.skip(`${build} could not be removed but is already empty - continuing`);
+    }
     fs.mkdirSync(build, { recursive: true });
 
     // --- 2. reassemble the split tree ----------------------------------------

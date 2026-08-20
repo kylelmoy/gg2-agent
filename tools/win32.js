@@ -16,6 +16,7 @@
 //=============================================================================
 
 const koffi = require('koffi');
+const { execSync } = require('child_process');
 
 const user32 = koffi.load('user32.dll');
 
@@ -33,6 +34,22 @@ const SendMessageTimeoutW = user32.func(
 );
 const GetMenu = user32.func('void* __stdcall GetMenu(void*)');
 const GetSystemMetrics = user32.func('int __stdcall GetSystemMetrics(int)');
+const GetWindowRect = user32.func('bool __stdcall GetWindowRect(void*, void*)');
+const GetDC = user32.func('void* __stdcall GetDC(void*)');
+const ReleaseDC = user32.func('int __stdcall ReleaseDC(void*, void*)');
+const PrintWindow = user32.func('bool __stdcall PrintWindow(void*, void*, uint32)');
+
+const gdi32 = koffi.load('gdi32.dll');
+const CreateCompatibleDC = gdi32.func('void* __stdcall CreateCompatibleDC(void*)');
+const CreateCompatibleBitmap = gdi32.func('void* __stdcall CreateCompatibleBitmap(void*, int, int)');
+const SelectObject = gdi32.func('void* __stdcall SelectObject(void*, void*)');
+const DeleteDC = gdi32.func('bool __stdcall DeleteDC(void*)');
+const DeleteObject = gdi32.func('bool __stdcall DeleteObject(void*)');
+const GetDIBits = gdi32.func('int __stdcall GetDIBits(void*, void*, uint32, uint32, void*, void*, uint32)');
+
+const kernel32 = koffi.load('kernel32.dll');
+const GetCurrentProcessId = kernel32.func('uint32 __stdcall GetCurrentProcessId()');
+const ProcessIdToSessionId = kernel32.func('bool __stdcall ProcessIdToSessionId(uint32, void*)');
 
 const BM_CLICK = 0x00f5;
 const WM_GETTEXT = 0x000d;
@@ -144,12 +161,94 @@ const hasMenu = (hwnd) => !!GetMenu(hwnd);
 // most common reason for that.
 const isRemoteSession = () => !!GetSystemMetrics(SM_REMOTESESSION);
 
+// The Windows session this process is running in ("Active", "Disc", "Conn", ...),
+// via `query session` rather than WTSQuerySessionInformationW - the latter hands
+// back an allocated buffer keyed off a pointer-to-pointer out param, which koffi
+// has no ergonomic way to read; parsing the console tool's own table is a few
+// lines and needs no new native surface. Matches by session id (from
+// ProcessIdToSessionId) rather than position, since SESSIONNAME is blank for a
+// disconnected RDP session and shifts every later column left. Returns null if
+// the check itself fails - a disconnected session is a diagnosis to attempt, not
+// one to depend on.
+function sessionState() {
+  const idBuf = Buffer.alloc(4);
+  if (!ProcessIdToSessionId(GetCurrentProcessId(), idBuf)) return null;
+  const sessionId = idBuf.readUInt32LE(0);
+
+  let out;
+  try {
+    out = execSync('query session', { windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString();
+  } catch (e) {
+    out = e.stdout ? e.stdout.toString() : '';
+  }
+  if (!out) return null;
+
+  for (const line of out.split(/\r?\n/)) {
+    const tokens = line.trim().replace(/^>/, '').trim().split(/\s+/);
+    const idIndex = tokens.findIndex((t) => /^\d+$/.test(t) && Number(t) === sessionId);
+    if (idIndex >= 0 && tokens[idIndex + 1]) return tokens[idIndex + 1];
+  }
+  return null;
+}
+
+const PW_RENDERFULLCONTENT = 0x00000002;
+
+// A window's pixels as a BMP buffer, for the dialogs `controlText` cannot read -
+// Delphi paints some captions with no window handle, so the text is gone but the
+// pixels are not. GetWindowRect sizes a compatible bitmap, PrintWindow renders
+// the target into it (falling back to the plain flag for a window that ignores
+// PW_RENDERFULLCONTENT), and GetDIBits reads it back top-down as 32bpp BI_RGB so
+// it can be wrapped in a plain BMP file header with no palette to worry about.
+// Returns null rather than throwing - this is always a best-effort addition to
+// a diagnosis that already has a text fallback.
+function captureWindow(hwnd) {
+  const rect = Buffer.alloc(16);
+  if (!GetWindowRect(hwnd, rect)) return null;
+  const width = rect.readInt32LE(8) - rect.readInt32LE(0);
+  const height = rect.readInt32LE(12) - rect.readInt32LE(4);
+  if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return null;
+
+  const screenDC = GetDC(null);
+  if (!screenDC) return null;
+  const memDC = CreateCompatibleDC(screenDC);
+  const bmp = CreateCompatibleBitmap(screenDC, width, height);
+  const old = SelectObject(memDC, bmp);
+  try {
+    if (!PrintWindow(hwnd, memDC, PW_RENDERFULLCONTENT)) PrintWindow(hwnd, memDC, 0);
+
+    const headerSize = 40;
+    const info = Buffer.alloc(headerSize);
+    info.writeInt32LE(headerSize, 0);
+    info.writeInt32LE(width, 4);
+    info.writeInt32LE(-height, 8); // negative height = top-down rows
+    info.writeInt16LE(1, 12); // biPlanes
+    info.writeInt16LE(32, 14); // biBitCount
+    info.writeInt32LE(0, 16); // BI_RGB
+
+    const pixels = Buffer.alloc(width * 4 * height);
+    if (!GetDIBits(memDC, bmp, 0, height, pixels, info, 0)) return null;
+
+    const fileHeader = Buffer.alloc(14);
+    fileHeader.write('BM', 0, 'ascii');
+    fileHeader.writeUInt32LE(fileHeader.length + info.length + pixels.length, 2);
+    fileHeader.writeUInt32LE(fileHeader.length + info.length, 10);
+    return Buffer.concat([fileHeader, info, pixels]);
+  } finally {
+    SelectObject(memDC, old);
+    DeleteObject(bmp);
+    DeleteDC(memDC);
+    ReleaseDC(null, screenDC);
+  }
+}
+
 module.exports = {
   windows, children, descendants,
   controlText, setControlText,
   clickButton, postCommand, closeWindow, hasMenu,
   classOf, titleOf, pidOf,
-  isRemoteSession,
+  isRemoteSession, sessionState,
+  captureWindow,
 };
 
 if (require.main === module) {

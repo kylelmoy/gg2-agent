@@ -726,9 +726,10 @@ const TOOLS = [
     description:
       'Let the game run until a GML expression becomes true, or give up after a number of frames. Use it instead ' +
       'of polling gg2_evalx: the condition is tested every frame inside the game, so nothing that is true for ' +
-      'two frames is missed. The expression is linted first - a broken one would raise an error dialog on every ' +
-      'frame of the budget. Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event ' +
-      'which wants escaped text.',
+      'two frames is missed. The expression is linted first, and the lint gate cannot see every way an ' +
+      'expression can fail to compile; if the game rejects it anyway, the wait is abandoned after the first ' +
+      'frame with an error reply rather than repeating the same failure for the rest of the budget. Pass raw ' +
+      'GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -986,7 +987,13 @@ async function callTool(name, args) {
       if (typeof args.expr !== 'string' || !args.expr.trim()) throw new Error('expr is required');
       const where = target(args.instance);
       const expr = args.expr.replace(/;\s*$/, '');
-      lintOrThrow(expr, args.skip_lint);
+      // Lint the wrapped form, not the bare expression - EVALX runs it as
+      // `execute_string("return " + expr)`, and "return (" + expr + ")" is what
+      // the game actually has to compile. An operator or ";" in operand
+      // position (e.g. a mistakenly HTML-escaped "&gt;") can be a syntactically
+      // valid statement sequence on its own while being invalid inside `return
+      // (...)`, so linting the bare form alone missed exactly that case.
+      lintOrThrow('return (' + expr + ')', args.skip_lint);
       return await watched(where, () => command(where, 'EVALX ' + expr));
     }
 
@@ -1056,7 +1063,11 @@ async function callTool(name, args) {
       if (typeof args.expr !== 'string' || !args.expr.trim()) throw new Error('expr is required');
       const where = target(args.instance);
       const expr = args.expr.replace(/;\s*$/, '');
-      lintOrThrow(expr, args.skip_lint);
+      // Lint the wrapped form, not the bare expression - see gg2_evalx above
+      // for why. WAIT runs it inside `if (expr) ...`, not `return (...)`, but
+      // both are expression context, and this catches the same class of thing
+      // the bare form does not: an operator or ";" in operand position.
+      lintOrThrow('return (' + expr + ')', args.skip_lint);
       const frames = clamp(args.frames, 1, 3600, 300);
       return await watched(where, () => command(where, `WAIT ${frames} ${expr}`, framesTimeout(frames)));
     }

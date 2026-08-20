@@ -18,6 +18,8 @@ deferKind = 0;      // 0 = nothing pending, 1 = stepping, 2 = waiting
 deferExpr = "";
 deferFrames = 0;
 deferTotal = 0;
+deferWaitOutcome = "";  // sentinel agentBridgeDefer uses to tell a raised WAIT
+                        // expression apart from one that merely evaluated false
 
 // The world is frozen by deactivating every instance except this one, so the
 // game stops advancing between agent calls while the bridge keeps answering.

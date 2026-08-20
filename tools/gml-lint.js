@@ -340,6 +340,25 @@ function lintSource(src, ctx, originName) {
     if (t.type === 'unterminated-comment') add('error', t.line, t.col, 'unterminated-comment', 'block comment is never closed');
   }
 
+  // --- HTML-escaped operators ---
+  //
+  // `&lt;`, `&gt;` and `&amp;` cannot be intentional in GML - the tool
+  // descriptions already say not to send them - but unescaped they tokenize as
+  // innocuous-looking sequences ("&", "gt", ";") that pass every check below
+  // while producing code GM8 cannot compile. By the time these are tokens the
+  // fact that they were ever one escaped entity is gone, so this is a plain
+  // substring scan over the source instead.
+  const ENTITY_CHAR = { lt: '<', gt: '>', amp: '&' };
+  const entityRe = /&(lt|gt|amp);/g;
+  let em;
+  while ((em = entityRe.exec(src))) {
+    const before = src.slice(0, em.index);
+    const line = before.split('\n').length;
+    const col = em.index - before.lastIndexOf('\n');
+    add('error', line, col, 'html-entity',
+      `"&${em[1]};" is an HTML-escaped "${ENTITY_CHAR[em[1]]}" - GM8 will not parse it as one; send a literal "${ENTITY_CHAR[em[1]]}" instead`);
+  }
+
   // --- banned operators ---
   for (const t of toks) {
     if (t.type === 'punct' && STYLE_PUNCT[t.value]) {

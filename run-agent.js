@@ -66,27 +66,50 @@ async function runAgent({
 
   lib.fail(`bridge did not come up within ${timeoutSeconds}s`);
 
-  // The single most common reason for exactly this failure: GM8 loads its
-  // sound resources into DirectSound during engine startup, before any game
-  // code runs, and a Remote Desktop session with no audio redirection has no
-  // endpoint for that - two modal "no audio device" errors and a silent exit,
-  // which from here looks identical to any other stuck-modal timeout. This
-  // check is deterministic and cheap, so it is worth doing even though it
-  // cannot tell audio redirection is or is not configured - only that the
-  // session is remote at all.
-  let remote = false;
+  // Two different failures produce the same symptom here, and they need to be
+  // told apart before either hint is worth printing. A disconnected Windows
+  // session cannot run the game at all - GM8 enumerates the display before
+  // anything else runs and dies on "Failed to retrieve display mode.", so it
+  // exits almost immediately rather than hanging on a modal - so check session
+  // state first and let it rule out the audio hint below outright when it
+  // applies, rather than printing both and leaving the reader to guess.
+  let state = null;
   try {
-    remote = win32.isRemoteSession();
+    state = win32.sessionState();
   } catch (e) {
     /* best-effort: a failed check should not hide the real timeout below */
   }
-  if (remote) {
+  if (state && /^disc/i.test(state)) {
     lib.warn(
-      'this is a Remote Desktop session - if it has no audio redirection, GM8 hangs on a ' +
-        '"no audio device" modal during startup and never gets as far as opening the bridge. ' +
-        'Try `tscon <id> /dest:console` (see `query session` for <id>) to run on the console instead, ' +
-        'or enable audio redirection for this RDP session.'
+      `this Windows session is disconnected (state: ${state}) - GM8 enumerates the display before ` +
+        'anything else runs and dies on "Failed to retrieve display mode." in a disconnected session, ' +
+        'so the game exits almost immediately rather than hanging on a modal. Reconnect the RDP client, ' +
+        'or run `tscon <id> /dest:console` (see `query session` for <id>) to move the session onto the ' +
+        'physical console - that unlocks the console desktop, so it is your call whether to do it.'
     );
+  } else {
+    // The single most common reason for exactly this failure otherwise: GM8
+    // loads its sound resources into DirectSound during engine startup, before
+    // any game code runs, and a Remote Desktop session with no audio
+    // redirection has no endpoint for that - two modal "no audio device"
+    // errors and a silent exit, which from here looks identical to any other
+    // stuck-modal timeout. This check is deterministic and cheap, so it is
+    // worth doing even though it cannot tell audio redirection is or is not
+    // configured - only that the session is remote at all.
+    let remote = false;
+    try {
+      remote = win32.isRemoteSession();
+    } catch (e) {
+      /* best-effort: a failed check should not hide the real timeout below */
+    }
+    if (remote) {
+      lib.warn(
+        'this is a Remote Desktop session - if it has no audio redirection, GM8 hangs on a ' +
+          '"no audio device" modal during startup and never gets as far as opening the bridge. ' +
+          'Try `tscon <id> /dest:console` (see `query session` for <id>) to run on the console instead, ' +
+          'or enable audio redirection for this RDP session.'
+      );
+    }
   }
 
   // The second most common reason, and the most misleading one: a compile
