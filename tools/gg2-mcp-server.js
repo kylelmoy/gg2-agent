@@ -506,7 +506,9 @@ const TOOLS = [
     description:
       'Evaluate a single GML expression in the running game and return its value as a string. ' +
       'Use this to inspect live state, e.g. "room_speed", "instance_number(Player)", "global.currentMap". ' +
-      'Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text.',
+      'Pass raw GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text. ' +
+      'This wraps the whole expr in "return", so it must be one expression, not statements - "a = 1; a" never ' +
+      'reaches the read. Assign with gg2_eval, then read the variable back with a separate gg2_evalx call.',
     inputSchema: {
       type: 'object',
       properties: {
