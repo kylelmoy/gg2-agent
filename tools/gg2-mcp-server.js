@@ -683,7 +683,11 @@ const TOOLS = [
       'is independent of team, gates and intel-carriage (it answers "can anything reach this", not "can this ' +
       'bot") and ignores gate costs entirely. Also hides the team-select panel for the shot, since that HUD ' +
       'sits fixed in screen space over the top of the room and would otherwise cover most of it - restored ' +
-      'afterwards. Needs global.navReady (wait for it first if the map just loaded).',
+      'afterwards. The requested rectangle (the whole map by default) is fit to the window\'s aspect ratio ' +
+      'rather than stretched to it, since GM8 scales each axis independently and a wide map straight into an ' +
+      '~4:3 window comes out visibly squashed otherwise; the extra margin this can add is letterboxed, pinned ' +
+      'to the map\'s top-left corner since GM8 will not let a view go negative to centre it. Needs ' +
+      'global.navReady (wait for it first if the map just loaded).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1091,10 +1095,31 @@ async function callTool(name, args) {
         if (sy === undefined) sy = cy;
       }
 
-      const vx = args.view_x ?? 0;
-      const vy = args.view_y ?? 0;
-      const vw = args.view_width ?? mapW;
-      const vh = args.view_height ?? mapH;
+      // The requested content rectangle, before fitting it to the port.
+      const cx0 = args.view_x ?? 0;
+      const cy0 = args.view_y ?? 0;
+      const cw = args.view_width ?? mapW;
+      const ch = args.view_height ?? mapH;
+
+      // GM8 stretches view_w/hview to fill view_w/hport independently on each axis, so
+      // handing it the content rectangle as-is warps anything whose aspect ratio does
+      // not already match the port (a wide map into an ~4:3 window comes out visibly
+      // squashed horizontally). Expand the shorter axis to match the port's aspect
+      // ratio instead - a letterbox/pillarbox fit, centred on the requested rectangle -
+      // so the map's own proportions are preserved and the extra margin is just more
+      // room background, not a distortion.
+      const portAspect = wport / hport;
+      const contentAspect = cw / ch;
+      let vw, vh;
+      if (contentAspect > portAspect) {
+        vw = cw;
+        vh = cw / portAspect;
+      } else {
+        vh = ch;
+        vw = ch * portAspect;
+      }
+      const vx = cx0 - (vw - cw) / 2;
+      const vy = cy0 - (vh - ch) / 2;
 
       const reached = await watched(where, () => command(where, `EVALX agentNavReach(${sx}, ${sy})`));
       if (reached === '-1') {
