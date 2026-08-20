@@ -201,9 +201,23 @@ function startFakeBridge(port) {
           } else if (rest.trim() === 'test_unit_begin();') {
             counters = { total: 0, succeeded: 0 }; // the reset between suites
             reply('OK');
+          } else if (rest.includes('file_text_open_read')) {
+            // gg2_test's default path: the game opens its own suite file
+            // rather than being sent its source. A wrong path here should
+            // fail the same way a wrong path would in the real game, so this
+            // actually reads the file the loader named rather than trusting it.
+            const m = rest.match(/file_text_open_read\("([^"]+)"\)/);
+            const found = !!(m && fs.existsSync(m[1]));
+            check('the loader names a real suite file', found);
+            const source = found ? fs.readFileSync(m[1], 'latin1') : '';
+            check('the suite runs without its reset', source.includes('test_unit_begin') && !rest.includes('test_unit_end('));
+            appendDialog(port, 'M', ['(dialog had no readable text)']);
+            counters = { total: 45, succeeded: 44 };
+            reply('OK');
           } else if (rest.includes('test_unit_begin')) {
-            // A suite's source, run with its reporting call stripped out. One
-            // assertion fails, and GM8 shows a box whose text nobody can read.
+            // The send_source fallback: a suite's source sent directly, with
+            // its reporting call stripped out. One assertion fails, and GM8
+            // shows a box whose text nobody can read.
             check('the suite runs without its reset', !rest.includes('test_unit_end('));
             appendDialog(port, 'M', ['(dialog had no readable text)']);
             counters = { total: 45, succeeded: 44 };
@@ -352,10 +366,25 @@ async function main() {
   contains('find sees scripts too', await mcp.callTool('gg2_find', { pattern: 'test_unit_begin' }), '.gml:');
   contains('events can be listed', await mcp.callTool('gg2_event', { action: 'list', object: 'Heavy' }), 'Step');
 
+  const beforeTest = seen.length;
   const tested = await mcp.callTool('gg2_test', { suite: 'test_ggon' });
   contains('a suite reports its assertion counts', tested, '44/45 assertions succeeded');
   contains('and says how many failed when the text is unreadable', tested, '1 assertion(s) failed');
   contains('and a failed assertion is not called a crash', tested, '0/1 suite(s) passed');
+  check(
+    'gg2_test defaults to the game reading its own suite off disk',
+    seen.slice(beforeTest).some((s) => s.includes('file_text_open_read')),
+    seen.slice(beforeTest).join(' | ')
+  );
+
+  const beforeSendSource = seen.length;
+  const testedSendSource = await mcp.callTool('gg2_test', { suite: 'test_ggon', send_source: true });
+  contains('send_source falls back to sending the suite text over the wire', testedSendSource, '44/45 assertions succeeded');
+  check(
+    'and that call does not use the in-game loader',
+    seen.slice(beforeSendSource).every((s) => !s.includes('file_text_open_read')),
+    seen.slice(beforeSendSource).join(' | ')
+  );
 
   const logged = await mcp.callTool('gg2_log', { source: 'launcher', lines: 100 });
   contains('the log locates the error it recorded', logged, 'Unknown variable aTypoNobodyDefined');

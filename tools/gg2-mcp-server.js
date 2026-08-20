@@ -393,7 +393,7 @@ function testSuites() {
       if (/^test_(assert|unit)_/.test(e.name)) continue;
       const text = lib.readText(p);
       if (!text.includes('test_unit_begin')) continue;
-      out.push({ name: path.basename(e.name, '.gml'), file: path.relative(REPO, p).split(path.sep).join('/') });
+      out.push({ name: path.basename(e.name, '.gml'), file: path.relative(REPO, p).split(path.sep).join('/'), abs: p });
     }
   };
   walk(TEST_DIR);
@@ -402,6 +402,30 @@ function testSuites() {
 
 // The one line of a suite's source whose only job is to report and forget.
 const stripReporting = (source) => source.replace(/test_unit_end\s*\(\s*\)\s*;?/g, '');
+
+// Have the game read its own suite off disk, rather than sending the source
+// down the wire: no lint gate to fight, no payload-size ceiling, and no
+// escaping concerns, since the tooling already knows the absolute path of
+// every suite it discovered. GM8 string literals have no escapes at all, so a
+// Windows path pastes in exactly as-is - which is also why one containing a
+// quote has to be refused rather than escaped.
+function suiteLoader(abs) {
+  if (abs.includes('"')) throw new Error(`suite path cannot contain a quote: ${abs}`);
+  return (
+    'var __gg2SuiteFile, __gg2SuiteSrc, __gg2SuiteLine;\n' +
+    `__gg2SuiteFile = file_text_open_read("${abs}");\n` +
+    '__gg2SuiteSrc = "";\n' +
+    'while (!file_text_eof(__gg2SuiteFile))\n' +
+    '{\n' +
+    '    __gg2SuiteLine = file_text_read_string(__gg2SuiteFile);\n' +
+    '    file_text_readln(__gg2SuiteFile);\n' +
+    '    if (string_pos("test_unit_end", __gg2SuiteLine) == 0)\n' +
+    '        __gg2SuiteSrc += __gg2SuiteLine + chr(13) + chr(10);\n' +
+    '}\n' +
+    'file_text_close(__gg2SuiteFile);\n' +
+    'execute_string(__gg2SuiteSrc);'
+  );
+}
 
 // Reading a global that was never assigned is an error dialog in its own right,
 // so a suite that fell over before test_unit_begin is given a value that says so.
@@ -682,15 +706,25 @@ const TOOLS = [
     description:
       'Run the game\'s own unit tests inside the running game and report how many assertions passed. Run it after ' +
       'a rebuild - nothing else checks that a change to, say, GGON still round-trips. ' +
-      'The suite\'s own source is evaluated with its test_unit_end() call removed, because that helper resets the ' +
-      'assertion counters after showing a message box, and the counters are the only part of its report that can ' +
-      'be read from outside: GM8 draws message text with no window handle. A failed assertion still shows a box, ' +
-      'which the launcher dismisses so the game keeps running.',
+      'By default the game opens its own suite file off disk (file_text_open_read) and runs it with ' +
+      'test_unit_end() stripped out, since that helper resets the assertion counters after showing a message box ' +
+      'and the counters are the only part of its report that can be read from outside: GM8 draws message text ' +
+      'with no window handle. A failed assertion still shows a box, which the launcher dismisses so the game ' +
+      'keeps running. Pass send_source: true to send the suite text down the wire instead - only needed when the ' +
+      'game and this tooling are not on the same machine.',
     inputSchema: {
       type: 'object',
       properties: {
         suite: { type: 'string', description: 'One suite by name, e.g. test_ggon. Default: every suite found.' },
         timeout_seconds: { type: 'integer', description: 'How long one suite may take (default 60).' },
+        skip_lint: {
+          type: 'boolean',
+          description: 'Bypass the lint gate. Only if you are certain the linter is wrong.',
+        },
+        send_source: {
+          type: 'boolean',
+          description: 'Send the suite text over the wire instead of having the game read it off disk itself.',
+        },
         ...INSTANCE_ARG,
       },
       additionalProperties: false,
@@ -956,13 +990,18 @@ async function callTool(name, args) {
       const results = [];
 
       for (const suite of wanted) {
-        const body = stripReporting(lib.readText(path.join(REPO, suite.file)));
-        lintOrThrow(body, false);
-
         const mark = logSize(logFile);
         // Not watched(): a failed assertion is reported through show_message and
         // is a result, not a crash. Real errors are collected separately below.
-        await command(where, 'EVAL ' + body, timeout);
+        if (args.send_source) {
+          const body = stripReporting(lib.readText(suite.abs));
+          lintOrThrow(body, args.skip_lint);
+          await command(where, 'EVAL ' + body, timeout);
+        } else {
+          const loader = suiteLoader(suite.abs);
+          lintOrThrow(loader, args.skip_lint);
+          await command(where, 'EVAL ' + loader, timeout);
+        }
         const text = logSince(logFile, mark);
 
         // A suite that never reached test_unit_begin leaves the counters
