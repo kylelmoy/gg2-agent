@@ -283,9 +283,9 @@ exactly what broke.
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher
   forcing focus with `AttachThreadInput`/`SetForegroundWindow` - was tried and
-  failed with access-denied/invalid-parameter errors; see `HANDOFF.md` before
-  trying it again. Expect a ~10s timeout and no effect. `press`/`click` do not
-  depend on focus and work fine.
+  failed with access-denied/invalid-parameter errors (see the HANDOFF.md at
+  commit `efedf8b` for the detail, before trying it again). Expect a ~10s
+  timeout and no effect. `press`/`click` do not depend on focus and work fine.
 - **A frozen game's own instances cannot be read by field while they stay
   frozen.** `gg2_step` (and `FREEZE` generally) works by calling
   `instance_deactivate_all(true)`, and GM8 makes a deactivated instance's data
