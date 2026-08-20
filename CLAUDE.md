@@ -45,6 +45,7 @@ Then drive the running game with the MCP tools:
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
 | `gg2_screenshot` | look at the game; works while it is frozen |
+| `gg2_nav_map` | visualise bot nav-graph reachability (green/red overlay) over the real map |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
 | `gg2_input` | press, release and click; `aim` is currently broken, see below |
@@ -73,6 +74,21 @@ that gap, and between them they cover almost every "why did it do that":
   lasts two frames is not missed.
 - **`gg2_watch`** samples up to eight expressions every frame and writes changes
   to the bridge log; `gg2_log` is how you read the trace back.
+
+**`gg2_nav_map`** is `gg2_screenshot` plus a purpose-built overlay for one recurring
+question: "why can't a bot get from here to there?" It runs a directed BFS over the bot
+nav graph (`Gang-Garrison-2`'s `Scripts/BotNav/`) from a start point — a bot's own
+position by default — and renders every node as a bar, green if reached and red if not,
+at whatever view you ask for (the whole map by default). A screenshot answers in one look
+what used to take a dozen `gg2_eval` round-trips summing edges by hand: green stopping
+dead at a wall or a platform edge is immediately visible, and it is what root-caused a
+real bug in `navJumpFlight` this way (2026-08-20 — a steep jump-up was being rejected;
+see `Gang-Garrison-2`'s bot plan for the detail). It also hides `TeamSelectController`
+for the shot — that HUD panel is fixed in screen space over the top of the room
+regardless of the view, and covers most of a full-map screenshot otherwise — and
+restores it afterward. The underlying pieces (`agentNavReach`, `agentBridgeDraw`) live
+permanently in the bridge payload, not a spare, since this is meant to be reached for
+again rather than rebuilt from scratch each time.
 
 `press left|right|up|jump|down|taunt` actually holds - the bridge ORs a mask
 into `PlayerControl`'s own `keybyte` every step - so `gg2_input` plus

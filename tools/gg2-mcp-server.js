@@ -674,6 +674,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'gg2_nav_map',
+    description:
+      'Visualise the bot nav graph\'s reachability over the real map: every node drawn as a bar, green if a ' +
+      'directed BFS from a start point can reach it, red if not, plus a yellow circle at the start. Built for ' +
+      'diagnosing "the nav graph looks disconnected" - it turns a wall of node/edge numbers into one picture, ' +
+      'and green stopping exactly at a wall or a gap is a much faster read than tracing edges by hand. The BFS ' +
+      'is independent of team, gates and intel-carriage (it answers "can anything reach this", not "can this ' +
+      'bot") and ignores gate costs entirely. Also hides the team-select panel for the shot, since that HUD ' +
+      'sits fixed in screen space over the top of the room and would otherwise cover most of it - restored ' +
+      'afterwards. Needs global.navReady (wait for it first if the map just loaded).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'World x to start the reachability BFS from. Default: the first Character in the room.' },
+        y: { type: 'number', description: 'World y to start the reachability BFS from. Default: the first Character in the room.' },
+        view_x: { type: 'number', description: 'Left edge of the viewport, world px. Default: 0.' },
+        view_y: { type: 'number', description: 'Top edge of the viewport, world px. Default: 0.' },
+        view_width: { type: 'number', description: 'Viewport width, world px. Default: the whole map.' },
+        view_height: { type: 'number', description: 'Viewport height, world px. Default: the whole map.' },
+        save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
+        ...INSTANCE_ARG,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'gg2_step',
     description:
       'Freeze the game and advance it by an exact number of frames. This is the clock: it turns "it happens too ' +
@@ -1038,6 +1064,94 @@ async function callTool(name, args) {
             (args.save_to ? `, saved to ${args.save_to}` : ''),
         },
       ];
+    }
+
+    case 'gg2_nav_map': {
+      const where = target(args.instance);
+
+      // Ports and map size, always needed for the view defaults.
+      const dims = await watched(where, () =>
+        command(where, 'EVALX string(view_wport[0]) + "," + string(view_hport[0]) + "," + string(map_width()) + "," + string(map_height())')
+      );
+      const [wport, hport, mapW, mapH] = dims.split(',').map(Number);
+
+      let sx = args.x;
+      let sy = args.y;
+      if (sx === undefined || sy === undefined) {
+        const has = await watched(where, () => command(where, 'EVALX instance_exists(Character)'));
+        if (has !== '1') {
+          throw new Error(
+            'no Character in the room to default a start point from - pass x and y explicitly, ' +
+              'or add one first (botAdd, or have a client join)'
+          );
+        }
+        const pos = await watched(where, () => command(where, 'EVALX string(Character.x) + "," + string(Character.y)'));
+        const [cx, cy] = pos.split(',').map(Number);
+        if (sx === undefined) sx = cx;
+        if (sy === undefined) sy = cy;
+      }
+
+      const vx = args.view_x ?? 0;
+      const vy = args.view_y ?? 0;
+      const vw = args.view_width ?? mapW;
+      const vh = args.view_height ?? mapH;
+
+      const reached = await watched(where, () => command(where, `EVALX agentNavReach(${sx}, ${sy})`));
+      if (reached === '-1') {
+        throw new Error(
+          'agentNavReach returned -1: either the nav graph is not built yet (wait on global.navReady) ' +
+            `or (${sx}, ${sy}) does not resolve to a node at all`
+        );
+      }
+
+      const setup =
+        `with(TeamSelectController) visible = false;\n` +
+        `view_enabled = true;\n` +
+        `view_visible[0] = true;\n` +
+        `view_object[0] = -1;\n` +
+        `view_xview[0] = ${vx};\n` +
+        `view_yview[0] = ${vy};\n` +
+        `view_wview[0] = ${vw};\n` +
+        `view_hview[0] = ${vh};\n` +
+        `view_wport[0] = ${wport};\n` +
+        `view_hport[0] = ${hport};\n` +
+        `global.agentNavOverlay = true;`;
+      lintOrThrow(setup);
+
+      const cleanup = `global.agentNavOverlay = false;\nwith(TeamSelectController) visible = true;`;
+      lintOrThrow(cleanup);
+
+      let result;
+      try {
+        await watched(where, () => command(where, 'EVAL ' + setup));
+
+        const shot = path.join(BUILD_DIR, `agent_shot_${where.port}.png`);
+        try {
+          fs.rmSync(shot, { force: true });
+        } catch (e) {
+          /* an old shot that cannot be removed is about to be overwritten */
+        }
+        await watched(where, () => command(where, 'SHOT ' + shot));
+        if (!fs.existsSync(shot)) throw new Error(`the game reported success but wrote no file to ${shot}`);
+        const raw = fs.readFileSync(shot);
+        const { png, converted, width, height } = image.toPng(raw);
+        fs.rmSync(shot, { force: true });
+        if (args.save_to) fs.writeFileSync(args.save_to, png);
+
+        result = [
+          { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
+          {
+            type: 'text',
+            text:
+              `${where.name}: ${width}x${height}${converted ? ' (converted from the bitmap GM8 wrote)' : ''}, ` +
+              `${reached} nodes reached from (${sx}, ${sy})` +
+              (args.save_to ? `, saved to ${args.save_to}` : ''),
+          },
+        ];
+      } finally {
+        await watched(where, () => command(where, 'EVAL ' + cleanup));
+      }
+      return result;
     }
 
     case 'gg2_step': {
