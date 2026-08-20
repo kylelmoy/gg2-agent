@@ -733,6 +733,34 @@ const TOOLS = [
     },
   },
   {
+    name: 'gg2_profile',
+    description:
+      'Time GML the game has no profiler for: GM8 has no get_timer, delta_time or fps_real, only ' +
+      'current_time, which has 1-16ms Windows granularity - so a single call is never trustworthy and this ' +
+      'exists to amortise that properly instead of hand-rolling it with gg2_eval and gg2_watch. Two modes:\n' +
+      '  mode "expr" (default) - runs code repeat(n) between two current_time reads inside one call and ' +
+      'reports the total and the per-iteration mean. For a pure CPU cost, e.g. one collision check or one ' +
+      'grid cell of a bot-nav build.\n' +
+      '  mode "frames" - freezes the game and steps it one frame at a time, reading current_time after each ' +
+      'step (the in-game clock, not a stopwatch on this side of the wire, which would measure MCP round-trip ' +
+      'time instead of GML time), and reports the frame-time distribution. For the per-frame cost of whatever ' +
+      'is already running, e.g. a chunked build spread across many step events. Leaves the game frozen ' +
+      'afterwards - call gg2_resume. Freezing stops the network, so use this mode carefully inside a session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['expr', 'frames'], description: 'What to time (default expr).' },
+        code: { type: 'string', description: 'mode "expr": GML statement(s) to repeat, e.g. navClearanceBuild();' },
+        n: { type: 'integer', description: 'mode "expr": how many iterations (default 100, max 1000000).' },
+        frames: { type: 'integer', description: 'mode "frames": how many frames to sample (default 60, min 2, max 600).' },
+        timeout_seconds: { type: 'integer', description: 'mode "expr": how long the whole repeat may take (default 60).' },
+        skip_lint: { type: 'boolean', description: 'mode "expr": bypass the lint gate.' },
+        ...INSTANCE_ARG,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'gg2_session',
     description:
       'Start, stop and list games. A session is a dedicated server and its clients, each named and separately ' +
@@ -1027,6 +1055,57 @@ async function callTool(name, args) {
       return (
         `${results.length - failed.length}/${results.length} suite(s) passed in ${where.name}\n\n` +
         results.map((r) => r.text).join('\n')
+      );
+    }
+
+    case 'gg2_profile': {
+      const where = target(args.instance);
+      const mode = args.mode === 'frames' ? 'frames' : 'expr';
+
+      if (mode === 'expr') {
+        if (typeof args.code !== 'string' || !args.code.trim()) throw new Error('code is required for mode "expr"');
+        const n = clamp(args.n, 1, 1000000, 100);
+        const timeout = clamp(args.timeout_seconds, 5, 600, 60) * 1000;
+        const body =
+          'var __gg2ProfT0, __gg2ProfT1;\n' +
+          '__gg2ProfT0 = current_time;\n' +
+          `repeat (${n})\n` +
+          '{\n' +
+          args.code +
+          '\n}\n' +
+          '__gg2ProfT1 = current_time;\n' +
+          'global.gg2ProfileMs = __gg2ProfT1 - __gg2ProfT0;';
+        lintOrThrow(body, args.skip_lint);
+        await watched(where, () => command(where, 'EVAL ' + body, timeout));
+        const totalMs = Number(await command(where, 'EVALX global.gg2ProfileMs'));
+        return (
+          `${n} iteration(s): ${totalMs}ms total, ${(totalMs / n).toFixed(4)}ms/iteration ` +
+          '(current_time has 1-16ms Windows granularity - trust the mean only when the total is comfortably ' +
+          'larger than that; raise n if it is not)'
+        );
+      }
+
+      // mode "frames": the per-frame cost of whatever is already running, not
+      // a snippet - freezes the game and steps it a frame at a time, reading
+      // the in-game clock after each step. A stopwatch on this side of the
+      // wire would measure MCP round-trip time instead of GML time. At least
+      // two samples are needed for a single delta between them.
+      const frames = clamp(args.frames, 2, 600, 60);
+      await watched(where, () => command(where, 'FREEZE'));
+      const samples = [];
+      for (let i = 0; i < frames; i++) {
+        await command(where, 'STEP 1', framesTimeout(1));
+        samples.push(Number(await command(where, 'EVALX current_time')));
+      }
+      const deltas = [];
+      for (let i = 1; i < samples.length; i++) deltas.push(samples[i] - samples[i - 1]);
+      deltas.sort((a, b) => a - b);
+      const sum = deltas.reduce((a, b) => a + b, 0);
+      const pct = (p) => deltas[Math.min(deltas.length - 1, Math.floor((p / 100) * deltas.length))];
+      return (
+        `${frames} frame(s) sampled (${deltas.length} delta(s)): mean ${(sum / deltas.length).toFixed(2)}ms, ` +
+        `min ${deltas[0]}ms, p50 ${pct(50)}ms, p95 ${pct(95)}ms, max ${deltas[deltas.length - 1]}ms\n` +
+        'the game is left frozen - call gg2_resume to let it run again.'
       );
     }
 

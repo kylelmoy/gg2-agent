@@ -121,6 +121,7 @@ function startFakeBridge(port) {
   const seen = [];
   const live = [];
   let counters = { total: -1, succeeded: -1 };
+  let fakeClock = 1000000;
   const server = net.createServer((sock) => {
     live.push(sock);
     let rx = Buffer.alloc(0);
@@ -226,6 +227,14 @@ function startFakeBridge(port) {
             reply('OK ' + counters.succeeded);
           } else if (rest.startsWith('global.testAssertions')) {
             reply('OK ' + counters.total);
+          } else if (rest.trim() === 'current_time') {
+            // gg2_profile's frames mode: a fake clock that advances a plausible
+            // amount (~1 frame at 30fps) on every read, so consecutive samples
+            // produce a real, non-zero delta.
+            fakeClock += 33;
+            reply('OK ' + fakeClock);
+          } else if (rest.trim() === 'global.gg2ProfileMs') {
+            reply('OK 12');
           } else {
             reply(verb === 'EVAL' ? 'OK' : 'OK 42');
           }
@@ -421,6 +430,32 @@ async function main() {
     seen.slice(beforeSendSource).every((s) => !s.includes('file_text_open_read')),
     seen.slice(beforeSendSource).join(' | ')
   );
+
+  const beforeProfileExpr = seen.length;
+  const profiledExpr = await mcp.callTool('gg2_profile', { code: 'x = x + 1;', n: 10 });
+  contains('gg2_profile expr mode reports iterations and a total', profiledExpr, '10 iteration(s)');
+  contains('and a per-iteration mean', profiledExpr, 'ms/iteration');
+  check(
+    'and the repeat count reached the game',
+    seen.slice(beforeProfileExpr).some((s) => s.includes('repeat (10)')),
+    seen.slice(beforeProfileExpr).join(' | ')
+  );
+
+  const beforeProfileFrames = seen.length;
+  const profiledFrames = await mcp.callTool('gg2_profile', { mode: 'frames', frames: 5 });
+  check(
+    'gg2_profile frames mode freezes before stepping',
+    seen.slice(beforeProfileFrames).includes('FREEZE'),
+    seen.slice(beforeProfileFrames).join(' | ')
+  );
+  check(
+    'and steps one frame at a time',
+    seen.slice(beforeProfileFrames).filter((s) => s === 'STEP 1').length >= 5,
+    seen.slice(beforeProfileFrames).join(' | ')
+  );
+  contains('and reports a frame-time distribution', profiledFrames, 'mean');
+  contains('with a p95', profiledFrames, 'p95');
+  check('and leaves the game frozen for the caller to resume', profiledFrames.includes('call gg2_resume'));
 
   const logged = await mcp.callTool('gg2_log', { source: 'launcher', lines: 100 });
   contains('the log locates the error it recorded', logged, 'Unknown variable aTypoNobodyDefined');
