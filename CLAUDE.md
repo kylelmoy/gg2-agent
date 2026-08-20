@@ -170,6 +170,12 @@ byte-identical; run it if you suspect the splicer.
 This is Game Maker 8 (2008), not modern GameMaker. Your training data is mostly
 GameMaker Studio, and that dialect will not compile here.
 
+`GML.md` at the repo root is a running list of GM8/GG2-engine gotchas that cost
+real debugging time — things that lint clean but do the wrong thing at runtime
+(`Obstacle.solid` only being true inside its own step, `ds_grid_read` being a
+procedure, `var` shadowing a built-in silently killing startup, and more). Read
+it before writing GML here; it covers ground `gg2_lint` cannot.
+
 **Not available:** ternary `?:`, `try`/`catch`, structs, `var` block scoping,
 arrays beyond 2D, `#region`, function literals, `static`, string escapes
 (`"\n"` is a literal backslash-n; use `chr(10)`).

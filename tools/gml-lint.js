@@ -148,6 +148,13 @@ function loadProject(tree) {
     }
   }
 
+  // Read-only at compile time - unlike a globalvar, which is deliberately
+  // assignable and must never be flagged as if it were a resource.
+  syms.resources = new Set();
+  for (const k of ['scripts', 'objects', 'sprites', 'sounds', 'backgrounds', 'rooms', 'fonts', 'timelines', 'paths', 'constants']) {
+    for (const v of syms[k]) syms.resources.add(v);
+  }
+
   syms.all = new Set();
   for (const k of Object.keys(syms)) {
     if (syms[k] instanceof Set) for (const v of syms[k]) syms.all.add(v);
@@ -300,6 +307,26 @@ const MODERN_ONLY = new Set([
   'ds_map_secure_save', 'string_hash_to_newline', 'gc_collect', 'exception_unhandled_handler',
 ]);
 
+// Built-in instance variables. Every instance already has one of these, so
+// `var` declaring a local of the same name is not a redeclaration - it is a
+// compilation error, and one that takes the whole script's compile down with
+// it (GM8 compiles every script at load, before any Create event runs), which
+// is what makes it so much more expensive than the error message suggests.
+// Verified against this project's own ~20,000 lines: zero `var` declarations
+// shadow any of these.
+const INSTANCE_VARS = new Set([
+  'x', 'y', 'xprevious', 'yprevious', 'xstart', 'ystart',
+  'hspeed', 'vspeed', 'speed', 'direction', 'friction', 'gravity', 'gravity_direction',
+  'solid', 'persistent', 'depth', 'visible', 'id',
+  'object_index', 'sprite_index', 'mask_index',
+  'image_index', 'image_speed', 'image_xscale', 'image_yscale', 'image_angle', 'image_alpha', 'image_blend',
+  'alarm', 'bbox_left', 'bbox_right', 'bbox_top', 'bbox_bottom',
+]);
+
+// Assignment operators. Deliberately excludes "==", "<=", ">=" and "!=" - none
+// of those write anything, so a resource name is fine on their left.
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '|=', '&=', '^=', ':=']);
+
 function lintSource(src, ctx, originName) {
   const findings = [];
   const add = (sev, line, col, rule, msg) =>
@@ -364,12 +391,37 @@ function lintSource(src, ctx, originName) {
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k];
     if (t.type === 'ident' && (t.value === 'var' || t.value === 'globalvar')) {
+      const isVar = t.value === 'var';
       let j = k + 1;
       while (j < toks.length && toks[j].value !== ';') {
-        if (toks[j].type === 'ident') localVars.add(toks[j].value);
+        if (toks[j].type === 'ident') {
+          localVars.add(toks[j].value);
+          if (isVar && INSTANCE_VARS.has(toks[j].value)) {
+            add('error', toks[j].line, toks[j].col, 'var-shadows-builtin',
+              `"var ${toks[j].value}" is a compilation error in GM8: "${toks[j].value}" is a built-in instance ` +
+              'variable, not a free name - the whole script fails to compile, before any Create event runs');
+          }
+        }
         j++;
       }
     }
+  }
+
+  // --- assignment to a resource/constant name ---
+  //
+  // Script, object, sprite, room, font, timeline, path and constant names are
+  // read-only constants at compile time, so `global.navNodeGrid = -1;` is not
+  // an assignment when a script called navNodeGrid exists - it fails to
+  // compile, identically to the var-shadow case above, and just as silently
+  // (the game boots, opens its window, and never starts the bridge).
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k];
+    const next = toks[k + 1];
+    if (t.type !== 'ident' || !next || next.type !== 'punct' || !ASSIGN_OPS.has(next.value)) continue;
+    if (!ctx.syms.resources.has(t.value)) continue;
+    add('error', t.line, t.col, 'assign-to-resource-name',
+      `"${t.value}" is a script/object/sprite/room/constant name, which is a read-only constant at compile ` +
+      'time - assigning to it is a compilation error, not an assignment');
   }
 
   for (let k = 0; k < toks.length; k++) {

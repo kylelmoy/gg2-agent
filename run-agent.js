@@ -89,6 +89,32 @@ async function runAgent({
     );
   }
 
+  // The second most common reason, and the most misleading one: a compile
+  // error in any script takes down the whole startup, before AgentBridge's
+  // Create event ever runs - no bridge log, no launcher "E|" line if the
+  // dialog is still up, just a game window that opens, paints, and answers
+  // Responding: True while doing nothing. Unlike show_message, TErrorForm's
+  // text lives in a real TMemo and answers WM_GETTEXT, so it can be read from
+  // out here - and it names the failing script and line outright.
+  try {
+    const inst = instances.list(buildDir).find((i) => i.port === port);
+    if (inst) {
+      for (const w of win32.windows({ pid: inst.pid, cls: 'TErrorForm' })) {
+        const memo = win32.descendants(w.hwnd).find((d) => d.cls === 'TMemo');
+        const text = memo && win32.controlText(memo.hwnd);
+        if (text && text.trim()) {
+          lib.warn('the game is showing an error dialog - this is almost certainly why the bridge never came up:');
+          // The offending line's own newlines come back flattened into one
+          // wall of text; the header lines above it carry the signal, so only
+          // the first few are worth printing by default.
+          for (const line of text.trim().split(/\r?\n/).filter(Boolean).slice(0, 8)) lib.detail(line);
+        }
+      }
+    }
+  } catch (e) {
+    /* best-effort: a failed check should not hide the real timeout above */
+  }
+
   for (const p of [instances.launcherLog(buildDir, port), instances.bridgeLog(buildDir, port)]) {
     if (!fs.existsSync(p)) continue;
     lib.warn(`--- ${path.basename(p)} ---`);
