@@ -100,6 +100,58 @@ valid handle before a `-1` fallback) before trusting it.
 
 ---
 
+## `-1` is not "no instance" — it is `self`, and `instance_exists(-1)` is true
+
+The most dangerous sentinel in this codebase, because the guard everyone reaches for
+does not work and the failure is silent.
+
+GM8's special instance ids are negative, and `-1` is one of them:
+
+| id | meaning | `instance_exists` |
+|---|---|---|
+| `-1` | `self` | **true** |
+| `-2` | `other` | **true** |
+| `-3` | `all` | **true** |
+| `-4` | `noone` | false |
+| `-5` | `global` | false |
+
+All verified against a running exe. So when GG2 stores `-1` to mean "this player has no
+Character" — which it does, in `Player.object`, `Sentry.currentWeapon`, `navFindPath`'s
+failure return, `botPath`, and plenty more — every one of these does something other
+than what it looks like:
+
+```gml
+// player.object is -1 because the bot is dead
+if (instance_exists(player.object))   // TRUE. -1 is self, and self exists.
+    hp = player.object.hp;            // reads the CALLING instance's hp
+with (player.object)                  // runs the block on the caller
+    hp = 0;                           // ...and zeroes the caller's hp
+```
+
+`(-1).someVar` reads the *caller's* `someVar`; confirmed by setting a uniquely named
+variable on the calling instance and reading it back through a `-1` handle. If the
+caller happens not to have that variable, you get `Unknown variable someVar` — which
+reads exactly like "that object doesn't have this field" and sends you looking at the
+wrong object entirely. That is precisely how a session was spent concluding `Character`
+had no `currentWeapon`, when the real answer was that the bot was dead at that instant
+and the read had been quietly redirected to the `AgentBridge`.
+
+**The guard is `!= -1`, never `instance_exists`.** The game's own code already does this
+(`char = player.object; if (char == -1) exit;`) and it is not being pedantic.
+
+Two things follow that are worth knowing separately:
+
+- **`with()` is not null-safe here.** It *is* safe for a genuinely destroyed instance id
+  — the block simply does not run — which is why `with()` is the right idiom for "this
+  might be dead". But it is not safe for `-1`, because `-1` is a live instance. The two
+  cases look identical at the call site and behave oppositely.
+- **`noone` (-4) is the safe sentinel.** Anything writing its own "nothing" value has a
+  free choice, and `noone` fails `instance_exists` the way a reader expects. `-1` does
+  not. Prefer `noone` in new code, and treat `-1` in existing code as a value to compare
+  against rather than one to dereference.
+
+---
+
 ## Absent in GM8, present in GameMaker Studio
 
 Reach for any of these and the linter will reject them — believe it, it is reading
@@ -265,6 +317,24 @@ still catches a custom map republished under an existing name).
   *over* the target horizontally, puts the answer a second of flight too early and
   skips everything the character would actually hit on the way down.
 - Free 6 px (exactly one mask cell) step-up *and* step-down, both directions.
+- **A projectile's sag after `t` ticks is `g*t*(t+1)/2`, not `g*t²/2`.**
+  `move_all_bullets` adds gravity to `vspeed` *before* it applies the move, so the
+  accumulated drop is `g*(1 + 2 + … + t)`. The discrete form is the exact one — a
+  continuous approximation is short by `g*t/2`, which is 2 px on a 29-tick flight and
+  grows with the square. Anything solving "where will this shot be when it arrives"
+  wants the discrete form; a forward simulation and a solver that disagree on this will
+  differ by exactly that amount and look like an aim bug.
+- **Almost nothing is hitscan.** Only the Sniper `Rifle` is a true ray. Every other
+  weapon fires a projectile that falls: `Shot` (Scattergun, Shotgun, Minigun, Revolver)
+  and `Flame` at 0.15 px/tick², `Mine` and `Needle` at 0.2, and only `Rocket`, `Flare`
+  and `BladeB` at 0. A `Shot` at speed 13 crossing 375 px takes ~29 ticks and sags
+  ~64 px — a whole character height — so aiming straight at a distant target misses low
+  on nearly every gun in the game. `Rocket` additionally *accelerates*
+  (`speed += 1; speed *= 0.92` per tick, decaying from 13 toward 11.5), so its "speed
+  13" is a muzzle value and not a flight value.
+- **Several weapons add the shooter's own `hspeed` to the projectile**
+  (Scattergun, Shotgun, Minigun, the Medigun's `Needle`), so a shot fired on the run is
+  not fired along the aim line. The Revolver instead scales `speed` by it.
 
 ---
 

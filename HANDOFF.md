@@ -8,6 +8,15 @@ session's first pass and picked back up and finished in a second pass the same d
 it never actually made it into *Still open* for a full edition. What is left after this
 edition is at the bottom, under *Still open*.
 
+**Three more were added later on 2026-08-20**, from the bot aim solver and the
+`koth_valley` nav reachability work, and none is fixed yet - they are filed under *Still
+open* and marked `new 2026-08-20`. All three are about *observing* a running game rather
+than driving it, which is where this session spent its time and lost most of it: a watch
+that raises every frame once the game is frozen, no way to set state and start waiting on
+the same frame, and traces that are hard to read. The GML-dialect findings from the same
+work went to `GML.md` - notably that `-1` is `self` rather than "no instance", which is
+the sentinel GG2 uses everywhere.
+
 The GML-dialect lessons live in `GML.md`, not here - this file is about what the
 *tooling* does, not what the language does.
 
@@ -146,6 +155,57 @@ gave up.
 
 ## Still open
 
+### `gg2_watch` expressions raise every frame while the game is frozen (new 2026-08-20, medium)
+
+A watch expression that touches an instance field — which is most of them — starts
+raising as soon as anything freezes the game, because `FREEZE` deactivates every instance
+and a deactivated instance's fields are unreachable from anywhere. The watch does not
+know that, so it re-evaluates and re-raises once per frame for the whole freeze.
+
+Observed: a watch on a Character's `x`/`hspeed`/`onground`, then `gg2_step`, produced the
+same `Unknown variable object` on every frame of the step; both `gg2_step` and the
+following `gg2_resume` came back as *errors* carrying that text, even though both had
+done their jobs (the replies were "advanced 150 frame(s)" and "running", visible under
+the error). The caller cannot distinguish that from a real failure, and `gg2_watch clear`
+is the only way out.
+
+Fix: have the watch tick skip sampling while the game is frozen, and record in the trace
+that sampling was suspended rather than silently leaving a gap. `gg2_step` plus
+`gg2_watch` is the exact combination the "seeing what happens rather than guessing"
+section of `CLAUDE.md` recommends, so these two disagreeing is worse than it sounds.
+
+### There is no atomic "set this up, then wait" (new 2026-08-20, medium)
+
+The game keeps running between MCP calls, and for anything experimental that is not a
+detail — it is the difference between a measurement and a guess.
+
+Concretely: a repeatable trial ("put this bot on node 264, give it a goal on node 261,
+time how long it takes") needs the setup and the wait to begin on the same frame. In
+practice `gg2_eval` to place and then `gg2_wait` to observe leaves seconds of game time
+in between, during which the bot walks off, re-plans, or — in one case here — finishes
+the entire task before the wait arms. Several early measurements this session were
+invalid for this reason, and one was misread as "the bot cannot make this jump" when the
+bot had simply been somewhere else by the time anything looked.
+
+Fix: an optional `setup` argument on `gg2_wait`, a code string the bridge runs on the
+frame it arms the wait, before the first evaluation of `expr`. Small change to the WAIT
+path, and it makes trial-style experiments possible at all. Returning a `frames_elapsed`
+count would finish the job — callers currently stash `GameServer.frame` by hand to get a
+duration, and get the inter-call drift folded into it regardless.
+
+### Watch trace lines echo the whole expression on every sample (new 2026-08-20, low)
+
+`gg2_watch` writes the full source of the expression on every logged change, so a
+one-line trace of five fields ran ~300 characters of which ~250 were the same expression
+repeated. Forty samples of that is unreadable through `gg2_log`; reading it here meant
+shelling out to `sed` to strip the prefix, which rather defeats the tool. It also made a
+stale trace hard to tell from a fresh one, since two consecutive traces differ only in
+the values buried at the end of otherwise identical lines.
+
+Fix: accept an optional short `label` on `gg2_watch add` and log `label = value`, falling
+back to a truncated expression when none is given. The expression itself only needs to
+appear once, when the watch is registered.
+
 ### The lint gate's operand-start set does not cover a comma inside a grouping paren
 
 Left over from item 3 above. `y = (1, 2);` still lints clean and does not compile. A
@@ -193,3 +253,10 @@ not a cleanup - but it is the real fix.
 - **The `M!` force-close fallback and the WAIT sentinel (items 1 and 2 above)** are
   both verified against a running exe, not just reasoned about - keep that habit for
   whatever replaces them if the protocol ever grows request ids.
+- **`gg2_map_image` with `overlay: true` earned its keep again on 2026-08-20**, and
+  faster than the session that built it. One call showed a `koth_valley` nav graph green
+  only in a strip by the spawn and red everywhere else, which located the failure to a
+  single frontier and turned an open-ended "why is the graph disconnected" into a
+  question about one node. The answer was a real generator bug (jump takeoffs pinned to
+  the end of a run), and reachability went 13/270 to 150/270. The overlay is the right
+  first move on any nav question - reach for it before summing edges by hand.
