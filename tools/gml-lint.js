@@ -327,6 +327,43 @@ const INSTANCE_VARS = new Set([
 // of those write anything, so a resource name is fine on their left.
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '|=', '&=', '^=', ':=']);
 
+// Every punctuation operator that must be followed by the start of an operand
+// - binary operators (which may also be prefix-unary, like "-") and the
+// purely-unary ones ("!", "~"). Deliberately excludes ".", ":" and "?": "."
+// wants specifically an identifier on its right, not any operand, "?" is
+// already banned outright above, and ":" is mostly a switch/case terminator,
+// not an operator at all.
+const NEEDS_RIGHT_OPERAND_PUNCT = new Set([
+  '+', '-', '*', '/', '<<', '>>', '<', '<=', '>', '>=', '==', '!=',
+  '&', '|', '^', '&&', '||', '^^',
+  '=', '+=', '-=', '*=', '/=', '|=', '&=', '^=', ':=',
+  '!', '~',
+]);
+// The word-operators: binary ("and"/"or"/"xor"/"div"/"mod") and unary ("not").
+const NEEDS_RIGHT_OPERAND_WORD = new Set(['and', 'or', 'xor', 'div', 'mod', 'not']);
+
+// Identifiers that cannot begin an operand even though they tokenize as
+// "ident": the binary word-operators (they need a left operand first, so
+// finding one where an operand should start is itself the error) and every
+// statement-level keyword, none of which is a valid expression.
+const NOT_AN_OPERAND_START = new Set([
+  'and', 'or', 'xor', 'div', 'mod',
+  'if', 'else', 'while', 'do', 'until', 'for', 'repeat', 'switch', 'case', 'default',
+  'break', 'continue', 'exit', 'return', 'with', 'var', 'globalvar', 'then', 'begin', 'end',
+]);
+
+// Whether a token can be the first token of an operand: a literal, an opening
+// "(" for a sub-expression, a unary prefix operator (which itself demands
+// another operand right after it, checked separately above), or an
+// identifier that is not one of the keywords in NOT_AN_OPERAND_START.
+function startsOperand(t) {
+  if (!t) return false;
+  if (t.type === 'number' || t.type === 'string') return true;
+  if (t.type === 'punct') return t.value === '(' || t.value === '-' || t.value === '+' || t.value === '~' || t.value === '!';
+  if (t.type === 'ident') return !NOT_AN_OPERAND_START.has(t.value);
+  return false;
+}
+
 function lintSource(src, ctx, originName) {
   const findings = [];
   const add = (sev, line, col, rule, msg) =>
@@ -380,6 +417,61 @@ function lintSource(src, ctx, originName) {
     if (t.type === 'ident' && FUTURE_RESERVED.has(t.value)) {
       add('error', t.line, t.col, 'future-reserved',
         `"${t.value}" is not usable here: GM8 has no such construct, and later GameMaker versions reserve the word`);
+    }
+  }
+
+  // --- operator with no right operand ---
+  //
+  // A binary or unary operator always needs an operand immediately after it -
+  // GM8's grammar has no case where one is optional. This checks only "what
+  // comes right after this operator", not full expression well-formedness, so
+  // it stays conservative: it says nothing about whether the operand itself is
+  // valid, only that an operator is never directly followed by a closing
+  // bracket, a separator, or another operand-hungry operator, all of which the
+  // compiler chokes on at exactly that spot. This is what caught
+  // `global.x or y &gt; 3` in practice - `&gt;` tokenizes as `&`, `gt`, `;`,
+  // a plausible statement sequence on its own, but `or` directly followed by
+  // `&` has no operand between them.
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k];
+    const isOperandOperator =
+      (t.type === 'punct' && NEEDS_RIGHT_OPERAND_PUNCT.has(t.value)) ||
+      (t.type === 'ident' && NEEDS_RIGHT_OPERAND_WORD.has(t.value));
+    if (!isOperandOperator) continue;
+
+    const next = toks[k + 1];
+    if (!startsOperand(next)) {
+      add('error', t.line, t.col, 'dangling-operator',
+        next
+          ? `"${t.value}" has no right operand - the next token, "${next.value}", cannot start an expression here`
+          : `"${t.value}" has no right operand - nothing follows it`);
+    }
+  }
+
+  // --- ";" used as a statement separator inside a parenthesized expression ---
+  //
+  // `for (init; cond; incr)` is the one legitimate place a top-level ";"
+  // appears between "(" and its matching ")" - everywhere else, "(" opens a
+  // call or a grouping, and neither can contain a statement separator. A
+  // stack of open "(" tokens, each marked at the moment it opens by whether
+  // the token immediately before it was the "for" keyword, is enough to tell
+  // the two apart without modeling the rest of a for-loop's grammar.
+  const parenStack = [];
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k];
+    if (t.type !== 'punct') continue;
+    if (t.value === '(') {
+      const prev = toks[k - 1];
+      parenStack.push({ forLoop: !!(prev && prev.type === 'ident' && prev.value === 'for') });
+    } else if (t.value === ')') {
+      parenStack.pop();
+    } else if (t.value === ';') {
+      const top = parenStack[parenStack.length - 1];
+      if (top && !top.forLoop) {
+        add('error', t.line, t.col, 'semicolon-in-expression',
+          '";" is a statement separator - it cannot appear inside a parenthesized expression or call ' +
+          "(only a for-loop's own parentheses may contain one)");
+      }
     }
   }
 

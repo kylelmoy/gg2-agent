@@ -2,10 +2,11 @@
 
 Forward-looking backlog for the tooling. The previous edition of this file - written
 2026-08-19 alongside milestone 4 part 7 of the bot nav graph - listed five items, all
-fixed in that edition. **Five more were added 2026-08-20** from milestone 5 part 3;
-all five are now fixed here, four of them completely and one (the lint gate) partially,
-with the remainder recorded below rather than silently dropped. What is left after
-this edition is at the bottom, under *Still open*.
+fixed in that edition. **Five more were added 2026-08-20** from milestone 5 part 3, all
+five fixed here - the lint gate's "broad fix" (below) was deferred within the same
+session's first pass and picked back up and finished in a second pass the same day, so
+it never actually made it into *Still open* for a full edition. What is left after this
+edition is at the bottom, under *Still open*.
 
 The GML-dialect lessons live in `GML.md`, not here - this file is about what the
 *tooling* does, not what the language does.
@@ -53,10 +54,10 @@ a genuinely true/false expression is unaffected - both re-verified live. GM8 has
 ternary either (`CLAUDE.md`'s dialect table already says so); the fix uses `if/else`,
 not `?:`.
 
-### 3. The lint gate now rejects HTML-escaped operators, and lints the wrapped form (was: high, partially fixed)
+### 3. The lint gate now parses enough expression grammar to catch all three repro cases (was: high)
 
-Two changes, both narrow, matching the two "candidate fixes" the previous edition
-called complementary:
+Three changes, the first two narrow and the third the "broad" fix the first pass of
+this edition deferred:
 
 - `tools/gml-lint.js`'s `lintSource` now scans for `&lt;`, `&gt;` and `&amp;` as a
   plain substring pass before tokenizing, and refuses them outright (rule
@@ -67,16 +68,32 @@ called complementary:
   `expr` - the wrapped form is what the game actually has to compile, and an operator
   or `;` in operand position can be a plausible statement sequence on its own while
   being invalid inside `return (...)`.
+- `lintSource` now also checks, without a full expression parser: (a) that every
+  operator needing a right operand (all binary operators, plus the unary ones) is
+  immediately followed by a token that can start one - not a closing bracket, a
+  separator, or another operand-hungry operator - and (b) that a bare `;` never
+  appears inside a `(...)` that a `for` did not open, since that is the one place GM8
+  allows one there. Both are local checks - "what comes right after this token" - not
+  a model of the whole grammar, which is what keeps them conservative enough to trust.
+  This is enough to catch `gg2_lint`'s two previously-still-clean repro cases from the
+  earlier edition: `return (1 ; 2);` (semicolon-in-expression) and `a = (1 + );`
+  (dangling-operator).
 
-**Not done**, and left for the next person to pick up if it costs real time again: the
-"broad" fix, teaching `lintSource` enough expression grammar to reject an operator or
-`;` in operand position generally. `gg2_lint`'s own two other repro cases from the
-previous edition - `return (1 ; 2);` and `a = (1 + );` - still lint clean, because
-neither contains a banned entity and both are full statements passed to `gg2_eval`,
-outside what the wrapped-form fix touches. Verified via `node -e` against
-`tools/gml-lint.js` directly (the running MCP server had the old code loaded in memory
-and needs a restart to pick up either fix - same as the launcher, this is Node
-tooling, not GML, so nothing in the built game needed rebuilding for it).
+**Verified two ways before trusting it**: `node -e` against a dozen deliberately-bad
+snippets (a dangling operator after `+`, `*`, `or`; a bare `;` in a non-for paren) all
+caught, and sixteen legitimate-but-similar-looking idioms (`for` with its three
+clauses, 2D array indexing `a[i, j]`, unary chains like `1 - -1`, `not`, `switch`/`case`,
+`do`/`until`, `with`, `a = b == c`, and GM8's `if (a = b)` equality-via-assignment
+quirk) all still accepted - now locked in as `tools/selftest.js`'s "expression
+grammar" section. Then the whole real tree: `node tools/gml-lint.js --tree
+Source/gg2 Source/gg2` and the same against `payload/` (which includes this
+edition's own new GML) both still report **clean** - zero new findings across the
+~20,000 lines the linter already had to stay quiet on. **Not done**: a `,` in a
+grouping paren, e.g. `y = (1, 2);`, still lints clean - deliberately left out of the
+operand-start set this pass since call arguments and `var i, j;` legitimately put an
+operand right after a comma too, and distinguishing "grouping comma" from
+"argument-list comma" needs the call/group distinction the parenStack does not track
+yet. Left for whoever hits it.
 
 ### 4. A launch failure in a disconnected Windows session is now diagnosed correctly (was: high)
 
@@ -129,12 +146,17 @@ gave up.
 
 ## Still open
 
-### The broad lint fix: `lintSource` does not parse expression grammar
+### The lint gate's operand-start set does not cover a comma inside a grouping paren
 
-Left over from item 3 above. `return (1 ; 2);` and `a = (1 + );` still lint clean and
-do not compile. The narrow entity-based fix and the wrapped-form fix together cover the
-case that actually cost time this session; teaching the linter enough grammar to catch
-an operator or `;` in operand position generally is a bigger, separate piece of work.
+Left over from item 3 above. `y = (1, 2);` still lints clean and does not compile. A
+`,` was deliberately left out of the "needs a right operand" set this pass: it is
+also legitimate inside call argument lists (`foo(1, 2)`) and multi-declaration `var`
+statements (`var i, j;`), both of which put a perfectly good operand right after a
+comma, so treating every comma as "needs an operand or it is invalid" is fine on its
+own but does not by itself distinguish the one bad case from the two good ones. What
+would: track, the same way `parenStack` already tracks `forLoop`, whether each `(` is
+a *call* paren (opened immediately after an identifier or `)`/`]`) or a *grouping*
+paren, and only flag a `,` as invalid when it is directly inside a grouping one.
 
 ### A truly wedged bridge needs a manual reconnect
 

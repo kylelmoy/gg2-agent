@@ -397,6 +397,42 @@ async function main() {
     fs.rmSync(fakePayload, { recursive: true, force: true });
   }
 
+  // HANDOFF.md's lint-gate item: gg2_lint used to pass GML that does not
+  // compile, because it never parsed expression grammar at all. These two
+  // checks are narrow on purpose - "what comes right after this operator" and
+  // "no bare ; inside a non-for-loop paren" - so this locks both the catch and
+  // the absence of false positives on idioms that look similar but are fine.
+  process.stdout.write('\nexpression grammar\n');
+  {
+    const gmllint = require('./gml-lint.js');
+    const bad = (code, rule) => {
+      const r = gmllint.check(code, { trees: [TREE], name: '<test>' });
+      check(`refused: ${code}`, !r.ok && r.errors.some((e) => e.rule === rule), JSON.stringify(r.errors));
+    };
+    const good = (code) => {
+      const r = gmllint.check(code, { trees: [TREE], name: '<test>' });
+      check(`accepted: ${code}`, r.ok, JSON.stringify(r.errors));
+    };
+
+    bad('a = (1 + );', 'dangling-operator');
+    bad('x = * 5;', 'dangling-operator');
+    bad('z = 5 or or 6;', 'dangling-operator');
+    bad('return (1 ; 2);', 'semicolon-in-expression');
+
+    good('for (i = 0; i < 10; i += 1) { x += 1; }');
+    good('a[i, j] = 5;');
+    good('x = -y;');
+    good('z = 1 - -1;');
+    good('if (not flag) { exit; }');
+    good('switch (x) { case 1: break; default: break; }');
+    good('do { i += 1; } until (i >= 10);');
+    good('var i, j; i = 0; j = 0;');
+    good('with (self) { x = 1; }');
+    good('a = b == c;');
+    good('a = !b;');
+    good('if (a = b) { exit; }');
+  }
+
   process.stdout.write('\nbuild-fast refusal\n');
   {
     // patch() refuses before it ever opens an exe when the tree hash does not
