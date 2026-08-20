@@ -16,6 +16,7 @@
   <resource name="agentBridgeDraw" type="RESOURCE"/>
   <resource name="agentNavReach" type="RESOURCE"/>
   <resource name="agentNavDump" type="RESOURCE"/>
+  <resource name="agentBridgeHudVisible" type="RESOURCE"/>
   <resource name="agentScriptSpare0" type="RESOURCE"/>
   <resource name="agentScriptSpare1" type="RESOURCE"/>
   <resource name="agentScriptSpare2" type="RESOURCE"/>

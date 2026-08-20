@@ -708,12 +708,14 @@ const TOOLS = [
       'what needs seeing at more than one window\'s worth at a time. Freezes the game, tiles the requested area ' +
       '(the whole map by default) into window-sized shots at 1:1 zoom - never scaled, so nothing warps - and ' +
       'stitches them into one image, then resumes. Freezing first means every tile comes from the same instant ' +
-      'instead of a game that kept moving between shots, which would otherwise show as seams. Hides the ' +
-      'team-select panel for the same reason gg2_map_image and the old gg2_nav_map did; other screen-space HUD ' +
-      '(kill log, the gamemode\'s own timer bar, a HUD tied to a character the capturing connection itself is ' +
-      'playing) is not suppressed and will repeat at the same screen position in every tile if visible - using ' +
-      'a spectating/non-playing connection to capture avoids most of it. Large areas mean many tiles: a big map ' +
-      'at the default window size can take a couple of dozen round trips, seconds not milliseconds.',
+      'instead of a game that kept moving between shots, which would otherwise show as seams. hide_hud (default ' +
+      'true) deactivates every known HUD-drawing object - the team-select/class-select panels, the gamemode\'s ' +
+      'own status bar (score, timer, capture-point lock icon), kill log, ammo/health/uber/sentry/nuts-and-bolts ' +
+      'HUD, respawn timer, win banner, medic radar, notices, and the spectator overlay - and blanks the mouse ' +
+      'cursor sprite, so a full-map capture is not tiled with a repeating scoreboard and crosshair. This needed ' +
+      'deactivating rather than the more obvious visible = false: most of those objects draw through their own ' +
+      'Draw event code, which - confirmed live - runs regardless of visible, and only deactivating actually ' +
+      'stops it. Pass hide_hud: false to capture the HUD as players actually see it instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -721,6 +723,7 @@ const TOOLS = [
         y: { type: 'number', description: 'Top edge of the area to cover, world px. Default: 0.' },
         width: { type: 'number', description: 'Area width, world px. Default: the whole map.' },
         height: { type: 'number', description: 'Area height, world px. Default: the whole map.' },
+        hide_hud: { type: 'boolean', description: 'Suppress HUD and the cursor sprite for the capture. Default: true.' },
         save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
         ...INSTANCE_ARG,
       },
@@ -1202,9 +1205,17 @@ async function callTool(name, args) {
       const canvas = Buffer.alloc(rw * rh * 4);
       const shot = path.join(BUILD_DIR, `agent_shot_${where.port}.png`);
 
+      const hideHud = args.hide_hud ?? true;
+
       let frozen = false;
       try {
-        await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = false;'));
+        if (hideHud) {
+          await watched(where, () =>
+            command(where, 'EVAL global.agentHideHud = true;\nagentBridgeHudVisible(false);\ncursor_sprite = -1;')
+          );
+        } else {
+          await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = false;'));
+        }
         await watched(where, () => command(where, 'FREEZE'));
         frozen = true;
 
@@ -1256,7 +1267,13 @@ async function callTool(name, args) {
           /* best effort */
         }
         if (frozen) await watched(where, () => command(where, 'RESUME'));
-        await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = true;'));
+        if (hideHud) {
+          await watched(where, () =>
+            command(where, 'EVAL global.agentHideHud = false;\nagentBridgeHudVisible(true);\ncursor_sprite = CrosshairS;')
+          );
+        } else {
+          await watched(where, () => command(where, 'EVAL with(TeamSelectController) visible = true;'));
+        }
       }
 
       const png = image.encodePngRgba(rw, rh, canvas);

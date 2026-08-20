@@ -106,17 +106,32 @@ the second is "what is actually happening on the map right now."
   taken without freezing came back pixel-identical), tiles the requested area into
   window-sized shots at exact 1:1 zoom so nothing warps, and stitches them into one
   image before resuming. Verified live: two adjacent tiles of `koth_valley` stitched with
-  a seamless terrain boundary at the tile edge. Both tools hide `TeamSelectController`
-  for the shot, since that panel is fixed in screen space over the room regardless of
-  view and would otherwise cover most of a full-map capture; `gg2_area_shot` additionally
-  documents (but does not fix) that other screen-space HUD — the gamemode's own timer
-  bar, confirmed live to repeat at the same screen position in every tile — is not
-  suppressed, so a capturing connection that is actually playing (not spectating) will
-  see its own HUD tiled across the image.
+  a seamless terrain boundary at the tile edge. `hide_hud` (default true) deactivates
+  every HUD-drawing object this tooling knows about - team/class select, the gamemode's
+  own status bar (score, timer, capture-point lock icon), kill log, ammo/health/uber/
+  sentry/nuts-and-bolts HUD, respawn timer, win banner, medic radar, notices, the
+  spectator overlay - and blanks the cursor sprite, so a full-map capture isn't tiled
+  with a repeating scoreboard and crosshair.
+  **⚠️ `visible = false` does not hide most of these**, and this cost a whole extra
+  round before landing on what does: `KothHUD`'s own Draw event (like its siblings)
+  draws through custom GML, not GM8's automatic sprite draw, and that code runs
+  regardless of `visible` - confirmed live, a capture-point lock icon and the score/timer
+  bar both survived `with(HUD) visible = false` completely unchanged, even though `HUD`
+  is their common parent and the same parent-inclusive `with()` reliably works elsewhere
+  in this codebase. `instance_deactivate_object(HUD)` (`agentBridgeHudVisible.gml`) does
+  work, because deactivating stops the Draw event itself from firing. That, in turn,
+  collided with `agentBridgeShot`'s existing `instance_activate_all()` - needed so a
+  *frozen* game draws its real content instead of an empty room - which reactivates
+  everything unconditionally, silently undoing the suppression one frame before it would
+  otherwise have mattered. Fixed by having `agentBridgeShot` re-apply
+  `agentBridgeHudVisible(false)` itself, every single redraw, whenever
+  `global.agentHideHud` is set - confirmed live across two separate tile captures in a
+  row, not just one. `TeamSelectController`/`ClassSelectController` are the one exception
+  that *does* need only `visible`, since neither has a custom Draw event of its own.
 
-The underlying pieces (`agentNavReach`, `agentNavDump`, `agentBridgeDraw`) live
-permanently in the bridge payload, not a spare, since this is meant to be reached for
-again rather than rebuilt from scratch each time.
+The underlying pieces (`agentNavReach`, `agentNavDump`, `agentBridgeDraw`,
+`agentBridgeHudVisible`) live permanently in the bridge payload, not a spare, since this
+is meant to be reached for again rather than rebuilt from scratch each time.
 
 `press left|right|up|jump|down|taunt` actually holds - the bridge ORs a mask
 into `PlayerControl`'s own `keybyte` every step - so `gg2_input` plus

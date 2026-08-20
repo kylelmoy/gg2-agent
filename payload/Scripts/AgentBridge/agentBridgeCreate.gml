@@ -11,15 +11,19 @@ readState = 0;  // 0 = waiting for the 4 byte length header, 1 = waiting for the
 msgLen = 0;
 
 // No sprite, so this costs nothing - it is what lets AgentBridge's own Draw event fire
-// at all (GM8 skips Draw for an invisible instance regardless of what code is in it),
-// which is what gg2_nav_map's overlay draws through. See agentBridgeDraw.
+// at all (GM8 skips Draw for an invisible instance regardless of what code is in it).
+// Currently only agentBridgeDraw's (unused) in-game overlay path needs this; kept
+// enabled since it costs nothing idle and nothing else assumes it is off.
 visible = true;
 depth = -1000000;
 
-// gg2_nav_map's state: off until a NAVREACH-driven EVAL turns it on, and no BFS result
-// to draw until agentNavReach has been called at least once.
+// No BFS result to draw until agentNavReach has been called at least once.
 global.agentNavOverlay = false;
 global.agentNavReachValid = false;
+
+// gg2_area_shot's HUD-suppression state: off until an EVAL turns it on. See
+// agentBridgeHudVisible and agentBridgeShot.
+global.agentHideHud = false;
 
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer
