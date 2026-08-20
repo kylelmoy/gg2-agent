@@ -1,7 +1,9 @@
 # Open issues and enhancements
 
-Forward-looking backlog for the tooling, written 2026-08-19 at the end of the
-session that built milestone 4 (part 1) of the bot nav graph in the game repo.
+Forward-looking backlog for the tooling, written 2026-08-19 across the session
+that built milestone 4 of the bot nav graph in the game repo - the solidity and
+clearance grids, surface extraction, walk/fall/jump/drop-through edges, A*, the
+chunked build and its disk cache.
 
 The previous edition of this file was a record of bugs that had already been
 **fixed** - the client bridge dying, held movement input, the
@@ -16,9 +18,11 @@ cost it again.
 
 ---
 
-## 1. The linter does not catch a `var` that shadows a GM8 built-in
+## 1. The linter does not catch an identifier that is already taken
 
-**Severity: high.** This cost about 25 minutes and looked nothing like its cause.
+**Severity: high.** Hit twice in one session, in two different disguises. The
+first cost about 25 minutes; the second would have too, without the diagnostic
+in issue 2.
 
 `var solid, x, y;` - the natural first line of any grid or geometry routine - is
 a **compilation error** in GM8, because `solid`, `x` and `y` are built-in
@@ -53,6 +57,32 @@ Names to reject at minimum: `x`, `y`, `xprevious`, `yprevious`, `xstart`,
 `image_xscale`, `image_yscale`, `image_angle`, `image_alpha`, `image_blend`,
 `alarm`, plus the `bbox_*` family.
 
+### The same failure, second flavour: assigning to a resource name
+
+Hit later in the same session, and it presents identically - game boots, window
+opens, `Responding: True`, no bridge, no bridge log:
+
+```gml
+// there is a script called navNodeGrid
+global.navNodeGrid = -1;   // COMPILATION ERROR
+```
+
+Script, object, sprite, room and constant names are read-only constants at
+compile time, so this is not an assignment at all. The linter already knows
+every one of those names - it builds `syms.scripts`, `syms.objects` and friends
+in `loadProject` - so flagging an assignment whose target is in `syms.all` is
+close to free, and catches the whole family at once.
+
+Both flavours are worth erroring rather than warning: neither is a style
+question, and both stop the entire game loading.
+
+### What the linter already gets right - do not regress these
+
+It correctly refused `ds_grid_sort`, `ds_exists` and `ds_type_grid` when they
+were reached for out of GameMaker Studio habit. That is exactly the check
+earning its keep: all three are Studio-only, all three would have compiled
+nowhere, and all three were caught before a build was spent on them.
+
 ## 2. `run-agent.js` should read the error dialog when the bridge times out
 
 **Severity: high.** This is what turns issue 1 - and every future startup GML
@@ -82,6 +112,14 @@ One caveat for whoever implements it: the memo's text comes back with the
 offending line's newlines flattened, so a long script reads as one wall of text.
 The header lines above it carry the signal - consider printing only the first
 few by default.
+
+**This has now paid for itself twice, by hand.** Both times the bridge failed to
+come up, running the snippet above against the live pid named the failing script
+and line immediately - once for a `var` shadowing a built-in, once for an
+assignment to a script name. Each took seconds to identify with it, against
+roughly 25 minutes the first time without it. Wiring it into `run-agent.js` is
+perhaps twenty lines and removes the single most misleading failure mode this
+tooling has.
 
 Note also that `w.windows()` returns `hwnd` as a BigInt, so `JSON.stringify` on
 the result throws. Use `String(x.hwnd)` when logging.
@@ -176,7 +214,27 @@ reads and report total, mean, and the frame-delta distribution - would remove a
 lot of hand-rolling. `current_time` has 1-16ms Windows granularity, so
 amortising over N is mandatory rather than optional.
 
-## 7. Still open, unchanged from the previous edition
+Concretely, what went wrong without it: timing a chunked build from outside, by
+setting a marker with `gg2_eval` and waiting on a condition, **races the state
+machine**. It reported the build finishing in 22 frames for work that cannot take
+fewer than about 161 ticks, because the wait condition was already true from the
+*previous* build when it was first evaluated. The fix was to instrument inside
+the game - record `current_time` at build start and again at completion, and read
+the difference back afterwards. Any tool that times in-game work needs to do the
+same; a stopwatch on this side of the wire measures the wrong thing.
+
+## 7. Minor: `build-fast` refusals could name the culprit
+
+`build-fast.js` correctly refuses when a non-code file changed, and says "a
+sprite, room, object property, setting or included file differs from the template
+build". Editing `Constants.xml` lands in "setting", which is accurate but not
+obvious - adding a constant feels like editing code, and it is the most common
+reason a fast rebuild turns into a full one during feature work.
+
+Naming the file it actually noticed would turn a moment of confusion into none.
+It already has the tree hash machinery to know.
+
+## 8. Still open, unchanged from the previous edition
 
 - **`gg2_input aim` hangs** (~10s, no effect) when the game window is not
   foreground. `AttachThreadInput` / `SetForegroundWindow` was tried and fails
