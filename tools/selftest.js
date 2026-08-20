@@ -325,6 +325,43 @@ async function main() {
     fs.rmSync(manifestDir, { recursive: true, force: true });
   }
 
+  // HANDOFF.md issue 3: events.js passes [payload, tree] (the payload is
+  // checked first, since a bridge file the injected copy would shadow); the
+  // MCP server passes [tree, payload]. Two callers in the same process asking
+  // about the same project in a different order must land on one cache
+  // entry, not thrash each other's - which would either waste every call
+  // rebuilding, or, if a key ever collided wrongly, serve one caller's stale
+  // answer to the other.
+  process.stdout.write('\ntree order independence\n');
+  {
+    const gmllint = require('./gml-lint.js');
+    const fakePayload = path.join(SCRATCH, 'fake-payload');
+    fs.mkdirSync(fakePayload, { recursive: true });
+    const newScript = path.join(TREE, 'Scripts', 'anotherBrandNewScript.gml');
+    const manifestDir = path.join(BUILD, 'template');
+
+    const orderA = gmllint.check('room_speed', { trees: [TREE, fakePayload] });
+    const orderB = gmllint.check('room_speed', { trees: [fakePayload, TREE] });
+    check(
+      'two callers passing the same trees in a different order agree',
+      orderA.ok && orderB.ok,
+      JSON.stringify({ orderA: orderA.errors, orderB: orderB.errors })
+    );
+
+    const before = gmllint.check('anotherBrandNewScript();', { trees: [fakePayload, TREE] });
+    check('unknown from the payload-first order too', !before.ok);
+
+    fs.writeFileSync(newScript, 'return 1;');
+    fs.mkdirSync(manifestDir, { recursive: true });
+    fs.writeFileSync(path.join(manifestDir, 'gamedata.manifest.json'), '{}');
+    const after = gmllint.check('anotherBrandNewScript();', { trees: [TREE, fakePayload] });
+    check('a manifest rewrite is picked up regardless of which order asked before it', after.ok, JSON.stringify(after.errors));
+
+    fs.rmSync(newScript, { force: true });
+    fs.rmSync(manifestDir, { recursive: true, force: true });
+    fs.rmSync(fakePayload, { recursive: true, force: true });
+  }
+
   process.stdout.write('\nbuild-fast refusal\n');
   {
     // patch() refuses before it ever opens an exe when the tree hash does not

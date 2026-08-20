@@ -552,26 +552,46 @@ function walk(dir, exts) {
 // are not laid out this way - the bridge payload, a scratch tree in tests -
 // have no such file, which is fine: they never gain or lose symbols outside
 // a lint call's own edit.
+//
+// Every tree that has one is folded in, not just the first found: a caller
+// that passes trees in a different order from another caller in the same
+// process (events.js puts the payload first; the MCP server puts the game
+// tree first) must not end up with a cache key blind to one of them.
 function manifestMtime(trees) {
+  const parts = [];
   for (const tree of trees) {
     const manifest = path.resolve(tree, '..', 'build', 'template', 'gamedata.manifest.json');
     try {
-      return `${manifest}@${fs.statSync(manifest).mtimeMs}`;
+      parts.push(`${manifest}@${fs.statSync(manifest).mtimeMs}`);
     } catch (e) {
       continue;
     }
   }
-  return '';
+  return parts.sort().join('|');
 }
 
-let ctxCache = { key: null, ctx: null };
+// A handful of entries, not one: distinct callers legitimately ask for
+// distinct tree sets in the same process (the game tree alone from the CLI,
+// the game tree plus the payload from the MCP server), and a single-slot
+// cache makes those interleave into constant misses - always correct, since
+// the key still carries the real state, but paying for a full tree walk on
+// every call defeats the point of caching at all. Oldest evicted first.
+const CTX_CACHE_SIZE = 8;
+let ctxCache = [];
 
 function context(trees, gm8Dir) {
-  const key = JSON.stringify([trees, gm8Dir, manifestMtime(trees)]);
-  if (ctxCache.key === key) return ctxCache.ctx;
+  // Order must not matter: two callers passing the same trees in a different
+  // sequence describe the same project and must hit the same entry, or a
+  // single-slot-shaped thrash comes back under a different name. The merge
+  // below is a set union either way, so sorting changes nothing it computes.
+  const sortedTrees = [...trees].sort();
+  const key = JSON.stringify([sortedTrees, gm8Dir, manifestMtime(sortedTrees)]);
 
-  const syms = loadProject(trees[0]);
-  for (const extra of trees.slice(1)) {
+  const hit = ctxCache.find((e) => e.key === key);
+  if (hit) return hit.ctx;
+
+  const syms = loadProject(sortedTrees[0]);
+  for (const extra of sortedTrees.slice(1)) {
     if (!fs.existsSync(extra)) continue;
     const more = loadProject(extra);
     for (const k of Object.keys(more)) {
@@ -582,7 +602,8 @@ function context(trees, gm8Dir) {
   }
 
   const ctx = { fnames: loadFnames(gm8Dir), syms, extensions: loadExtensions(), arity: true, style: false };
-  ctxCache = { key, ctx };
+  ctxCache.push({ key, ctx });
+  if (ctxCache.length > CTX_CACHE_SIZE) ctxCache.shift();
   return ctx;
 }
 
