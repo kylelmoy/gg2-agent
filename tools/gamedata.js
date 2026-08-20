@@ -366,16 +366,18 @@ function collectCode(tree) {
   return out;
 }
 
-// Hash of everything the splicer cannot express: sprites, rooms, object
-// properties, settings, included files. If this moves, only the IDE can build.
+// Everything the splicer cannot express: sprites, rooms, object properties,
+// settings, included files - one digest per file, keyed by its path relative
+// to the tree, so a refusal can later say which one moved rather than just
+// that something did.
 //
 // Script files are excluded outright - they are pure code, and adding or
 // removing one is caught by the key comparison in `patch`. Event files are
 // included with their STRING arguments blanked, so editing event code does not
 // trip the hash but adding an action, or touching an argument the splicer
 // cannot place, does.
-function treeHash(tree) {
-  const h = crypto.createHash('sha256');
+function treeFileHashes(tree) {
+  const out = {};
   const files = walk(tree)
     .filter((p) => !rel(tree, p).startsWith('Scripts/'))
     .sort();
@@ -390,13 +392,44 @@ function treeHash(tree) {
         'latin1'
       );
     }
+    out[r] = sha256(content);
+  }
+  return out;
+}
+
+// The single value actually compared: every file's own digest folded together
+// with its path, in a stable order. If this moves, only the IDE can build.
+function aggregateTreeHash(fileHashes) {
+  const h = crypto.createHash('sha256');
+  for (const r of Object.keys(fileHashes)) {
     h.update(r);
-    h.update(crypto.createHash('sha256').update(content).digest());
+    h.update(Buffer.from(fileHashes[r], 'hex'));
   }
   return h.digest('hex');
 }
 
+function treeHash(tree) {
+  return aggregateTreeHash(treeFileHashes(tree));
+}
+
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+
+// What changed between the file hashes a template was built from and the
+// tree's current ones, for the error a mismatched treeHash cannot explain by
+// itself. Undefined `before` means an older manifest with no per-file record -
+// nothing to name, same as today.
+function describeTreeDiff(before, after) {
+  if (!before) return [];
+  const out = [];
+  for (const r of Object.keys(after)) {
+    if (!(r in before)) out.push(`${r} (new)`);
+    else if (before[r] !== after[r]) out.push(r);
+  }
+  for (const r of Object.keys(before)) {
+    if (!(r in after)) out.push(`${r} (removed)`);
+  }
+  return out.sort();
+}
 
 //---------------------------------------------------------------------------
 // Lint gate
@@ -482,12 +515,14 @@ function snapshot(tree, exePath, outPath, log = () => {}) {
     else missing.push(c2.key);
   }
 
+  const treeFiles = treeFileHashes(tree);
   const manifest = {
     version: 1,
     created: new Date().toISOString(),
     template: path.resolve(exePath),
     templateSha256: sha256(exe),
-    treeHash: treeHash(tree),
+    treeHash: aggregateTreeHash(treeFiles),
+    treeFileHashes: treeFiles,
     placed,
     unplaced: missing,
     code,
@@ -507,11 +542,17 @@ function patch(manifestPath, tree, outPath, dryRun, log = () => {}) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   if (manifest.version !== 1) throw new Error(`unsupported manifest version ${manifest.version}`);
 
-  const hash = treeHash(tree);
+  const fileHashes = treeFileHashes(tree);
+  const hash = aggregateTreeHash(fileHashes);
   if (hash !== manifest.treeHash) {
+    const changed = describeTreeDiff(manifest.treeFileHashes, fileHashes);
+    const named = changed.length
+      ? `\n  ${changed.slice(0, 8).join('\n  ')}` +
+        (changed.length > 8 ? `\n  ...and ${changed.length - 8} more` : '')
+      : ' (no per-file record in this manifest to name it - it predates that)';
     throw new Error(
       'the tree has changes the splicer cannot make - a sprite, room, object property, setting or ' +
-        'included file differs from the template build. Run build-agent.js.'
+        `included file differs from the template build:${named}\nRun build-agent.js.`
     );
   }
 
@@ -613,6 +654,6 @@ if (require.main === module) {
 
 module.exports = {
   unpack, repack, decrypt, encrypt,
-  readBlobs, readScript, collectCode, treeHash, applyChanges,
+  readBlobs, readScript, collectCode, treeHash, treeFileHashes, applyChanges,
   snapshot, patch,
 };

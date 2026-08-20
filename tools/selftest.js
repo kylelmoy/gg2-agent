@@ -316,6 +316,42 @@ async function main() {
     fs.rmSync(manifestDir, { recursive: true, force: true });
   }
 
+  process.stdout.write('\nbuild-fast refusal\n');
+  {
+    // patch() refuses before it ever opens an exe when the tree hash does not
+    // match, so this needs no real Game Maker build - just a tree and a
+    // manifest shaped the way snapshot() would have written one.
+    const gamedata = require('./gamedata.js');
+    const resourceDir = path.join(TREE, 'Rooms');
+    fs.mkdirSync(resourceDir, { recursive: true });
+    const resourceFile = path.join(resourceDir, 'room_fake.xml');
+    fs.writeFileSync(resourceFile, '<room>original</room>');
+
+    const treeFileHashes = gamedata.treeFileHashes(TREE);
+    const manifest = {
+      version: 1,
+      template: 'nonexistent.exe',
+      treeHash: gamedata.treeHash(TREE),
+      treeFileHashes,
+      code: [],
+    };
+    const manifestPath = path.join(BUILD, 'fake.manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    fs.writeFileSync(resourceFile, '<room>changed</room>');
+    await throws('a changed resource file is refused', async () =>
+      gamedata.patch(manifestPath, TREE, path.join(BUILD, 'out.exe'), true), 'Run build-agent.js');
+    try {
+      gamedata.patch(manifestPath, TREE, path.join(BUILD, 'out.exe'), true);
+      check('and names it', false, 'nothing thrown');
+    } catch (e) {
+      contains('and names it', e.message, 'Rooms/room_fake.xml');
+    }
+
+    fs.rmSync(resourceFile, { force: true });
+    fs.rmSync(manifestPath, { force: true });
+  }
+
   process.stdout.write('\nimages\n');
   const png = image.toPng(tinyBmp());
   check('a bitmap becomes a PNG', png.converted && png.width === 2 && png.height === 2);
