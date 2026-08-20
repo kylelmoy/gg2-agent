@@ -22,8 +22,8 @@ the tooling rather than at your GML.
 
 The error itself is real and readable: GM8 raises a `TErrorForm` whose text lives in
 a `TMemo`, which answers `WM_GETTEXT`. It names the script and the line. (A
-`show_message` box is a `TMessageForm` and is *not* readable — its text is painted
-straight onto the form.)
+`show_message` box is a `TMessageForm`, which the launcher reads too, but only on a
+best-effort basis — see Miscellaneous below.)
 
 Two ways to write code that triggers this, both of which lint clean:
 
@@ -56,6 +56,47 @@ time, so assigning to one is not an assignment at all. The failure mode is ident
 to the above: the game boots and does nothing.
 
 Worth a grep before adding a global whose name echoes a script you just wrote.
+
+---
+
+## `and`/`or` do not short-circuit
+
+This is worse than the compilation errors above, because it compiles clean, lints
+clean, and only fails at runtime — and only on the input that exercises the branch
+you thought you were skipping.
+
+```gml
+// grid may legitimately be -1 ("caller has none of this")
+while(cond1 and (grid < 0 or ds_grid_get(grid, cx, cy) == target))
+```
+
+Read as short-circuiting (every mainstream language a developer's instincts come
+from), this looks safe: `grid < 0` being true should make GM8 never evaluate the
+right side. **GM8 evaluates both sides of `and`/`or` unconditionally.** So
+`ds_grid_get(grid, cx, cy)` runs even when `grid` is `-1` — calling a `ds_grid`
+function on a handle that was never a real grid — and throws
+`Data structure with index does not exist`, on *every* caller that legitimately
+passes `-1` for that argument.
+
+The failure is a runtime data-structure error, not a syntax error, so nothing at
+edit time catches it, and see below for how unhelpful the runtime message itself is.
+
+**Fix: never fold a "this might not exist" guard into the same boolean expression as
+the access it's guarding.** Compute the dependent part into its own variable with an
+explicit `if` first:
+
+```gml
+sameKind = true;
+if(grid >= 0)
+    sameKind = (ds_grid_get(grid, cx, cy) == target);
+while(cond1 and sameKind)
+```
+
+This is exactly the pattern the rest of this codebase already uses for optional grid
+arguments (`if(platformGrid >= 0) psupport += ds_grid_get(platformGrid, ...)`) — the
+bug only happens when that pattern gets compressed into one `or`. Grep new code for
+`< 0 or ds_grid_get` / `>= 0 and ds_grid_get` (and the mirror-image forms guarding a
+valid handle before a `-1` fallback) before trusting it.
 
 ---
 
@@ -204,6 +245,18 @@ still catches a custom map republished under an existing name).
   back has to go to a file.
 - **A compile error inside `execute_string` raises no dialog at all** and appears
   only in the engine's own `game_errors.log`.
+- **`show_message` freezes the game but writes nothing to `game_errors.log`** —
+  that log is the *engine's* own error trail, and `show_message` is not an error,
+  just a blocking modal. Checking only `gg2_log source: engine` after a timeout
+  finds nothing (a caller may even see "no log file"), which reads exactly like a
+  silent infinite loop. The text is usually captured, just on the *launcher's* side —
+  `tools/launcher.js` watches for `TMessageForm` too and logs what it can read,
+  marked `M|` (`source: launcher`, or `both`). Best effort, though: Delphi paints
+  some captions with no window handle, and those are logged as `(dialog had no
+  readable text)`. A call that never comes back reports these too, so a timeout no
+  longer hides them. This includes the project's own `test_assert_equals`, which calls
+  `show_message` immediately on a failed assertion rather than only at the end — so
+  one wrong expected value in a test can freeze the whole game.
 - **`var` locals are visible inside `with()` blocks** in the same script, which is
   what makes the `with(SomeObject) { ... other.field ... }` idiom work.
 - **Line endings are mixed in this tree** and GM8 accepts both LF and CRLF. When
