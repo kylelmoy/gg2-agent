@@ -418,6 +418,13 @@ async function main() {
     bad('x = * 5;', 'dangling-operator');
     bad('z = 5 or or 6;', 'dangling-operator');
     bad('return (1 ; 2);', 'semicolon-in-expression');
+    // HANDOFF.md's leftover comma-in-grouping-paren gap: "(" opened right
+    // after an identifier or "]"/")" is a call, and a call's own comma is
+    // fine; any other "(" is a bare grouping, where GM8 has no comma operator
+    // at all.
+    bad('y = (1, 2);', 'comma-in-grouping');
+    bad('x = (a, b, c);', 'comma-in-grouping');
+    bad('if (a, b) { exit; }', 'comma-in-grouping');
 
     good('for (i = 0; i < 10; i += 1) { x += 1; }');
     good('a[i, j] = 5;');
@@ -431,6 +438,9 @@ async function main() {
     good('a = b == c;');
     good('a = !b;');
     good('if (a = b) { exit; }');
+    good('x = point_distance(a, b, c, d);');       // call comma, not grouping
+    good('x = ds_grid_get(grid, a[i, j], y);');    // call comma alongside a 2D index
+    good('y = (a[i, j]);');                        // 2D index nested inside a grouping paren
   }
 
   process.stdout.write('\nbuild-fast refusal\n');
@@ -555,8 +565,24 @@ async function main() {
   check('and freezes first', seen.includes('FREEZE'), seen.join(' | '));
   contains('resume works', await mcp.callTool('gg2_resume', {}), 'running');
   contains('waiting returns when the condition holds', await mcp.callTool('gg2_wait', { expr: 'fps > 0', frames: 60 }), 'true after');
+  check('and with no setup the wire still carries a (zero) length prefix', seen.includes('WAIT 60 0:fps > 0'), seen.filter((s) => s.startsWith('WAIT')).join(' | '));
+
+  // HANDOFF.md: setup runs once, synchronously, before the first evaluation of
+  // expr, so a trial's placement and its wait arm on the same call instead of
+  // leaving an unknown amount of real game time between two separate ones.
+  // The fake bridge does not parse WAIT's rest, so this checks what the JS
+  // side put on the wire - the length-prefixed encoding that keeps setup and
+  // expr unambiguous regardless of what either contains.
+  contains('wait accepts a setup and still reports true', await mcp.callTool('gg2_wait', { expr: 'fps > 0', setup: 'x = 1;', frames: 60 }), 'true after');
+  check('and setup is sent length-prefixed ahead of the expression', seen.includes('WAIT 60 6:x = 1;fps > 0'), seen.filter((s) => s.startsWith('WAIT')).join(' | '));
+  await throws('a setup that would not compile is refused before it is sent', async () =>
+    mcp.callTool('gg2_wait', { expr: 'fps > 0', setup: 'array_length(x);', frames: 60 }), 'would not compile');
+
   check('input is sent as typed', (await mcp.callTool('gg2_input', { commands: 'press jump' })) === 'ok' && seen.includes('INPUT press jump'));
   contains('watch is added', await mcp.callTool('gg2_watch', { action: 'add', expr: 'fps' }), 'watching');
+  check('and with no label the wire still carries a (zero) length prefix', seen.includes('WATCH add 0:fps'), seen.filter((s) => s.startsWith('WATCH')).join(' | '));
+  contains('watch accepts a label', await mcp.callTool('gg2_watch', { action: 'add', expr: 'fps', label: 'FPS' }), 'watching');
+  check('and the label is sent length-prefixed ahead of the expression', seen.includes('WATCH add 3:FPSfps'), seen.filter((s) => s.startsWith('WATCH')).join(' | '));
 
   const shot = await mcp.callTool('gg2_screenshot', {});
   check('a screenshot comes back as an image block', Array.isArray(shot) && shot[0].type === 'image' && shot[0].mimeType === 'image/png');

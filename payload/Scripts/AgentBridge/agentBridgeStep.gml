@@ -64,6 +64,7 @@ if (socket_has_error(sock) or tcp_eof(sock))
     {
         frozen = false;
         instance_activate_all();
+        instancesDeactivated = false;
     }
     exit;
 }

@@ -448,29 +448,53 @@ function lintSource(src, ctx, originName) {
     }
   }
 
-  // --- ";" used as a statement separator inside a parenthesized expression ---
+  // --- ";" used as a statement separator inside a parenthesized expression,
+  // and "," used inside a grouping (non-call) "(" ---
   //
   // `for (init; cond; incr)` is the one legitimate place a top-level ";"
   // appears between "(" and its matching ")" - everywhere else, "(" opens a
   // call or a grouping, and neither can contain a statement separator. A
-  // stack of open "(" tokens, each marked at the moment it opens by whether
-  // the token immediately before it was the "for" keyword, is enough to tell
-  // the two apart without modeling the rest of a for-loop's grammar.
+  // stack of open brackets tells the two apart without modeling the rest of a
+  // for-loop's grammar: each "(" is marked, at the moment it opens, by
+  // whether the token immediately before it was the "for" keyword, and by
+  // whether it looks like a call - an identifier that is not itself a
+  // keyword, or a closing ")"/"]", immediately to its left, as opposed to a
+  // bare grouping paren. "[" and "{" are pushed too, only so nesting stays
+  // correct: in `(a[i, j])`, the comma belongs to the 2D array index, not
+  // directly to the outer grouping paren, and only the top of the stack at
+  // the comma's own position says which.
+  //
+  // GM8 has no comma operator, so a "," whose nearest enclosing bracket is a
+  // grouping "(" - not a call's argument list, not "var i, j;" (which is not
+  // inside any bracket at all), not a 2D array index - cannot compile.
   const parenStack = [];
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k];
     if (t.type !== 'punct') continue;
     if (t.value === '(') {
       const prev = toks[k - 1];
-      parenStack.push({ forLoop: !!(prev && prev.type === 'ident' && prev.value === 'for') });
-    } else if (t.value === ')') {
+      const isCall = !!(prev && (
+        (prev.type === 'ident' && !KEYWORDS.has(prev.value)) ||
+        (prev.type === 'punct' && (prev.value === ')' || prev.value === ']'))
+      ));
+      parenStack.push({ type: '(', forLoop: !!(prev && prev.type === 'ident' && prev.value === 'for'), isCall });
+    } else if (t.value === '[' || t.value === '{') {
+      parenStack.push({ type: t.value });
+    } else if (t.value === ')' || t.value === ']' || t.value === '}') {
       parenStack.pop();
     } else if (t.value === ';') {
       const top = parenStack[parenStack.length - 1];
-      if (top && !top.forLoop) {
+      if (top && top.type === '(' && !top.forLoop) {
         add('error', t.line, t.col, 'semicolon-in-expression',
           '";" is a statement separator - it cannot appear inside a parenthesized expression or call ' +
           "(only a for-loop's own parentheses may contain one)");
+      }
+    } else if (t.value === ',') {
+      const top = parenStack[parenStack.length - 1];
+      if (top && top.type === '(' && !top.forLoop && !top.isCall) {
+        add('error', t.line, t.col, 'comma-in-grouping',
+          '"," has no meaning inside a grouping "(...)" - GM8 has no comma operator ' +
+          '(only a call\'s argument list, or "var i, j;", may contain one)');
       }
     }
   }

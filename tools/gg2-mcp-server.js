@@ -786,11 +786,16 @@ const TOOLS = [
       'two frames is missed. The expression is linted first, and the lint gate cannot see every way an ' +
       'expression can fail to compile; if the game rejects it anyway, the wait is abandoned after the first ' +
       'frame with an error reply rather than repeating the same failure for the rest of the budget. Pass raw ' +
-      'GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text.',
+      'GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text. ' +
+      'Optional setup runs once, synchronously, before the first evaluation of expr - use it to place a bot or ' +
+      'set up state in the same call that starts waiting, instead of a separate gg2_eval first: the game keeps ' +
+      'running between calls, so a setup done as a prior gg2_eval leaves an unknown amount of real game time ' +
+      'before the wait actually arms, and a bot can walk off, re-plan, or finish before anything is watching.',
     inputSchema: {
       type: 'object',
       properties: {
         expr: { type: 'string', description: 'A GML expression, e.g. "instance_number(Player) > 0"' },
+        setup: { type: 'string', description: 'Optional GML run once for its side effects, immediately before expr is first tested.' },
         frames: { type: 'integer', description: 'How many frames to allow (default 300 - ten seconds, max 3600).' },
         skip_lint: { type: 'boolean', description: 'Bypass the lint gate.' },
         ...INSTANCE_ARG,
@@ -805,12 +810,15 @@ const TOOLS = [
       'Sample GML expressions once a frame and record every change in the bridge log. This is how to see something ' +
       'that is true for three frames and then gone, which no amount of polling from outside will catch. ' +
       'Read the trace back with gg2_log. Up to eight expressions at a time, since each one costs an evaluation ' +
-      'every frame.',
+      'every frame. Sampling is skipped automatically while instances are deactivated (a FREEZE, or between the ' +
+      'frames of a STEP) rather than raising an error every frame - the trace records the suspension and its end, ' +
+      'not a gap.',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['add', 'clear', 'list'], description: 'What to do (default list).' },
         expr: { type: 'string', description: 'The expression to watch, for add.' },
+        label: { type: 'string', description: 'Optional short name for add, logged as "label = value" instead of the full expression.' },
         skip_lint: { type: 'boolean', description: 'Bypass the lint gate.' },
         ...INSTANCE_ARG,
       },
@@ -1316,8 +1324,16 @@ async function callTool(name, args) {
       // both are expression context, and this catches the same class of thing
       // the bare form does not: an operator or ";" in operand position.
       lintOrThrow('return (' + expr + ')', args.skip_lint);
+      let setup = '';
+      if (typeof args.setup === 'string' && args.setup.trim()) {
+        // Same shape as gg2_eval: raw GML, run for its side effects.
+        setup = args.setup.trim();
+        lintOrThrow(setup, args.skip_lint);
+      }
       const frames = clamp(args.frames, 1, 3600, 300);
-      return await watched(where, () => command(where, `WAIT ${frames} ${expr}`, framesTimeout(frames)));
+      // Length-prefixed, not delimited, so setup can contain anything - a
+      // semicolon, a colon, a space - without ambiguity against expr.
+      return await watched(where, () => command(where, `WAIT ${frames} ${setup.length}:${setup}${expr}`, framesTimeout(frames)));
     }
 
     case 'gg2_watch': {
@@ -1326,7 +1342,11 @@ async function callTool(name, args) {
       if (action === 'add') {
         if (typeof args.expr !== 'string' || !args.expr.trim()) throw new Error('expr is required to add a watch');
         lintOrThrow(args.expr, args.skip_lint);
-        return await watched(where, () => command(where, 'WATCH add ' + args.expr.replace(/;\s*$/, '')));
+        const expr = args.expr.replace(/;\s*$/, '');
+        const label = typeof args.label === 'string' ? args.label.trim() : '';
+        // Length-prefixed, not delimited, so label can be empty or contain
+        // anything without ambiguity against expr.
+        return await watched(where, () => command(where, `WATCH add ${label.length}:${label}${expr}`));
       }
       return await watched(where, () => command(where, 'WATCH ' + action));
     }

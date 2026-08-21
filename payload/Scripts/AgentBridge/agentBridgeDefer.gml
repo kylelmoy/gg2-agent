@@ -11,7 +11,10 @@ if (deferKind == 1)
 
     deferKind = 0;
     if (frozen)
+    {
         instance_deactivate_all(true);
+        instancesDeactivated = true;
+    }
     agentBridgeSend("OK advanced " + string(deferTotal) + " frame(s)");
     exit;
 }

@@ -9,13 +9,18 @@ it never actually made it into *Still open* for a full edition. What is left aft
 edition is at the bottom, under *Still open*.
 
 **Three more were added later on 2026-08-20**, from the bot aim solver and the
-`koth_valley` nav reachability work, and none is fixed yet - they are filed under *Still
-open* and marked `new 2026-08-20`. All three are about *observing* a running game rather
-than driving it, which is where this session spent its time and lost most of it: a watch
+`koth_valley` nav reachability work. All three are about *observing* a running game rather
+than driving it, which is where that session spent its time and lost most of it: a watch
 that raises every frame once the game is frozen, no way to set state and start waiting on
 the same frame, and traces that are hard to read. The GML-dialect findings from the same
 work went to `GML.md` - notably that `-1` is `self` rather than "no instance", which is
 the sentinel GG2 uses everywhere.
+
+**All three, plus the comma-in-grouping-paren gap left over from the lint gate's item 3,
+are fixed in the second pass below** - see *Fixed 2026-08-20 (second pass)*. What is left
+after that pass is at the bottom, under *Still open*: a wedged bridge needing a manual
+reconnect, and the wire protocol having no request ids. Both were deliberately left alone
+rather than fixed as a reflex - see their own entries for why.
 
 The GML-dialect lessons live in `GML.md`, not here - this file is about what the
 *tooling* does, not what the language does.
@@ -153,70 +158,102 @@ gave up.
 
 ---
 
+## Fixed 2026-08-20 (second pass)
+
+### 1. `gg2_watch` no longer raises every frame while instances are unreachable (was: medium)
+
+`agentBridgeWatchTick` sampled unconditionally, every frame, regardless of `frozen`. A
+watch expression that touches an instance field — which is most of them — started
+raising the moment anything deactivated instances, and kept re-raising once per frame for
+as long as that lasted, because a deactivated instance's fields are unreachable from
+anywhere (see `CLAUDE.md`). `gg2_step` freezes first and reactivates instances only for
+the frames it actually steps, so a watch across a `gg2_step` call raised during the
+`FREEZE`-then-`STEP` gap and again after the step deactivated everything at the end —
+and whichever call happened to be in flight when the launcher noticed the dialog came
+back as an *error*, even though it had done its job.
+
+Fix: `frozen` alone was the wrong signal to gate on - it stays true for the whole span of
+a `STEP`, even while `STEP` has reactivated every instance for the frames it is actually
+running, and gating on it would have suppressed sampling during exactly the frames worth
+watching. A new instance var, `instancesDeactivated`, is set precisely where
+`instance_deactivate_all(true)`/`instance_activate_all()` are actually called (`FREEZE`,
+`RESUME`, `STEP`'s arm and its completion, and the client-disconnect cleanup path) and is
+what `agentBridgeWatchTick` gates on instead. Sampling is skipped while it is true, with
+one log line on the way in (`watch sampling suspended (instances unreachable while
+frozen)`) and one on the way out (`watch sampling resumed`), not a repeat per frame.
+
+Verified live against the running game: `gg2_watch add room_speed`, then a manual `FREEZE`
+followed by `gg2_step frames: 60` followed by `gg2_resume` — the bridge log shows exactly
+one suspend line (during the gap between the manual `FREEZE` and `STEP` actually arming),
+one resume line (once `STEP` reactivated instances), and no `Unknown variable` anywhere;
+all three calls came back clean, not as errors. `node tools/selftest.js` also covers the
+lint side unaffected by this (98 pre-existing cases untouched) and the wire format below.
+
+### 2. `gg2_wait` gained an atomic `setup` (was: medium)
+
+The game keeps running between MCP calls, so `gg2_eval` to place a bot and then
+`gg2_wait` to time it left an unknown amount of real game time in between — during which
+the bot could walk off, re-plan, or finish before the wait ever armed. `gg2_wait` gained
+an optional `setup`: GML run once, synchronously, inside the same `WAIT` request that
+arms the wait, immediately before `expr` is first tested.
+
+Wire format: `WAIT <frames> <setupLen>:<setup><expr>` — `setup` is length-prefixed, not
+delimited, so it can contain anything (a semicolon, a colon, a space) without ambiguity
+against `expr`; `setupLen` is `0` and `setup` empty when no setup is given, so the format
+is unconditional rather than two formats the game has to tell apart. `setup` is linted
+the same way `gg2_eval`'s `code` is — raw GML, checked before it is ever sent.
+
+Verified live: `gg2_wait` with `setup: "global.agentSelfTestMarker = 1;"` and
+`expr: "global.agentSelfTestMarker == 1"` came back `true after 1 frame(s)` — the
+smallest possible gap between the setup running and the condition being seen true, not
+the seconds of drift a separate `gg2_eval` call would have left. The failure path was
+checked too: the same setup with an `expr` that stays false came back `still false after
+10 frame(s): global.agentSelfTestMarker == 1` — naming only `expr`, confirming the
+length-prefixed split lands in the right place — and a `setup` that would not compile
+(`array_length(x);`, a GameMaker Studio function) was refused by the lint gate before
+ever reaching the game, with `global.agentSelfTestMarker` read back afterward to confirm
+that refused call had no effect at all.
+
+### 3. Watch trace lines can carry a short label instead of the whole expression (was: low)
+
+`gg2_watch` wrote the full source of the expression on every logged change, so a trace of
+several fields ran mostly-repeated text and a stale trace was hard to tell from a fresh
+one. `gg2_watch add` now accepts an optional `label`; the trace logs `label = value`
+instead of the expression, falling back to a truncated copy of the expression (24
+characters plus `...`) when none is given. `gg2_watch list` shows `label (expr) = last`
+when a label is set. Wire format mirrors `WAIT`'s setup: `WATCH add
+<labelLen>:<label><expr>`, unconditionally length-prefixed.
+
+Verified live: `gg2_watch add room_speed label: "RS"` then `gg2_watch list` returned
+`RS (room_speed) = 30`.
+
+### 4. The lint gate now catches a comma inside a grouping paren (was: low)
+
+Left over from the previous edition's item 3. `y = (1, 2);` lints clean and does not
+compile in GM8, which has no comma operator; a `,` was deliberately left out of the
+"needs a right operand" set at the time because it is also legitimate right after a
+call's own `(` (`foo(1, 2)`) and after `var` in a multi-declaration (`var i, j;`).
+
+Fix: the same paren-tracking stack that already tells a `for`-loop's parens apart from
+every other `(` now also tags each `(` as a *call* (opened immediately after an
+identifier that is not a keyword, or after a closing `)`/`]`) or a bare *grouping*, and
+now tracks `[`/`{` too, purely so nesting stays correct — in `(a[i, j])` the comma
+belongs to the 2D array index, not the outer grouping paren, and only the top of the
+stack at the comma's own position says which. A `,` is flagged only when its nearest
+enclosing bracket is a grouping `(`.
+
+Verified two ways: `node -e` against the three repro shapes (`y = (1, 2);`,
+`x = (a, b, c);`, `if (a, b) { exit; }`, all now refused) and seven legitimate-looking
+neighbors that must stay clean (a real call with two args, a call whose args include a
+2D index, a 2D index nested inside a grouping paren, plus the sixteen from the previous
+edition) — now locked into `tools/selftest.js`'s "expression grammar" section. Then the
+whole real tree again: `node tools/gml-lint.js --tree ../Gang-Garrison-2/Source/gg2
+../Gang-Garrison-2/Source/gg2` and the same against `payload/` both still report
+**clean**.
+
+---
+
 ## Still open
-
-### `gg2_watch` expressions raise every frame while the game is frozen (new 2026-08-20, medium)
-
-A watch expression that touches an instance field — which is most of them — starts
-raising as soon as anything freezes the game, because `FREEZE` deactivates every instance
-and a deactivated instance's fields are unreachable from anywhere. The watch does not
-know that, so it re-evaluates and re-raises once per frame for the whole freeze.
-
-Observed: a watch on a Character's `x`/`hspeed`/`onground`, then `gg2_step`, produced the
-same `Unknown variable object` on every frame of the step; both `gg2_step` and the
-following `gg2_resume` came back as *errors* carrying that text, even though both had
-done their jobs (the replies were "advanced 150 frame(s)" and "running", visible under
-the error). The caller cannot distinguish that from a real failure, and `gg2_watch clear`
-is the only way out.
-
-Fix: have the watch tick skip sampling while the game is frozen, and record in the trace
-that sampling was suspended rather than silently leaving a gap. `gg2_step` plus
-`gg2_watch` is the exact combination the "seeing what happens rather than guessing"
-section of `CLAUDE.md` recommends, so these two disagreeing is worse than it sounds.
-
-### There is no atomic "set this up, then wait" (new 2026-08-20, medium)
-
-The game keeps running between MCP calls, and for anything experimental that is not a
-detail — it is the difference between a measurement and a guess.
-
-Concretely: a repeatable trial ("put this bot on node 264, give it a goal on node 261,
-time how long it takes") needs the setup and the wait to begin on the same frame. In
-practice `gg2_eval` to place and then `gg2_wait` to observe leaves seconds of game time
-in between, during which the bot walks off, re-plans, or — in one case here — finishes
-the entire task before the wait arms. Several early measurements this session were
-invalid for this reason, and one was misread as "the bot cannot make this jump" when the
-bot had simply been somewhere else by the time anything looked.
-
-Fix: an optional `setup` argument on `gg2_wait`, a code string the bridge runs on the
-frame it arms the wait, before the first evaluation of `expr`. Small change to the WAIT
-path, and it makes trial-style experiments possible at all. Returning a `frames_elapsed`
-count would finish the job — callers currently stash `GameServer.frame` by hand to get a
-duration, and get the inter-call drift folded into it regardless.
-
-### Watch trace lines echo the whole expression on every sample (new 2026-08-20, low)
-
-`gg2_watch` writes the full source of the expression on every logged change, so a
-one-line trace of five fields ran ~300 characters of which ~250 were the same expression
-repeated. Forty samples of that is unreadable through `gg2_log`; reading it here meant
-shelling out to `sed` to strip the prefix, which rather defeats the tool. It also made a
-stale trace hard to tell from a fresh one, since two consecutive traces differ only in
-the values buried at the end of otherwise identical lines.
-
-Fix: accept an optional short `label` on `gg2_watch add` and log `label = value`, falling
-back to a truncated expression when none is given. The expression itself only needs to
-appear once, when the watch is registered.
-
-### The lint gate's operand-start set does not cover a comma inside a grouping paren
-
-Left over from item 3 above. `y = (1, 2);` still lints clean and does not compile. A
-`,` was deliberately left out of the "needs a right operand" set this pass: it is
-also legitimate inside call argument lists (`foo(1, 2)`) and multi-declaration `var`
-statements (`var i, j;`), both of which put a perfectly good operand right after a
-comma, so treating every comma as "needs an operand or it is invalid" is fine on its
-own but does not by itself distinguish the one bad case from the two good ones. What
-would: track, the same way `parenStack` already tracks `forLoop`, whether each `(` is
-a *call* paren (opened immediately after an identifier or `)`/`]`) or a *grouping*
-paren, and only flag a `,` as invalid when it is directly inside a grouping one.
 
 ### A truly wedged bridge needs a manual reconnect
 

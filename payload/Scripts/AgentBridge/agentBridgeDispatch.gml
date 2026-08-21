@@ -55,6 +55,7 @@ case "FREEZE":
     {
         frozen = true;
         instance_deactivate_all(true);
+        instancesDeactivated = true;
     }
     return "OK frozen";
 
@@ -63,6 +64,7 @@ case "RESUME":
     {
         frozen = false;
         instance_activate_all();
+        instancesDeactivated = false;
     }
     return "OK running";
 
@@ -77,15 +79,25 @@ case "STEP":
     if (n > 3600)
         n = 3600;
     if (frozen)
+    {
         instance_activate_all();
+        instancesDeactivated = false;
+    }
     deferKind = 1;
     deferFrames = n;
     deferTotal = n;
     return "";
 
 case "WAIT":
-    // WAIT <frames> <expression>: reply once the expression is true, or give up
-    // after that many frames. Deferred for the same reason.
+    // WAIT <frames> <setupLen>:<setup><expression>: run <setup> (if any) once,
+    // immediately, then reply once <expression> is true, or give up after that
+    // many frames. <setup> is length-prefixed rather than delimited, so it can
+    // contain anything - including a colon - without ambiguity.
+    //
+    // Running <setup> here, synchronously inside the same request that arms the
+    // wait, is what makes "place a bot, then wait for it to arrive" a single
+    // measurement instead of two calls with an unknown amount of real game time
+    // between them - see HANDOFF.md.
     sp = string_pos(" ", rest);
     if (sp == 0)
         return "ERR WAIT needs a frame budget and an expression";
@@ -96,7 +108,20 @@ case "WAIT":
         n = 1;
     if (n > 3600)
         n = 3600;
-    deferExpr = string_copy(rest, sp + 1, string_length(rest) - sp);
+
+    var tail, cp, setupLen, setup;
+    tail = string_copy(rest, sp + 1, string_length(rest) - sp);
+    cp = string_pos(":", tail);
+    if (cp == 0 or string_digits(string_copy(tail, 1, cp - 1)) != string_copy(tail, 1, cp - 1))
+        return "ERR WAIT's setup length prefix is malformed";
+    setupLen = real(string_copy(tail, 1, cp - 1));
+
+    setup = string_copy(tail, cp + 1, setupLen);
+    deferExpr = string_copy(tail, cp + 1 + setupLen, string_length(tail) - (cp + setupLen));
+
+    if (setup != "")
+        execute_string(setup);
+
     deferKind = 2;
     deferFrames = n;
     deferTotal = n;

@@ -40,6 +40,14 @@ deferWaitOutcome = "";  // sentinel agentBridgeDefer uses to tell a raised WAIT
 // game stops advancing between agent calls while the bridge keeps answering.
 frozen = false;
 
+// True exactly while instance_deactivate_all(true) is in effect - unlike
+// "frozen", which stays true for the whole span of a STEP even though STEP
+// reactivates every instance for the frames it is actually running. A
+// deactivated instance's fields are unreachable (see CLAUDE.md), so this is
+// what agentBridgeWatchTick gates sampling on, not "frozen" itself - sampling
+// during a STEP's own active frames is exactly the combination worth having.
+instancesDeactivated = false;
+
 // Held movement input for INPUT press/release, PlayerControl.Begin Step OR's
 // this into its own keybyte - see agentBridgeInput. keyboard_key_press does
 // not make keyboard_check true (verified on 2026-08-19: it only affects the
@@ -50,6 +58,12 @@ heldMask = 0;
 // Expressions sampled once a frame; a changed value is written to the log.
 watchExpr = ds_list_create();
 watchLast = ds_list_create();
+watchLabel = ds_list_create();
+
+// True from the frame sampling is skipped for lack of readable instances to
+// the frame it resumes - logged exactly on those two edges (see
+// agentBridgeWatchTick), not every frame in between.
+watchSuspended = false;
 
 global.agentEnabled = false;
 global.agentPort = 17777;
