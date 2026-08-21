@@ -22,6 +22,7 @@ node run-agent.js       # launch the game, wait for the bridge
 node build-agent.js     # full build - drives GM8 headlessly            (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
+node tools/botscenario.js # do bots still WALK those routes?              (~1min)
 ```
 
 `build-agent.js` used to be the one step that needed a person: Game Maker 8 has
@@ -249,6 +250,43 @@ conversion, the gate rules); `navaudit.js` is the checks; `navimage.js` draws th
 graph over the map art. Run the audit **before** playtesting a map - a bot with
 no route stands perfectly still, which is indistinguishable from a dozen other
 bugs when you are watching it happen.
+
+### Behaviour scenarios (`tools/botscenario.js`)
+
+The third tier, and the only one that can see whether a bot can *execute* the
+route the graph promised. That gap is the whole point: every one of this
+project's three jump-edge bugs was a graph describing an arc the follower could
+not fly, and `navaudit` passes all of them, because the edge is right there in
+the graph. On its first run this found `ctf_truefort` red -> blue intel stalling
+740px short with a valid 19-node path in hand.
+
+```powershell
+node tools/botscenario.js                   # every scenario
+node tools/botscenario.js valley-floor-to-point
+node tools/botscenario.js --list
+node tools/botscenario.js --speed 10 --keep # slower, and leave the bot in place
+```
+
+Scenarios live in `tools/bot-scenarios.js` - adding one is an edit to that file
+and nothing else, no GML and no rebuild, which is the reason the runner is in
+Node rather than in the game's own test suite. (The other reason is that a GML
+script runs to completion inside one step, so the existing `test_*.gml` suites
+fundamentally cannot express "run 600 frames and then check".)
+
+Three things it needs from the game, all of them because they cannot be
+recovered from outside: `botGoalLocked` (suspends the objective layer, which
+would otherwise rewrite the goal every 30 ticks), `botArrivedAt` (the exact tick
+of arrival - polling can only bracket it), and the four diagnostics counters. It
+asserts on those counters, not on final position: a bot that arrives clears its
+goal and is then free to walk away, so a position sampled at the end is
+meaningless. **Never cap `replans`** - planning is on a 45-90 tick timer, so that
+number measures how long the leg took, not whether anything went wrong.
+
+⚠️ **The bridge serves one client at a time.** This CLI cannot run while an
+editor's MCP session is connected to the same game: the second connection is
+accepted into the backlog and never serviced, so every call hangs while the game
+is plainly alive and answering the other client. The runner pings first and says
+so rather than timing out anonymously.
 
 Three things it does that a naive reachability BFS does not, each added after a
 human playtest found a map the previous version had passed:
