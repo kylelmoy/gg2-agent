@@ -255,9 +255,41 @@ global.botsEnabled = false;`);
 const DEFAULT_ALLOW = { stuck: 0 };
 const COUNTERS = ['replans', 'stuck', 'blacklisted', 'offRoute'];
 
+// How much hp the enemy team is currently carrying: every live enemy Character
+// plus any enemy Generator. Sampled once at setup and again at the end, the drop
+// is damage this scenario's bot dealt - exactly, as long as the enemies are
+// dummies, since a dummy never fires and so nothing else can be removing hp.
+//
+// ⚠️ This is a difference of two snapshots, so it is only monotone while nothing
+// heals or respawns. That is why a dummy is given 100000 hp: a dead one respawns
+// at full and the difference reads zero, which is indistinguishable from a bot
+// that never fired. With `dummy: false` that protection is gone and the number
+// needs repeats rather than a single verdict.
+//
+// A Generator counts because on gen_destroy it IS the target: at 2100 hp it is
+// shot from range and never touched, which is the case that most wants an
+// assertion, and it cannot respawn to muddy the reading the way a Character can.
+const enemyHpGml = (teamConst) => `
+hpsum = 0;
+with(Character)
+{
+    if(team != ${teamConst})
+    {
+        if(hp > 0)
+            hpsum += hp;
+    }
+}
+with(Generator)
+{
+    if(team != ${teamConst})
+        hpsum += hp;
+}`;
+
 async function runOne(call, inst, s, speed) {
   const allow = Object.assign({}, DEFAULT_ALLOW, s.allow || {});
   const team = s.team === 'blue' ? 'TEAM_BLUE' : 'TEAM_RED';
+  const foeTeam = s.team === 'blue' ? 'TEAM_RED' : 'TEAM_BLUE';
+  const window = s.to ? s.budget : s.hold;
 
   await ensureMap(call, inst, s.map);
   await clearBots(call, inst);
@@ -268,17 +300,25 @@ async function runOne(call, inst, s, speed) {
   await waitFor(call, inst, 'global.scenBot.object != -1', 300,
     `global.scenBot = botAdd(${team}, ${s.class}, "scen");`);
 
+  // Enemies, if any, in one call - then one wait for all their bodies. Counting
+  // Characters is enough and avoids needing a per-enemy expression, which GM8
+  // could not loop over anyway.
+  if (s.enemies.length) {
+    await waitFor(call, inst, `instance_number(Character) >= ${s.enemies.length + 1}`, 300,
+      s.enemies.map((e, i) => `botAdd(${foeTeam}, ${e.class}, "foe${i}");`).join('\n'));
+  }
+
   // Place, pin and launch, all inside one call. Splitting this across calls
   // would let the bot walk, re-plan or be re-teamed between placement and the
   // goal being issued, and the tick count would silently include that.
   const setup = await probe(call, inst,
-    `var p, c, fromN, toN, fx, fy, tx, ty;
+    `var p, c, fromN, toN, fx, fy, tx, ty, hpsum, ex, ey, k, i, q, n, placed;
 p = global.scenBot;
 c = p.object;
 global.scenReport = "";
 
 fromN = botNodeSnap(${s.from[0]}, ${s.from[1]});
-toN = botNodeSnap(${s.to[0]}, ${s.to[1]});
+toN = ${s.to ? `botNodeSnap(${s.to[0]}, ${s.to[1]})` : '0'};
 if(fromN < 0 or toN < 0)
 {
     global.scenReport = "fromNode=" + string(fromN) + " toNode=" + string(toN) + " ok=0";
@@ -291,10 +331,6 @@ fx = navColWorldX(max(ds_grid_get(global.navNodes, NAV_NODE_X0, fromN),
                   min(ds_grid_get(global.navNodes, NAV_NODE_X1, fromN),
                       navAnchorCol(${s.from[0]}))));
 fy = (ds_grid_get(global.navNodes, NAV_NODE_Y, fromN) + NAV_BOX_H) * NAV_CELL_SIZE - 23;
-tx = navColWorldX(max(ds_grid_get(global.navNodes, NAV_NODE_X0, toN),
-                  min(ds_grid_get(global.navNodes, NAV_NODE_X1, toN),
-                      navAnchorCol(${s.to[0]}))));
-ty = (ds_grid_get(global.navNodes, NAV_NODE_Y, toN) + NAV_BOX_H) * NAV_CELL_SIZE - 23;
 
 c.x = fx;
 c.y = fy;
@@ -312,20 +348,104 @@ p.botRouteSeed = 1;
 p.botSpreadX = 0;
 p.botGoalLocked = true;
 
+${s.enemies.length ? `
+// Place the enemies, in the roster order they were added in. A dummy is pinned
+// twice over: botGoalLocked stops the objective layer walking it away, and an
+// acquisition delay longer than any scenario stops it ever aiming or firing -
+// both are ordinary knobs, so this needs no test-only code in the game.
+${s.enemies.map((e, i) => `ex[${i}] = ${e.at[0]}; ey[${i}] = ${e.at[1]}; q[${i}] = ${e.dummy ? 1 : 0};`).join('\n')}
+placed = 0;
+k = 0;
+for(i = 0; i < ds_list_size(global.players); i += 1)
+{
+    var foe;
+    foe = ds_list_find_value(global.players, i);
+    if(foe == -1)
+        continue;
+    if(!foe.isBot)
+        continue;
+    if(foe == p)
+        continue;
+    if(foe.object == -1)
+        continue;
+    if(k >= ${s.enemies.length})
+        break;
+    n = botNodeSnap(ex[k], ey[k]);
+    if(n >= 0)
+    {
+        foe.object.x = navColWorldX(max(ds_grid_get(global.navNodes, NAV_NODE_X0, n),
+                                    min(ds_grid_get(global.navNodes, NAV_NODE_X1, n),
+                                        navAnchorCol(ex[k]))));
+        foe.object.y = (ds_grid_get(global.navNodes, NAV_NODE_Y, n) + NAV_BOX_H) * NAV_CELL_SIZE - 23;
+        foe.object.hspeed = 0;
+        foe.object.vspeed = 0;
+        placed += 1;
+    }
+    foe.botGoalLocked = true;
+    foe.botRegroupUntil = 0;
+    if(q[k] == 1)
+    {
+        foe.botAcquireTicks = 9999999;
+        // A dummy is a damage sponge, and that is what makes the damage figure
+        // a measurement rather than a coin flip. Damage is read as enemy hp at
+        // setup minus enemy hp at the end; a dummy that DIES and respawns comes
+        // back at full hp and the difference reads zero. Measured exactly that:
+        // the same scenario gave 34.91, 113.73 and then 0, the zero being a run
+        // where the Heavy died with time to spare and respawned before the
+        // window closed. Scaling maxHp with hp keeps the ratio botFindTarget
+        // scores on (hp <= maxHp * 0.4), so it still reads as a healthy enemy.
+        foe.object.maxHp = 100000;
+        foe.object.hp = 100000;
+    }
+    k += 1;
+}
+global.scenReport = global.scenReport + "foesPlaced=" + string(placed) + " ";
+` : ''}
+
+${s.to ? `
+tx = navColWorldX(max(ds_grid_get(global.navNodes, NAV_NODE_X0, toN),
+                  min(ds_grid_get(global.navNodes, NAV_NODE_X1, toN),
+                      navAnchorCol(${s.to[0]}))));
+ty = (ds_grid_get(global.navNodes, NAV_NODE_Y, toN) + NAV_BOX_H) * NAV_CELL_SIZE - 23;
 botSetGoal(p, tx, ty);
+` : `
+// Hold: no goal at all. botPathKeys returns no keys without one, and
+// botGoalLocked keeps the objective layer from supplying one, so the bot stands
+// where it was put and does nothing but fight.
+tx = fx;
+ty = fy;
+`}
+
+${enemyHpGml(team)}
 
 global.scenT0 = GameServer.frame;
 global.scenChar = c.id;
-global.scenReport = "fromNode=" + string(fromN) + " toNode=" + string(toN)
+global.scenFx = fx;
+global.scenFy = fy;
+global.scenHp0 = hpsum;
+global.scenAcquired = 0;
+global.scenReport = global.scenReport + "fromNode=" + string(fromN) + " toNode=" + string(toN)
     + " fx=" + string(round(fx)) + " fy=" + string(round(fy))
     + " tx=" + string(round(tx)) + " ty=" + string(round(ty))
+    + " hp0=" + string(hpsum)
     + " t0=" + string(global.scenT0) + " ok=1";`);
 
   if (!setup.ok) {
     return {
       name: s.name,
       verdict: 'VOID',
-      why: `no nav node under from=[${s.from}] (${setup.fromNode}) or to=[${s.to}] (${setup.toNode})`,
+      why: s.to
+        ? `no nav node under from=[${s.from}] (${setup.fromNode}) or to=[${s.to}] (${setup.toNode})`
+        : `no nav node under from=[${s.from}] (${setup.fromNode})`,
+      setup,
+    };
+  }
+
+  if (s.enemies.length && setup.foesPlaced !== s.enemies.length) {
+    return {
+      name: s.name,
+      verdict: 'VOID',
+      why: `placed ${setup.foesPlaced} of ${s.enemies.length} enemies - one of the "at" points has no nav node under it`,
       setup,
     };
   }
@@ -348,22 +468,53 @@ global.scenReport = "fromNode=" + string(fromN) + " toNode=" + string(toN)
   if (speed > 1) await call('gg2_speed', { instance: inst, factor: speed });
 
   // Budget plus a margin: the wait's own frame cap is a backstop for a game that
-  // has stopped stepping, while the in-expression budget test is what decides a
+  // has stopped stepping, while the in-expression window test is what decides a
   // scenario, so the two must not be the same number.
-  const cap = Math.min(3600, s.budget + 120);
-  await call('gg2_wait', {
-    instance: inst,
-    frames: cap,
-    expr:
-      'global.scenBot.botArrived' +
-      ' or global.scenBot.object != global.scenChar' +
-      ` or GameServer.frame - global.scenT0 > ${s.budget}`,
-    skip_lint: true,
-  }).catch(() => {}); // a timeout here is "still going", which the state below reports properly
+  //
+  // A hold scenario has no early exit - standing still for the whole window is
+  // the point - but it still latches whether a target was ever acquired, because
+  // "aimed at the wrong thing" and "never saw anything" are different bugs with
+  // the same symptom and the difference is gone by the time the window ends.
+  const cap = Math.min(3600, window + 120);
+  const outOfTime = `GameServer.frame - global.scenT0 > ${window}`;
+  const died = 'global.scenBot.object != global.scenChar';
+
+  if (s.to) {
+    // A nav leg ends the moment it arrives - there is nothing to learn from the
+    // frames after that, and stopping early is most of why the suite is quick.
+    await call('gg2_wait', {
+      instance: inst,
+      frames: cap,
+      expr: `global.scenBot.botArrived or ${died} or ${outOfTime}`,
+      skip_lint: true,
+    }).catch(() => {});
+  } else {
+    // A hold scenario runs its whole window - standing still for all of it is
+    // the point. But "did it ever acquire a target" has to be latched while it
+    // happens: botTarget is cleared when the target dies or leaves range, so by
+    // the end a bot that fought and won looks like one that never saw anything.
+    // Wait for the first acquisition, record it, then run the rest out.
+    await call('gg2_wait', {
+      instance: inst,
+      frames: cap,
+      expr: `global.scenBot.botTarget != noone or ${died} or ${outOfTime}`,
+      skip_lint: true,
+    }).catch(() => {});
+    await evalCode(call, inst, 'if(global.scenBot.botTarget != noone) global.scenAcquired = 1;');
+    await call('gg2_wait', {
+      instance: inst,
+      frames: cap,
+      expr: `${died} or ${outOfTime}`,
+      skip_lint: true,
+    }).catch(() => {});
+  }
 
   const last = await probe(call, inst,
-    `var p;
+    `var p, hpsum;
 p = global.scenBot;
+${enemyHpGml(team)}
+if(p.botTarget != noone)
+    global.scenAcquired = 1;
 global.scenReport = "frame=" + string(GameServer.frame)
     + " arrived=" + string(p.botArrived)
     + " arrivedAt=" + string(p.botArrivedAt)
@@ -373,6 +524,10 @@ global.scenReport = "frame=" + string(GameServer.frame)
     + " offRoute=" + string(p.botOffRouteFires)
     + " path=" + string(p.botPath)
     + " sameChar=" + string(p.object == global.scenChar)
+    + " damage=" + string(global.scenHp0 - hpsum)
+    + " acquired=" + string(global.scenAcquired)
+    + " firing=" + string((p.botAttackKeys & KEY_ATTACK) != 0)
+    + " moved=" + string(round(point_distance(p.object.x, p.object.y, global.scenFx, global.scenFy)))
     + " d=" + string(round(point_distance(p.object.x, p.object.y, p.botGoalX, p.botGoalY)));`);
 
   if (speed > 1) await call('gg2_speed', { instance: inst, factor: 0 });
@@ -385,10 +540,29 @@ global.scenReport = "frame=" + string(GameServer.frame)
 
   const ticks = last.arrived ? last.arrivedAt - setup.t0 : null;
   const fails = [];
-  if (!last.arrived) fails.push(`never arrived (still ${last.d}px away after ${s.budget} ticks)`);
-  else if (ticks > s.budget) fails.push(`took ${ticks} ticks, budget ${s.budget}`);
+
+  if (s.to) {
+    if (!last.arrived) fails.push(`never arrived (still ${last.d}px away after ${s.budget} ticks)`);
+    else if (ticks > s.budget) fails.push(`took ${ticks} ticks, budget ${s.budget}`);
+  }
+
   for (const k of COUNTERS) {
     if (allow[k] !== undefined && last[k] > allow[k]) fails.push(`${k} ${last[k]} > ${allow[k]}`);
+  }
+
+  // Combat expectations. Everything here is measured for every scenario and
+  // asserted only where one was stated, so a nav scenario can still say "and it
+  // took no damage getting there" without becoming a different kind of thing.
+  const measured = { damage: last.damage, moved: last.moved, ticks: ticks === null ? last.frame - setup.t0 : ticks };
+  for (const [k, bound] of Object.entries(s.expect)) {
+    if (k === 'acquired') {
+      const got = last.acquired === 1;
+      if (got !== bound) fails.push(bound ? 'never acquired a target' : `acquired a target and should not have`);
+      continue;
+    }
+    const v = measured[k];
+    if (bound.min !== undefined && v < bound.min) fails.push(`${k} ${v} < ${bound.min}`);
+    if (bound.max !== undefined && v > bound.max) fails.push(`${k} ${v} > ${bound.max}`);
   }
 
   // A scenario that documents a bug nobody has fixed yet is worth keeping and
@@ -407,6 +581,7 @@ global.scenReport = "frame=" + string(GameServer.frame)
     why: fails.join('; '),
     known: s.known,
     ticks,
+    hold: s.to ? 0 : s.hold,
     setup,
     last,
     about: s.about,
@@ -419,8 +594,16 @@ global.scenReport = "frame=" + string(GameServer.frame)
 // that shows only the assertion that broke makes you re-run it to find out
 // what the other numbers were doing, and re-running this tier is not free -
 // these are the numbers you calibrate a budget against.
+// A hold scenario and a nav scenario are interested in different halves of the
+// same measurement bag, so each prints the half that means something. Printing
+// route counters for a bot that was told to stand still would be noise, and
+// printing "no arrival" for one is actively misleading.
 function metrics(r) {
   if (!r.last) return '';
+  if (r.hold) {
+    return `held ${r.hold} ticks, damage ${r.last.damage}, moved ${r.last.moved}px, ` +
+      `acquired ${r.last.acquired ? 'yes' : 'no'}, firing ${r.last.firing ? 'yes' : 'no'}`;
+  }
   const t = r.ticks === null || r.ticks === undefined ? `no arrival (${r.last.d}px short)` : `${r.ticks} ticks`;
   return `${t}, replans ${r.last.replans}, stuck ${r.last.stuck}, ` +
     `blacklisted ${r.last.blacklisted}, offRoute ${r.last.offRoute}`;
@@ -477,6 +660,56 @@ function point(v, field, name) {
   return [Number(v[0]), Number(v[1])];
 }
 
+const BOUNDS = ['min', 'max'];
+
+// expect.<what>.<min|max>, e.g. { damage: { min: 1 }, moved: { max: 40 } }.
+// `acquired` is the one boolean, because "did it ever pick a target" has no
+// useful magnitude - it separates "aimed at the wrong thing" from "never saw
+// anything", which are different bugs with the same symptom.
+const MEASURES = ['damage', 'moved', 'ticks'];
+
+function expectations(spec, name) {
+  const out = {};
+  for (const [k, v] of Object.entries(spec.expect || {})) {
+    if (k === 'acquired') {
+      if (typeof v !== 'boolean') throw new Error(`${name}: expect.acquired must be true or false`);
+      out.acquired = v;
+      continue;
+    }
+    if (!MEASURES.includes(k)) {
+      throw new Error(`${name}: expect.${k} is not a measurement - use ${MEASURES.join(', ')} or acquired`);
+    }
+    if (!v || typeof v !== 'object') throw new Error(`${name}: expect.${k} must be {min} and/or {max}`);
+    const bound = {};
+    for (const [b, n] of Object.entries(v)) {
+      if (!BOUNDS.includes(b)) throw new Error(`${name}: expect.${k}.${b} - only min and max`);
+      if (!Number.isFinite(Number(n))) throw new Error(`${name}: expect.${k}.${b} must be a number`);
+      bound[b] = Number(n);
+    }
+    out[k] = bound;
+  }
+  return out;
+}
+
+function enemies(spec, name) {
+  const list = spec.enemies === undefined ? [] : spec.enemies;
+  if (!Array.isArray(list)) throw new Error(`${name}: enemies must be an array`);
+  return list.map((e, i) => {
+    const who = `${name}: enemies[${i}]`;
+    if (!e || typeof e !== 'object') throw new Error(`${who} must be an object`);
+    const cls = e.class === undefined ? 'CLASS_HEAVY' : String(e.class);
+    if (!CLASSES.includes(cls)) throw new Error(`${who}.class must be one of ${CLASSES.join(', ')}`);
+    return {
+      class: cls,
+      at: point(e.at, 'at', who),
+      // A dummy never aims and never moves, so every point of damage measured is
+      // this scenario's bot doing it. Turn it off for a genuine two-sided fight,
+      // and expect the numbers to need repeats rather than a single verdict.
+      dummy: e.dummy === undefined ? true : Boolean(e.dummy),
+    };
+  });
+}
+
 function normalise(spec) {
   if (!spec || typeof spec !== 'object') throw new Error('a scenario must be an object');
   const name = String(spec.name || 'ad-hoc');
@@ -492,8 +725,20 @@ function normalise(spec) {
   if (team !== 'red' && team !== 'blue') {
     throw new Error(`${name}: team must be "red" or "blue", got ${JSON.stringify(spec.team)}`);
   }
+
+  // `to` walks somewhere, `hold` stands still - and a scenario is one or the
+  // other, never both and never neither. Requiring the choice rather than
+  // defaulting it is deliberate: a combat scenario that silently inherited a
+  // movement goal would measure the wrong thing and still look like it passed.
+  const hasTo = spec.to !== undefined;
+  const hasHold = spec.hold !== undefined;
+  if (hasTo && hasHold) throw new Error(`${name}: give "to" (walk somewhere) or "hold" (stand still), not both`);
+  if (!hasTo && !hasHold) throw new Error(`${name}: needs either "to" (a place to walk to) or "hold" (ticks to stand and fight)`);
+
   const budget = spec.budget === undefined ? 1200 : Number(spec.budget);
   if (!Number.isFinite(budget) || budget < 1) throw new Error(`${name}: budget must be a positive number of ticks`);
+  const hold = hasHold ? Number(spec.hold) : 0;
+  if (hasHold && (!Number.isFinite(hold) || hold < 1)) throw new Error(`${name}: hold must be a positive number of ticks`);
 
   const allow = {};
   for (const [k, v] of Object.entries(spec.allow || {})) {
@@ -521,9 +766,12 @@ function normalise(spec) {
     class: cls,
     team,
     from: point(spec.from, 'from', name),
-    to: point(spec.to, 'to', name),
+    to: hasTo ? point(spec.to, 'to', name) : null,
+    hold,
     budget,
     allow,
+    enemies: enemies(spec, name),
+    expect: expectations(spec, name),
     known: spec.known ? String(spec.known) : undefined,
   };
 }

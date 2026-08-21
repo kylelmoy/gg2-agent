@@ -1065,10 +1065,15 @@ const TOOLS = [
       'both to run all of them, and `list: true` returns the saved names without running anything. ' +
       'Saved scenarios live in tools/bot-scenarios.js; promote an inline one into that file once it is worth ' +
       'keeping, which is an edit to that file alone - no GML and no rebuild. ' +
-      'Each scenario places a bot at A, locks its goal to B (botGoalLocked, or the objective layer would ' +
-      'overwrite it within 30 ticks), fast-forwards, and reports arrival ticks plus the four navigation ' +
-      'diagnostics counters. It asserts on those counters rather than final position, because a bot that ' +
-      'arrives clears its goal and is then free to walk away. ' +
+      'Two kinds. A NAVIGATION scenario has `to`: the bot is placed at `from`, its goal is locked to `to` ' +
+      '(botGoalLocked, or the objective layer would overwrite it within 30 ticks), and the run reports arrival ' +
+      'ticks plus the four navigation diagnostics counters. It asserts on those counters rather than final ' +
+      'position, because a bot that arrives clears its goal and is then free to walk away. ' +
+      'A COMBAT scenario has `hold` instead: the bot is placed and given no goal at all, so it stands and ' +
+      'fights, and the run reports damage dealt, how far it drifted, and whether it ever acquired a target. Add ' +
+      '`enemies` to put inert training dummies in front of it; a Generator needs no enemies, it is already ' +
+      'counted. Assertions go in `expect`. Example: "a Soldier on high ground shells the enemy generator ' +
+      'without moving" is from + hold + expect:{acquired:true, damage:{min:50}, moved:{max:60}}. ' +
       'A scenario reads PASS, FAIL, KNOWN (reproduces a bug nobody has fixed - does not fail the run), FIXED ' +
       '(a KNOWN one started passing - delete its entry) or VOID (could not be set up, or the bot died mid-run, ' +
       'so the numbers mean nothing). ' +
@@ -1109,7 +1114,7 @@ const TOOLS = [
       $defs: {
         scenario: {
           type: 'object',
-          required: ['map', 'from', 'to'],
+          required: ['map', 'from'],
           properties: {
             name: { type: 'string', description: 'Label for the report. Defaults to "ad-hoc".' },
             map: { type: 'string', description: 'Internal map name, e.g. "koth_valley".' },
@@ -1128,8 +1133,74 @@ const TOOLS = [
               minItems: 2,
               maxItems: 2,
               description:
-                'World [x, y] to send the bot to, snapped the same way. Careful with objective coordinates - a ' +
-                'CaptureZone marker can float ~60px above the floor it belongs to.',
+                'World [x, y] to send the bot to, snapped the same way - this makes it a NAVIGATION scenario, ' +
+                'run until it arrives or the budget expires. Careful with objective coordinates: a CaptureZone ' +
+                'marker can float ~60px above the floor it belongs to. Give either `to` or `hold`, never both.',
+            },
+            hold: {
+              type: 'integer',
+              description:
+                'Ticks to stand where placed with no goal at all - this makes it a COMBAT scenario. The ' +
+                'objective layer is suspended, so the bot does not walk anywhere and the run measures what it ' +
+                'shoots and whether it stayed put. Give either `to` or `hold`, never both.',
+            },
+            enemies: {
+              type: 'array',
+              description:
+                'Bots on the opposing team, placed at given points. Inert by default - they never aim, fire or ' +
+                'move - so all measured damage is unambiguously this scenario\'s bot. Not needed when the ' +
+                'target is a Generator, which is already counted.',
+              items: {
+                type: 'object',
+                required: ['at'],
+                properties: {
+                  at: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                  class: { type: 'string', description: 'Default CLASS_HEAVY - most hp, so it survives the window.' },
+                  dummy: {
+                    type: 'boolean',
+                    description:
+                      'Default true (inert). Set false for a real two-sided fight, and expect to need repeats ' +
+                      'rather than one verdict - aim error and evasion are live.',
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+            expect: {
+              type: 'object',
+              description:
+                'Assertions over what was measured. Everything here is measured for every scenario and asserted ' +
+                'only where stated, so a nav scenario can also say "and it took no damage getting there".',
+              properties: {
+                damage: {
+                  type: 'object',
+                  description:
+                    'hp removed from the enemy team - live enemy Characters plus any enemy Generator. Prefer a ' +
+                    'loose {min} that asserts "it shoots the thing at all" over a tight range that moves with ' +
+                    'weapon tuning.',
+                  properties: { min: { type: 'number' }, max: { type: 'number' } },
+                  additionalProperties: false,
+                },
+                moved: {
+                  type: 'object',
+                  description: 'Pixels from where the bot was placed. {max: 60} is a reasonable "stayed put".',
+                  properties: { min: { type: 'number' }, max: { type: 'number' } },
+                  additionalProperties: false,
+                },
+                ticks: {
+                  type: 'object',
+                  properties: { min: { type: 'number' }, max: { type: 'number' } },
+                  additionalProperties: false,
+                },
+                acquired: {
+                  type: 'boolean',
+                  description:
+                    'Whether it ever picked a target. Latched while it happens - botTarget clears when a target ' +
+                    'dies, so at the end a bot that fought and won is indistinguishable from one that never saw ' +
+                    'anything. Separates "aimed at the wrong thing" from "never saw anything".',
+                },
+              },
+              additionalProperties: false,
             },
             class: {
               type: 'string',

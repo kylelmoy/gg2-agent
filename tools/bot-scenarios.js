@@ -20,7 +20,37 @@
 //             SOLDIER unless it is specifically about a class.
 //   team      "red" or "blue". Decides which gates the route may use.
 //   from      [x, y] world coordinates to place the bot at.
-//   to        [x, y] world coordinates to send it to.
+//   to        [x, y] world coordinates to send it to. A scenario has EITHER
+//             `to` (walk somewhere) OR `hold` (stand still and fight) - never
+//             both, and never neither. The choice is required rather than
+//             defaulted because a combat scenario that quietly inherited a
+//             movement goal would measure the wrong thing and still pass.
+//   hold      ticks to stand where it was placed, with no goal at all, while
+//             whatever happens happens. This is the combat mode.
+//   enemies   [{ class, at:[x,y], dummy }] - bots on the opposing team, placed
+//             and, unless `dummy: false`, made inert: an acquisition delay
+//             longer than any scenario means they never aim or fire, and a
+//             locked goal means they never move. Both are ordinary knobs, so a
+//             training dummy needs no test-only code in the game. Leave them
+//             inert unless the scenario is specifically about a two-sided
+//             fight, because every point of damage measured is then
+//             unambiguously this bot's doing.
+//   expect    combat assertions over what was measured:
+//               damage   {min,max} hp removed from the enemy team - live enemy
+//                        Characters plus any enemy Generator
+//               moved    {max} px from where the bot was placed. ⚠️ In hold
+//                        mode this does NOT test "did it walk to the
+//                        objective" - the bot has no goal and botPathKeys
+//                        returns no keys without one, so it cannot path
+//                        anywhere. It measures knockback and evasive hops, so a
+//                        splash class shelling something at close range drifts
+//                        a lot and a tight bound is flaky (measured 23, 42 and
+//                        232px on three runs of one scenario).
+//               ticks    {min,max} length of the run
+//               acquired true/false - did it ever pick a target at all. Latched
+//                        while it happens, because botTarget clears when the
+//                        target dies and by the end a bot that fought and won
+//                        looks like one that never saw anything.
 //   budget    ticks allowed. A leg that takes longer is a fail even if it
 //             eventually arrives - "gets there in the end" is how a bot that
 //             re-plans in a loop looks from the outside.
@@ -108,6 +138,85 @@ const SCENARIOS = [
       'is standing, with its own team and intel state, returns a 19-node path every time. ' +
       'So the graph promises a route the follower cannot execute, which is the one class of ' +
       'bug only this tier can see. Found by the first run of this harness, 2026-08-21.',
+  },
+  {
+    name: 'soldier-shells-generator',
+    map: 'gen_destroy',
+    about:
+      'A Soldier with a clear line to the enemy generator should shell it from where it stands. This pins M7 ' +
+      '6.3, which is the finding that bots had NEVER damaged a generator - botFindTarget iterated with(Character) ' +
+      'and nothing else, so a 2100hp objective that is shot rather than stood on was invisible to every bot in ' +
+      'the game. A regression there is silent: the round simply never ends.',
+    class: 'CLASS_SOLDIER',
+    team: 'red',
+    // High ground with line of sight, 212px above the generator and ~460px from
+    // it - found by scoring nodes for height among those with a clear line
+    // inside the Soldier's band, not read off a screenshot.
+    from: [2358, 235],
+    hold: 600,
+    // Measured 206, 165 damage over 600 ticks across runs. The floor is
+    // deliberately far below that: this asserts "it shoots the thing at all",
+    // which is the behaviour that was missing, rather than a damage-per-second
+    // figure that would move with any weapon tuning.
+    //
+    // ⚠️ No `moved` assertion here, and that is not an oversight. Measured 23,
+    // 42 and then 232px on three runs of the same scenario: a Soldier shelling
+    // something 460px away is standing in its own splash, and enough knockback
+    // walks it off the ledge. A tight bound would be flaky and a loose one would
+    // assert nothing. It is also unnecessary - in hold mode the bot has no goal
+    // at all and botPathKeys returns no keys without one, so it *cannot* path
+    // anywhere; any movement is knockback or an evasive hop, which is physics
+    // rather than the behaviour under test. Use `moved` on classes that do not
+    // splash themselves.
+    expect: { acquired: true, damage: { min: 50 } },
+  },
+  {
+    name: 'soldier-holds-and-fires',
+    map: 'koth_valley',
+    about:
+      'The plainest combat case: an enemy 200px away, on the same floor, outside the Soldier\'s splash-safe ' +
+      'band. It should acquire, fire, and not walk anywhere. A failure here is the see/acquire/aim/fire chain ' +
+      'itself rather than anything about a particular map.',
+    class: 'CLASS_SOLDIER',
+    team: 'red',
+    // Both points sit inside nav node 268, which spans x 1866-2082 on the valley
+    // floor. 200px apart is comfortably outside BOT_SPLASH_SAFE (110), so the
+    // bot has no reason to back away and any movement is a real finding.
+    from: [1880, 859],
+    hold: 400,
+    enemies: [{ class: 'CLASS_HEAVY', at: [2080, 859] }],
+    // No `moved` bound, for a reason worth knowing before adding one: measured
+    // 57, 1, 1 and then 576px across four runs. The Soldier's own rockets knock
+    // the dummy toward it, the dummy drifts inside BOT_SPLASH_SAFE, and
+    // botInputUpdate then walks the Soldier away from it - so a scenario about
+    // firing turns into one about retreating, at a distance that depends on
+    // where the splash happened to land. sniper-holds-position below asserts
+    // the standing-still half with a weapon that has no self-knockback.
+    expect: { acquired: true, damage: { min: 1 } },
+  },
+  {
+    name: 'sniper-fires-at-close-range',
+    map: 'koth_valley',
+    about:
+      'A Sniper with an enemy 200px away should eventually shoot it. It acquires, tracks, and never fires.',
+    class: 'CLASS_SNIPER',
+    team: 'red',
+    from: [1880, 859],
+    hold: 400,
+    enemies: [{ class: 'CLASS_HEAVY', at: [2080, 859] }],
+    expect: { acquired: true, damage: { min: 1 }, moved: { max: 40 } },
+    known:
+      'A Sniper never fires at a target inside BOT_ZOOM_RANGE. Three scripts are each doing what they say and ' +
+      'the combination has a hole in it: botClassKeys gates the trigger on rifle charge (weapon.t >= ' +
+      'chargeTime * min(1, dist/range)); Rifle.Begin Step only accumulates that charge while zoomed, and ' +
+      'resets t to 0 the moment it is not (if(owner.zoomed and readyToShoot) t += 1); and botServerActions only ' +
+      'zooms at dist >= BOT_ZOOM_RANGE (400), unzooming again at BOT_UNZOOM_RANGE (250). So between ~40px and ' +
+      '250-400px the charge is permanently 0, the threshold is always above it, and KEY_ATTACK is never set. ' +
+      'Measured 2026-08-21, same bot and same window, only the distance changed: dummy at 200px, zoomed=0, ' +
+      'damage 0 across four runs; generator at 460px, zoomed=1, damage 67. In a real match this is a Sniper ' +
+      'standing and staring at anyone who closes on it. Likely fix is one of: let botClassKeys fall through to ' +
+      'shoot uncharged when not zoomed, or have botServerActions zoom whenever a target is held rather than ' +
+      'only past 400px. Found by this harness.',
   },
 ];
 
