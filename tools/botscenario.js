@@ -73,16 +73,21 @@
 // compared against a stored baseline - which is a mode to add here, not a
 // different tool, since the setup and teardown are the same.
 //
-// ⚠️ ONE CLIENT AT A TIME
+// ⚠️ ONE CLIENT AT A TIME - which is why this is also an MCP tool
+//
 //
 // AgentBridge accepts a connection only when it does not already have one
 // (`if (sock < 0)` in agentBridgeStep). A second client is accepted by the OS
 // into the listen backlog and then never serviced, so it does not fail - it
 // hangs, and every call times out with the game plainly alive and answering the
 // other client. In practice that means this CLI cannot run while an editor's MCP
-// server is connected to the same game, which is exactly when you would want to
-// run it. Either close that session first, or drive the same functions in-process
-// from the MCP server, which is the pattern gg2_rebuild already uses.
+// server is connected to the same game - which is exactly when you would want to
+// run it.
+//
+// So the primary way to run these is the `gg2_scenario` MCP tool, which calls
+// runOne() in-process over the connection the server already holds. The CLI
+// stays for CI and for a game nothing else is talking to; it pings first and
+// explains itself rather than timing out anonymously.
 //
 // Usage:
 //   node botscenario.js                    run every scenario
@@ -94,12 +99,19 @@
 
 const lib = require('./lib');
 const { SCENARIOS } = require('./bot-scenarios');
-const mcp = require('./gg2-mcp-server');
 
-// Requiring the MCP server points lib's output sink at its own stderr log, which
-// is right when it is serving and wrong here - it would tag every line of this
-// runner's report as if the server had said it. Put the sink back.
-lib.setSink((line) => process.stdout.write(line + '\n'));
+// `call` is passed in rather than required, and that is not ceremony: the MCP
+// server is a consumer of this module (gg2_scenario), so requiring it back here
+// would be a cycle, and Node would hand whichever module loaded second a
+// half-initialised copy of the other. Threading the caller also means the CLI
+// and the MCP tool share one code path instead of two that drift.
+//
+// Whatever is passed must be the MCP server's callTool or something with its
+// behaviour, because two of its habits are load-bearing here: it lints every
+// snippet before sending, and it reads the launcher log for GM8 dialogs. A GML
+// error inside execute_string is not an exception - it is a modal box the
+// launcher dismisses while execute_string returns 0 - so without that, a
+// mistyped expression comes back as a plausible wrong number and no signal.
 
 const USAGE = `
 botscenario.js - live bot behaviour scenarios
@@ -116,20 +128,14 @@ botscenario.js - live bot behaviour scenarios
   --help
 `;
 
-// The runner talks to the game through the MCP server's own callTool rather
-// than a second socket client, which buys the lint gate on every snippet and,
-// more usefully, GM8 dialog capture: a GML error inside execute_string is not an
-// exception, it is a modal box the launcher dismisses while execute_string
-// returns 0. Without that plumbing a mistyped expression here would come back as
-// a plausible wrong number and no signal at all.
-const evalCode = (inst, code) => mcp.callTool('gg2_eval', { instance: inst, code });
-const evalExpr = (inst, expr) => mcp.callTool('gg2_evalx', { instance: inst, expr });
+const evalCode = (call, inst, code) => call('gg2_eval', { instance: inst, code });
+const evalExpr = (call, inst, expr) => call('gg2_evalx', { instance: inst, expr });
 
 // One round trip that both sets up and starts watching. The game keeps running
 // between separate calls, so a setup done as its own call leaves an unknown
 // amount of game time before the wait actually arms.
-const waitFor = (inst, expr, frames, setup) =>
-  mcp.callTool('gg2_wait', { instance: inst, expr, frames, setup });
+const waitFor = (call, inst, expr, frames, setup) =>
+  call('gg2_wait', { instance: inst, expr, frames, setup });
 
 //---------------------------------------------------------------------------
 // Reading a bundle of values back
@@ -155,9 +161,9 @@ function parseFields(text) {
   return out;
 }
 
-async function probe(inst, code) {
-  await evalCode(inst, code);
-  return parseFields(await evalExpr(inst, 'global.scenReport'));
+async function probe(call, inst, code) {
+  await evalCode(call, inst, code);
+  return parseFields(await evalExpr(call, inst, 'global.scenReport'));
 }
 
 //---------------------------------------------------------------------------
@@ -168,14 +174,14 @@ async function probe(inst, code) {
 // already there. Waiting on navBuildState alone races: it is still 9 from the
 // previous map for a frame or two before navServerTick notices the key changed,
 // so the key has to be part of the condition.
-async function ensureMap(inst, map) {
-  const now = await evalExpr(inst, 'global.currentMap');
+async function ensureMap(call, inst, map) {
+  const now = await evalExpr(call, inst, 'global.currentMap');
   if (String(now).trim() === map) {
-    await waitFor(inst, `global.navReady and global.navKey == "${map}_a1"`, 1800);
+    await waitFor(call, inst, `global.navReady and global.navKey == "${map}_a1"`, 1800);
     return false;
   }
   lib.step(`map -> ${map}`);
-  await waitFor(inst, `global.navKey == "${map}_a1" and global.navBuildState == 9`, 3600,
+  await waitFor(call, inst, `global.navKey == "${map}_a1" and global.navBuildState == 9`, 3600,
     `global.currentMapArea = 1; serverGotoMap("${map}");`);
   return true;
 }
@@ -190,8 +196,8 @@ async function ensureMap(inst, map) {
 // sequence is the worst kind of test suite to own.
 //---------------------------------------------------------------------------
 
-async function clearBots(inst) {
-  await evalCode(inst,
+async function clearBots(call, inst) {
+  await evalCode(call, inst,
     `var i, p, doomed;
 doomed = ds_list_create();
 for(i = 0; i < ds_list_size(global.players); i += 1)
@@ -234,23 +240,23 @@ global.botsEnabled = false;`);
 const DEFAULT_ALLOW = { stuck: 0 };
 const COUNTERS = ['replans', 'stuck', 'blacklisted', 'offRoute'];
 
-async function runOne(inst, s, speed) {
+async function runOne(call, inst, s, speed) {
   const allow = Object.assign({}, DEFAULT_ALLOW, s.allow || {});
   const team = s.team === 'blue' ? 'TEAM_BLUE' : 'TEAM_RED';
 
-  await ensureMap(inst, s.map);
-  await clearBots(inst);
+  await ensureMap(call, inst, s.map);
+  await clearBots(call, inst);
 
   // Add the bot and wait for it to actually have a body: botAdd queues a spawn
   // on an alarm rather than spawning inline, and everything below needs the
   // Character.
-  await waitFor(inst, 'global.scenBot.object != -1', 300,
+  await waitFor(call, inst, 'global.scenBot.object != -1', 300,
     `global.scenBot = botAdd(${team}, ${s.class}, "scen");`);
 
   // Place, pin and launch, all inside one call. Splitting this across calls
   // would let the bot walk, re-plan or be re-teamed between placement and the
   // goal being issued, and the tick count would silently include that.
-  const setup = await probe(inst,
+  const setup = await probe(call, inst,
     `var p, c, fromN, toN, fx, fy, tx, ty;
 p = global.scenBot;
 c = p.object;
@@ -309,19 +315,39 @@ global.scenReport = "fromNode=" + string(fromN) + " toNode=" + string(toN)
     };
   }
 
-  // Fast-forward and poll. gg2_wait cannot be used here: it reactivates every
-  // instance, which brings RateController back, which resets room_speed on its
-  // next Begin Step - so waiting silently cancels the fast-forward and the
-  // scenario runs at 1x. Polling with gg2_evalx does not freeze anything, and
-  // the numbers that matter are latched in the game anyway, so a poll that
-  // arrives late still reads the right answer.
-  await mcp.callTool('gg2_speed', { instance: inst, factor: speed });
+  // Fast-forward, then wait for the leg to finish in a single call.
+  //
+  // gg2_wait keeps the speed boost - it never touches instances, it only
+  // re-tests its expression once per step from agentBridgeDefer. (The bridge's
+  // own notes used to claim otherwise and this harness polled around it for
+  // nothing; measured 2026-08-21, 600 frames waited in 1022ms at ~587 fps with
+  // room_speed still 600 afterwards.) What does end a boost is a room change,
+  // which is why the factor is applied here rather than once at startup:
+  // ensureMap above may have just replaced RateController.
+  //
+  // Waiting rather than polling is also what makes the tick count exact. The
+  // condition is tested every frame inside the game, so a leg cannot finish
+  // between two samples - and `arrived or died or out of budget` is one
+  // expression, so the runner learns which of the three happened by reading the
+  // state afterwards rather than by racing it.
+  if (speed > 1) await call('gg2_speed', { instance: inst, factor: speed });
 
-  const deadline = Date.now() + Math.ceil((s.budget / 30 / speed) * 1000) + 15000;
-  let last = null;
-  for (;;) {
-    last = await probe(inst,
-      `var p;
+  // Budget plus a margin: the wait's own frame cap is a backstop for a game that
+  // has stopped stepping, while the in-expression budget test is what decides a
+  // scenario, so the two must not be the same number.
+  const cap = Math.min(3600, s.budget + 120);
+  await call('gg2_wait', {
+    instance: inst,
+    frames: cap,
+    expr:
+      'global.scenBot.botArrived' +
+      ' or global.scenBot.object != global.scenChar' +
+      ` or GameServer.frame - global.scenT0 > ${s.budget}`,
+    skip_lint: true,
+  }).catch(() => {}); // a timeout here is "still going", which the state below reports properly
+
+  const last = await probe(call, inst,
+    `var p;
 p = global.scenBot;
 global.scenReport = "frame=" + string(GameServer.frame)
     + " arrived=" + string(p.botArrived)
@@ -334,17 +360,13 @@ global.scenReport = "frame=" + string(GameServer.frame)
     + " sameChar=" + string(p.object == global.scenChar)
     + " d=" + string(round(point_distance(p.object.x, p.object.y, p.botGoalX, p.botGoalY)));`);
 
-    if (!last.sameChar) {
-      return { name: s.name, verdict: 'VOID', why: 'the bot died or was re-teamed mid-scenario', setup, last };
-    }
-    if (last.arrived) break;
-    if (last.frame - setup.t0 > s.budget) break;
-    if (Date.now() > deadline) {
-      return { name: s.name, verdict: 'VOID', why: 'wall-clock deadline hit; is the game still running?', setup, last };
-    }
-  }
+  if (speed > 1) await call('gg2_speed', { instance: inst, factor: 0 });
 
-  await mcp.callTool('gg2_speed', { instance: inst, factor: 0 });
+  // Checked before anything is asserted: a bot that died or was re-teamed
+  // mid-leg makes every counter below meaningless rather than merely bad.
+  if (!last.sameChar) {
+    return { name: s.name, verdict: 'VOID', why: 'the bot died or was re-teamed mid-scenario', setup, last };
+  }
 
   const ticks = last.arrived ? last.arrivedAt - setup.t0 : null;
   const fails = [];
@@ -415,7 +437,51 @@ function report(results) {
   return tally('FAIL') + tally('VOID');
 }
 
+// Pick scenarios by name, or all of them. Shared so the CLI and the MCP tool
+// cannot disagree about what "no name given" means.
+function select(names) {
+  if (!names || !names.length) return SCENARIOS;
+  const todo = SCENARIOS.filter((s) => names.includes(s.name));
+  if (!todo.length) throw new Error(`no scenario named ${names.join(', ')} - known: ${SCENARIOS.map((s) => s.name).join(', ')}`);
+  return todo;
+}
+
+// Run a set of scenarios and hand back both the raw results and a rendered
+// report. The caller decides what to do with them - the CLI prints and sets an
+// exit code, the MCP tool returns the text.
+async function runAll(call, { instance, names, speed = 20, keep = false } = {}) {
+  const todo = select(names);
+  const factor = Math.max(1, Math.min(20, Number(speed) || 20));
+  const results = [];
+  for (const s of todo) results.push(await runOne(call, instance, s, factor));
+  if (!keep) await clearBots(call, instance);
+  await call('gg2_speed', { instance, factor: 0 });
+  return results;
+}
+
+// Render without printing, so the MCP tool can return the same text the CLI
+// shows instead of reimplementing the formatting.
+function render(results) {
+  const lines = [];
+  const restore = lib.setSink((line) => lines.push(line));
+  let bad;
+  try {
+    bad = report(results);
+  } finally {
+    // Put the sink back whatever happened, or one throw in here silently
+    // redirects the MCP server's own logging into a dead array.
+    restore();
+  }
+  return { text: lines.join('\n'), bad };
+}
+
 if (require.main === module) {
+  const mcp = require('./gg2-mcp-server');
+  // Requiring the MCP server points lib's sink at its own stderr log, which is
+  // right when it is serving and wrong here - it would tag every line of this
+  // runner's report as if the server had said it.
+  lib.setSink((line) => process.stdout.write(line + '\n'));
+
   lib.cli(async () => {
     const { flags, positional } = lib.parseArgs(process.argv.slice(2), ['speed', 'instance']);
     if (flags.help) lib.helpAndExit(USAGE);
@@ -425,14 +491,7 @@ if (require.main === module) {
       return;
     }
 
-    let todo = SCENARIOS;
-    if (positional.length) {
-      todo = SCENARIOS.filter((s) => positional.includes(s.name));
-      if (!todo.length) throw new Error(`no scenario named ${positional.join(', ')} - try --list`);
-    }
-
     const inst = flags.instance;
-    const speed = Math.max(1, Math.min(20, Number(flags.speed) || 20));
 
     // Prove the bridge is ours before running anything. Without this the
     // one-client-at-a-time rule above presents as every scenario timing out for
@@ -444,16 +503,19 @@ if (require.main === module) {
       throw new Error(
         'could not reach the game. If it is running and answering another client, that is ' +
           'the problem: AgentBridge services one connection at a time, so an editor MCP ' +
-          'session connected to the same game leaves this one queued forever. ' +
-          `Close it and retry. (${e.message.split('\n')[0]})`
+          'session connected to the same game leaves this one queued forever. Close it and ' +
+          `retry, or use the gg2_scenario tool from that session instead. (${e.message.split('\n')[0]})`
       );
     }
 
-    const results = [];
+    let results;
     try {
-      for (const s of todo) results.push(await runOne(inst, s, speed));
-      if (!flags.keep) await clearBots(inst);
-      await mcp.callTool('gg2_speed', { instance: inst, factor: 0 });
+      results = await runAll(mcp.callTool, {
+        instance: inst,
+        names: positional,
+        speed: flags.speed,
+        keep: flags.keep,
+      });
     } finally {
       // The sockets are keep-alive, so without this the process never exits.
       mcp.disconnectAll('done');
@@ -463,4 +525,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runOne, clearBots, ensureMap, SCENARIOS };
+module.exports = { runOne, runAll, clearBots, ensureMap, select, render, report, SCENARIOS };

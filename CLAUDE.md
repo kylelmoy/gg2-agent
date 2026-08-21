@@ -62,6 +62,7 @@ Then drive the running game with the MCP tools:
 | `gg2_event` | read and write the GML inside object events, escaping handled |
 | `gg2_find` | search scripts *and* event code together — grep cannot see events |
 | `gg2_test` | run the game's own unit tests and read the results back |
+| `gg2_scenario` | run live bot behaviour scenarios; can a bot still walk A to B? |
 | `gg2_session` | start, stop and list games: a dedicated server and its clients |
 | `gg2_rebuild` | apply edited `.gml` and event code to the game, then relaunch (~3s) |
 | `gg2_log` | read the game's logs, including GML errors the launcher dismissed |
@@ -282,11 +283,19 @@ goal and is then free to walk away, so a position sampled at the end is
 meaningless. **Never cap `replans`** - planning is on a 45-90 tick timer, so that
 number measures how long the leg took, not whether anything went wrong.
 
-⚠️ **The bridge serves one client at a time.** This CLI cannot run while an
-editor's MCP session is connected to the same game: the second connection is
-accepted into the backlog and never serviced, so every call hangs while the game
-is plainly alive and answering the other client. The runner pings first and says
-so rather than timing out anonymously.
+⚠️ **The bridge serves one client at a time**, so from an editor session use the
+`gg2_scenario` tool, not this CLI: the CLI's connection would be accepted into
+the backlog and never serviced, hanging every call while the game is plainly
+alive and answering the MCP server. The CLI is for CI and for a game nothing else
+is talking to; it pings first and explains itself rather than timing out
+anonymously.
+
+The full set takes about 11 seconds. `gg2_wait` keeps a `gg2_speed` boost - it
+never touches instances - so a scenario fast-forwards and waits for its own
+finish condition in one call, with the tick count coming back exact instead of
+bracketed by a poll interval. A **map change** does reset the boost (new room,
+new `RateController`), which is why the factor is applied per scenario rather
+than once.
 
 Three things it does that a naive reachability BFS does not, each added after a
 human playtest found a map the previous version had passed:

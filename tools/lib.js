@@ -24,9 +24,19 @@ const COLOUR = { cyan: '\x1b[36m', green: '\x1b[32m', grey: '\x1b[90m', yellow: 
 
 const out = { sink: (line) => process.stdout.write(line + '\n'), colour: process.stdout.isTTY };
 
+// Returns a function that puts the previous sink back, so a caller that only
+// wants to capture output for a moment - rendering a report to a string, say -
+// can restore whatever was there instead of assuming it was stdout. Assuming is
+// wrong inside the MCP server, whose sink is its own stderr log.
 function setSink(fn) {
+  const prevSink = out.sink;
+  const prevColour = out.colour;
   out.sink = fn;
   out.colour = false;
+  return () => {
+    out.sink = prevSink;
+    out.colour = prevColour;
+  };
 }
 
 function tag(mark, colour, msg) {

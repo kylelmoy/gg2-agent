@@ -764,10 +764,13 @@ const TOOLS = [
       'it leaves those alone - a boosted game does the same thing per tick, just more ticks per real second. ' +
       'Verified live: factor 10 measured 296.7 sim-fps against a 30.0 sim-fps baseline, with an exact restore ' +
       'to 30.0 on reset.\n' +
-      'Not sticky across the freeze-based tools: gg2_step, gg2_wait, gg2_resume and a frozen gg2_screenshot all ' +
-      'reactivate every instance, including RateController, which resets room_speed on its next Begin Step - so ' +
-      'the boost silently drops back to normal the moment any of those run. That is usually convenient (nothing ' +
-      'can accidentally leave the game stuck at 10x) but call gg2_speed again afterwards to keep fast-forwarding. ' +
+      'gg2_wait KEEPS the boost, so "fast-forward and wait for a condition" is one call and needs no polling: ' +
+      'WAIT never touches instances, it only re-tests its expression each step. Measured 2026-08-21: 600 frames ' +
+      'waited in 1022ms (~587 sim-fps) with room_speed still 600 afterwards. gg2_eval/gg2_evalx keep it too. ' +
+      'What DOES end it is a room change - a new room means a new, active RateController; measured room_speed ' +
+      '600 before serverGotoMap and 30 after, so re-apply the factor after changing map - and anything that ' +
+      'un-freezes the game (gg2_resume, a frozen gg2_screenshot, gg2_step when the game was already frozen), ' +
+      'since instance_activate_all() brings RateController back with everything else. ' +
       'Also speeds up whatever services the network each frame - same caution as freezing: fine solo, careful ' +
       'inside a gg2_session.',
     inputSchema: {
@@ -1042,6 +1045,53 @@ const TOOLS = [
             'Which log to read (default both). "engine" is the game engine\'s own game_errors.log, which is ' +
             'where a compilation error inside execute_string goes - those raise no dialog at all and are ' +
             'invisible everywhere else.',
+        },
+        ...INSTANCE_ARG,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'gg2_scenario',
+    description:
+      'Run live bot behaviour scenarios against the running game and report what each one measured. This is the ' +
+      'third tier of bot testing: gg2_test covers tables and arithmetic, navaudit.js covers whether a route ' +
+      'exists in the nav graph, and this covers whether the bot can actually WALK it - the gap where every one ' +
+      'of this project\'s jump-edge bugs lived, since the graph describes an arc the follower cannot fly and ' +
+      'navaudit passes it happily. ' +
+      'Scenarios are defined in tools/bot-scenarios.js; adding one is an edit to that file, no GML and no ' +
+      'rebuild. Pass `names` to run a subset, or omit it to run all. `list: true` returns the names without ' +
+      'running anything. ' +
+      'Each scenario places a bot at A, locks its goal to B (botGoalLocked, or the objective layer would ' +
+      'overwrite it within 30 ticks), fast-forwards, and reports arrival ticks plus the four navigation ' +
+      'diagnostics counters. It asserts on those counters rather than final position, because a bot that ' +
+      'arrives clears its goal and is then free to walk away. ' +
+      'A scenario reads PASS, FAIL, KNOWN (reproduces a bug nobody has fixed - does not fail the run), FIXED ' +
+      '(a KNOWN one started passing - delete its entry) or VOID (could not be set up, or the bot died mid-run, ' +
+      'so the numbers mean nothing). ' +
+      'Takes roughly a minute for the full set; each scenario that changes map pays a map load. Prefer this ' +
+      'over the botscenario.js CLI from an editor session: AgentBridge serves one client at a time, so the CLI ' +
+      'would queue forever behind this server\'s own connection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        names: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Scenario names to run. Omit to run every scenario.',
+        },
+        list: { type: 'boolean', description: 'Return the scenario names and maps without running anything.' },
+        speed: {
+          type: 'integer',
+          description:
+            'Fast-forward factor while a scenario runs, 1-20 (default 20). Lower it only to watch one happen; ' +
+            'it does not change what a tick does, just how many happen per real second.',
+        },
+        keep: {
+          type: 'boolean',
+          description:
+            'Leave the test bot in the game afterwards, to inspect where it ended up. Off by default, because ' +
+            'a leftover bot shifts the next scenario\'s role assignment (botRoleAssign counts roster position).',
         },
         ...INSTANCE_ARG,
       },
@@ -1668,6 +1718,32 @@ async function callTool(name, args) {
           .map((e) => annotate(e))
           .join('\n')
       );
+    }
+
+    case 'gg2_scenario': {
+      // Required lazily: botscenario.js is a consumer of this module's callTool,
+      // so requiring it at the top would be a cycle and one of the two modules
+      // would see the other half-initialised.
+      const scen = require('./botscenario');
+
+      if (args.list) {
+        return scen.SCENARIOS.map((s) => `${s.name.padEnd(28)} ${s.map}${s.known ? '  [KNOWN-broken]' : ''}`).join('\n');
+      }
+
+      // Fail early and by name, rather than after a map load, if a name is wrong.
+      scen.select(args.names);
+
+      // callTool rather than a fresh client: this runs over the connection this
+      // server already holds, which is the whole reason the tool exists. The
+      // bridge accepts one client at a time, so the CLI cannot run while an
+      // editor session is attached.
+      const results = await scen.runAll(callTool, {
+        instance: args.instance,
+        names: args.names,
+        speed: args.speed,
+        keep: args.keep,
+      });
+      return scen.render(results).text;
     }
 
     default:
