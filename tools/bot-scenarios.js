@@ -198,25 +198,25 @@ const SCENARIOS = [
     name: 'sniper-fires-at-close-range',
     map: 'koth_valley',
     about:
-      'A Sniper with an enemy 200px away should eventually shoot it. It acquires, tracks, and never fires.',
+      'A Sniper with an enemy well inside BOT_ZOOM_RANGE must actually shoot it. This is the regression test ' +
+      'for a bug this harness found: the trigger was gated on rifle charge, charge only accumulates while ' +
+      'zoomed, and the bot only zooms past 400px - so from the minimum band out to ~250-400px it acquired an ' +
+      'enemy, tracked it all the way in, and never fired. Measured 0 damage over four runs before the fix and ' +
+      '280-315 after, which is the Rifle\'s own unscopedDamage of 35 landing repeatedly.',
     class: 'CLASS_SNIPER',
     team: 'red',
-    from: [1880, 859],
+    // Both points sit near the middle of nav node 268 (x 1866-2082) rather than
+    // at its edges. Placement 14px from the edge made this flaky at 264px of
+    // drift: with a target held the bot takes an evasive hop about 1% of ticks,
+    // and a hop that close to a lip walks it off the platform. Nothing to do
+    // with the behaviour under test, but it fails the same way.
+    from: [1930, 859],
     hold: 400,
-    enemies: [{ class: 'CLASS_HEAVY', at: [2080, 859] }],
-    expect: { acquired: true, damage: { min: 1 }, moved: { max: 40 } },
-    known:
-      'A Sniper never fires at a target inside BOT_ZOOM_RANGE. Three scripts are each doing what they say and ' +
-      'the combination has a hole in it: botClassKeys gates the trigger on rifle charge (weapon.t >= ' +
-      'chargeTime * min(1, dist/range)); Rifle.Begin Step only accumulates that charge while zoomed, and ' +
-      'resets t to 0 the moment it is not (if(owner.zoomed and readyToShoot) t += 1); and botServerActions only ' +
-      'zooms at dist >= BOT_ZOOM_RANGE (400), unzooming again at BOT_UNZOOM_RANGE (250). So between ~40px and ' +
-      '250-400px the charge is permanently 0, the threshold is always above it, and KEY_ATTACK is never set. ' +
-      'Measured 2026-08-21, same bot and same window, only the distance changed: dummy at 200px, zoomed=0, ' +
-      'damage 0 across four runs; generator at 460px, zoomed=1, damage 67. In a real match this is a Sniper ' +
-      'standing and staring at anyone who closes on it. Likely fix is one of: let botClassKeys fall through to ' +
-      'shoot uncharged when not zoomed, or have botServerActions zoom whenever a target is held rather than ' +
-      'only past 400px. Found by this harness.',
+    enemies: [{ class: 'CLASS_HEAVY', at: [2030, 859] }],
+    // No `moved` bound: see soldier-holds-and-fires. Standing still is not what
+    // this scenario is about, and on a 216px-wide platform it is not stable
+    // enough to assert.
+    expect: { acquired: true, damage: { min: 1 } },
   },
 ];
 
