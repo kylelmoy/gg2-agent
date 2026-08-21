@@ -57,6 +57,28 @@ to the above: the game boots and does nothing.
 
 Worth a grep before adding a global whose name echoes a script you just wrote.
 
+### `var` must not shadow a built-in *global* either — `score`, `lives`, `health`
+
+The rule above is usually stated about instance variables, and that framing is what makes
+this one slip through. GM8's built-in globals are ordinary-looking English words, and one
+of them is the obvious name for a priority-queue key:
+
+```gml
+var char, range, queue, target, candidate, score;   // COMPILATION ERROR
+```
+
+`score`, `lives` and `health` are built-in globals (GM8 draws them in the caption bar),
+and so are `room`, `room_speed`, `direction`, `keyboard_key`, `mouse_button`,
+`error_last` and about sixty more. Redeclaring any of them with `var` fails exactly like
+shadowing `x` does: *"Cannot redeclare a builtin variable"*, the whole script fails to
+compile at load, and the game boots into a window that does nothing.
+
+The authoritative list is GM8's own `fnames`: every entry that is not a call and does not
+end in `#` (which marks a constant) is a built-in variable. `tools/gml-lint.js` reads that
+and flags the whole set — it did not before 2026-08-20, which is how `var ... score` cost
+a build here. Rename to something domain-specific (`threat`) rather than adding an
+underscore; the name is usually the better one anyway.
+
 ---
 
 ## `and`/`or` do not short-circuit

@@ -43,6 +43,13 @@ function loadFnames(gm8Dir) {
   const text = fs.readFileSync(file, 'latin1');
   const funcs = new Map();
   const names = new Set();
+  // Built-in *variables*, as opposed to functions and constants. fnames marks a
+  // constant with a trailing '#'; everything else that is not a call is a variable
+  // GM8 already owns - some read-only (trailing '*'), some assignable, and one
+  // array ("alarm[0..11]"). None of them can be redeclared with "var", and this is
+  // where "score", "lives", "health" and "room_speed" come from: names that read as
+  // perfectly ordinary locals and take the whole game's startup down.
+  const vars = new Set();
 
   for (let raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -70,9 +77,11 @@ function loadFnames(gm8Dir) {
       continue;
     }
     // Constants end with #, assignable built-in variables with *.
-    names.add(line.replace(/[#*&@]$/, ''));
+    const bare = line.replace(/\[.*\]$/, '').replace(/[#*&@]$/, '');
+    names.add(bare);
+    if (!line.endsWith('#')) vars.add(bare);
   }
-  return { funcs, names };
+  return { funcs, names, vars };
 }
 
 // Functions supplied by .gex extension packages. Not in fnames, not project
@@ -531,9 +540,10 @@ function lintSource(src, ctx, originName) {
       while (j < toks.length && toks[j].value !== ';') {
         if (toks[j].type === 'ident') {
           localVars.add(toks[j].value);
-          if (isVar && INSTANCE_VARS.has(toks[j].value)) {
+          if (isVar && (INSTANCE_VARS.has(toks[j].value) || ctx.fnames.vars.has(toks[j].value))) {
+            const kind = INSTANCE_VARS.has(toks[j].value) ? 'instance' : 'global';
             add('error', toks[j].line, toks[j].col, 'var-shadows-builtin',
-              `"var ${toks[j].value}" is a compilation error in GM8: "${toks[j].value}" is a built-in instance ` +
+              `"var ${toks[j].value}" is a compilation error in GM8: "${toks[j].value}" is a built-in ${kind} ` +
               'variable, not a free name - the whole script fails to compile, before any Create event runs');
           }
         }
