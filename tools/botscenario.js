@@ -89,6 +89,18 @@
 // stays for CI and for a game nothing else is talking to; it pings first and
 // explains itself rather than timing out anonymously.
 //
+// WRITING ONE WHILE YOU WORK
+//
+// The tool takes an inline `scenario` - the same shape as a file entry, passed
+// in the call - and runs that and nothing else. That is the loop for a behaviour
+// you are in the middle of: define, run, nudge a coordinate, run again, with
+// nothing written to disk and no throwaway probe left in the committed suite.
+// Promote it into bot-scenarios.js only once it is worth keeping. `normalise`
+// validates inline and saved scenarios identically, so a typo is caught the same
+// way in both, and `map`/`class` are checked rather than trusted because both
+// are interpolated into GML - an unknown class name would otherwise surface as a
+// modal dialog about a line in a snippet nobody can see.
+//
 // Usage:
 //   node botscenario.js                    run every scenario
 //   node botscenario.js valley-floor-to-point   run one
@@ -126,6 +138,9 @@ botscenario.js - live bot behaviour scenarios
   --instance <s>    which running game (default: the only one)
   --keep            do not remove the test bot afterwards
   --help
+
+  To run a scenario you have not saved to bot-scenarios.js, use the
+  gg2_scenario MCP tool's inline "scenario" argument.
 `;
 
 const evalCode = (call, inst, code) => call('gg2_eval', { instance: inst, code });
@@ -437,20 +452,107 @@ function report(results) {
   return tally('FAIL') + tally('VOID');
 }
 
-// Pick scenarios by name, or all of them. Shared so the CLI and the MCP tool
-// cannot disagree about what "no name given" means.
-function select(names) {
-  if (!names || !names.length) return SCENARIOS;
+//---------------------------------------------------------------------------
+// Validating a scenario
+//
+// Applied to inline scenarios and to the ones in bot-scenarios.js alike, so
+// there is one definition of what a valid scenario is and a typo in the file is
+// caught the same way as a typo in a tool call.
+//
+// `map` and `class` are worth checking rather than trusting, because both are
+// interpolated into GML source: an unknown class name becomes an undefined
+// variable inside execute_string, which GM8 reports as a modal dialog naming a
+// line number in a snippet nobody can see. Failing here instead names the field.
+//---------------------------------------------------------------------------
+
+const CLASSES = [
+  'CLASS_SCOUT', 'CLASS_SOLDIER', 'CLASS_SNIPER', 'CLASS_DEMOMAN', 'CLASS_MEDIC',
+  'CLASS_ENGINEER', 'CLASS_HEAVY', 'CLASS_SPY', 'CLASS_PYRO', 'CLASS_QUOTE',
+];
+
+function point(v, field, name) {
+  if (!Array.isArray(v) || v.length !== 2 || !v.every((n) => Number.isFinite(Number(n)))) {
+    throw new Error(`${name}: ${field} must be [x, y] world coordinates, got ${JSON.stringify(v)}`);
+  }
+  return [Number(v[0]), Number(v[1])];
+}
+
+function normalise(spec) {
+  if (!spec || typeof spec !== 'object') throw new Error('a scenario must be an object');
+  const name = String(spec.name || 'ad-hoc');
+
+  if (typeof spec.map !== 'string' || !/^[A-Za-z0-9_]+$/.test(spec.map)) {
+    throw new Error(`${name}: map must be an internal map name like "koth_valley", got ${JSON.stringify(spec.map)}`);
+  }
+  const cls = spec.class === undefined ? 'CLASS_SOLDIER' : String(spec.class);
+  if (!CLASSES.includes(cls)) {
+    throw new Error(`${name}: class must be one of ${CLASSES.join(', ')} - got ${JSON.stringify(spec.class)}`);
+  }
+  const team = spec.team === undefined ? 'red' : String(spec.team);
+  if (team !== 'red' && team !== 'blue') {
+    throw new Error(`${name}: team must be "red" or "blue", got ${JSON.stringify(spec.team)}`);
+  }
+  const budget = spec.budget === undefined ? 1200 : Number(spec.budget);
+  if (!Number.isFinite(budget) || budget < 1) throw new Error(`${name}: budget must be a positive number of ticks`);
+
+  const allow = {};
+  for (const [k, v] of Object.entries(spec.allow || {})) {
+    if (!COUNTERS.includes(k)) {
+      // Deliberately does not offer `replans`, which the next check rejects.
+      throw new Error(
+        `${name}: allow.${k} is not a counter - use one of ${COUNTERS.filter((c) => c !== 'replans').join(', ')}`
+      );
+    }
+    if (k === 'replans') {
+      throw new Error(
+        `${name}: allow.replans cannot be set. Planning is on a 45-90 tick timer, so replans measures how long ` +
+          'the leg took rather than whether anything went wrong, and the interval depends on the bot instance ' +
+          'id so it moves between runs. Use stuck, blacklisted or offRoute.'
+      );
+    }
+    if (!Number.isFinite(Number(v)) || Number(v) < 0) throw new Error(`${name}: allow.${k} must be a number >= 0`);
+    allow[k] = Number(v);
+  }
+
+  return {
+    name,
+    map: spec.map,
+    about: spec.about ? String(spec.about) : '',
+    class: cls,
+    team,
+    from: point(spec.from, 'from', name),
+    to: point(spec.to, 'to', name),
+    budget,
+    allow,
+    known: spec.known ? String(spec.known) : undefined,
+  };
+}
+
+// Pick scenarios by name, or all of them, or take inline ones as given. Shared
+// so the CLI and the MCP tool cannot disagree about what "no name given" means.
+//
+// Inline scenarios are the point of `adhoc`: iterating on a behaviour means
+// running one thing repeatedly with a coordinate nudged, and making that a
+// committed file edit each time is both slow and a good way to leave a
+// throwaway probe in the suite. Write it inline, get it working, then promote it
+// into bot-scenarios.js once it is worth keeping.
+function select(names, adhoc) {
+  if (adhoc) {
+    const list = Array.isArray(adhoc) ? adhoc : [adhoc];
+    if (!list.length) throw new Error('scenario was given but empty');
+    return list.map(normalise);
+  }
+  if (!names || !names.length) return SCENARIOS.map(normalise);
   const todo = SCENARIOS.filter((s) => names.includes(s.name));
   if (!todo.length) throw new Error(`no scenario named ${names.join(', ')} - known: ${SCENARIOS.map((s) => s.name).join(', ')}`);
-  return todo;
+  return todo.map(normalise);
 }
 
 // Run a set of scenarios and hand back both the raw results and a rendered
 // report. The caller decides what to do with them - the CLI prints and sets an
 // exit code, the MCP tool returns the text.
-async function runAll(call, { instance, names, speed = 20, keep = false } = {}) {
-  const todo = select(names);
+async function runAll(call, { instance, names, scenario, speed = 20, keep = false } = {}) {
+  const todo = select(names, scenario);
   const factor = Math.max(1, Math.min(20, Number(speed) || 20));
   const results = [];
   for (const s of todo) results.push(await runOne(call, instance, s, factor));

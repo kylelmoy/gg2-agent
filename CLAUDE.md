@@ -268,9 +268,13 @@ node tools/botscenario.js --list
 node tools/botscenario.js --speed 10 --keep # slower, and leave the bot in place
 ```
 
-Scenarios live in `tools/bot-scenarios.js` - adding one is an edit to that file
-and nothing else, no GML and no rebuild, which is the reason the runner is in
-Node rather than in the game's own test suite. (The other reason is that a GML
+**To test a behaviour you are working on right now, do not edit the file** -
+pass `gg2_scenario` an inline `scenario` object (same shape as a file entry) and
+it runs that and nothing else. Nothing is written to disk, so trying a
+coordinate and trying again costs nothing and no throwaway probe ends up in the
+committed suite. Promote it into `tools/bot-scenarios.js` once it earns a place;
+that is an edit to that file and nothing else, no GML and no rebuild, which is
+the reason the runner is in Node rather than in the game's own test suite. (The other reason is that a GML
 script runs to completion inside one step, so the existing `test_*.gml` suites
 fundamentally cannot express "run 600 frames and then check".)
 

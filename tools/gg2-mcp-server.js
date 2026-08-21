@@ -1059,9 +1059,12 @@ const TOOLS = [
       'exists in the nav graph, and this covers whether the bot can actually WALK it - the gap where every one ' +
       'of this project\'s jump-edge bugs lived, since the graph describes an arc the follower cannot fly and ' +
       'navaudit passes it happily. ' +
-      'Scenarios are defined in tools/bot-scenarios.js; adding one is an edit to that file, no GML and no ' +
-      'rebuild. Pass `names` to run a subset, or omit it to run all. `list: true` returns the names without ' +
-      'running anything. ' +
+      'Three ways to choose what runs. `scenario` runs an inline definition you write in the call itself and ' +
+      'nothing else - use this while working on a behaviour, so a throwaway probe never lands in the committed ' +
+      'suite and nudging a coordinate is not a file edit. `names` runs a subset of the saved scenarios. Omit ' +
+      'both to run all of them, and `list: true` returns the saved names without running anything. ' +
+      'Saved scenarios live in tools/bot-scenarios.js; promote an inline one into that file once it is worth ' +
+      'keeping, which is an edit to that file alone - no GML and no rebuild. ' +
       'Each scenario places a bot at A, locks its goal to B (botGoalLocked, or the objective layer would ' +
       'overwrite it within 30 ticks), fast-forwards, and reports arrival ticks plus the four navigation ' +
       'diagnostics counters. It asserts on those counters rather than final position, because a bot that ' +
@@ -1078,9 +1081,16 @@ const TOOLS = [
         names: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Scenario names to run. Omit to run every scenario.',
+          description: 'Saved scenario names to run. Omit to run every saved scenario. Ignored if `scenario` is given.',
         },
-        list: { type: 'boolean', description: 'Return the scenario names and maps without running anything.' },
+        scenario: {
+          description:
+            'An inline scenario to run instead of the saved ones - one object, or an array of them. This is the ' +
+            'iterate-on-a-behaviour path: nothing is written to disk, so it costs nothing to try a coordinate ' +
+            'and try again.',
+          oneOf: [{ $ref: '#/$defs/scenario' }, { type: 'array', items: { $ref: '#/$defs/scenario' } }],
+        },
+        list: { type: 'boolean', description: 'Return the saved scenario names and maps without running anything.' },
         speed: {
           type: 'integer',
           description:
@@ -1096,6 +1106,58 @@ const TOOLS = [
         ...INSTANCE_ARG,
       },
       additionalProperties: false,
+      $defs: {
+        scenario: {
+          type: 'object',
+          required: ['map', 'from', 'to'],
+          properties: {
+            name: { type: 'string', description: 'Label for the report. Defaults to "ad-hoc".' },
+            map: { type: 'string', description: 'Internal map name, e.g. "koth_valley".' },
+            from: {
+              type: 'array',
+              items: { type: 'number' },
+              minItems: 2,
+              maxItems: 2,
+              description:
+                'World [x, y] to place the bot at. Snapped to the nearest nav node BELOW it, so height is ' +
+                'forgiving but a point with no floor under it is not: that is reported VOID, not FAIL.',
+            },
+            to: {
+              type: 'array',
+              items: { type: 'number' },
+              minItems: 2,
+              maxItems: 2,
+              description:
+                'World [x, y] to send the bot to, snapped the same way. Careful with objective coordinates - a ' +
+                'CaptureZone marker can float ~60px above the floor it belongs to.',
+            },
+            class: {
+              type: 'string',
+              description:
+                'CLASS_SOLDIER (default), CLASS_SCOUT, CLASS_HEAVY, ... Movement is class-independent today ' +
+                '(botPathKeys has no class references), so vary this only when the test is about the class.',
+            },
+            team: { type: 'string', enum: ['red', 'blue'], description: 'Decides which gates the route may use. Default red.' },
+            budget: { type: 'integer', description: 'Ticks allowed before the leg counts as failed. Default 1200 (40s).' },
+            about: { type: 'string', description: 'What a failure here would mean. Printed when it fails.' },
+            allow: {
+              type: 'object',
+              description:
+                'Caps on the diagnostics counters. Omit one and it is reported but not asserted, which is the ' +
+                'right state until you have measured it - a guessed cap fails for reasons unrelated to the bot. ' +
+                '`replans` is rejected on purpose: it measures how long the leg took, not whether anything went ' +
+                'wrong, because planning is on a 45-90 tick timer.',
+              properties: {
+                stuck: { type: 'integer' },
+                blacklisted: { type: 'integer' },
+                offRoute: { type: 'integer' },
+              },
+              additionalProperties: false,
+            },
+          },
+          additionalProperties: false,
+        },
+      },
     },
   },
 ];
@@ -1730,8 +1792,9 @@ async function callTool(name, args) {
         return scen.SCENARIOS.map((s) => `${s.name.padEnd(28)} ${s.map}${s.known ? '  [KNOWN-broken]' : ''}`).join('\n');
       }
 
-      // Fail early and by name, rather than after a map load, if a name is wrong.
-      scen.select(args.names);
+      // Validate before anything is launched, so a bad name or a malformed
+      // inline scenario costs nothing rather than surfacing after a map load.
+      scen.select(args.names, args.scenario);
 
       // callTool rather than a fresh client: this runs over the connection this
       // server already holds, which is the whole reason the tool exists. The
@@ -1740,6 +1803,7 @@ async function callTool(name, args) {
       const results = await scen.runAll(callTool, {
         instance: args.instance,
         names: args.names,
+        scenario: args.scenario,
         speed: args.speed,
         keep: args.keep,
       });
