@@ -81,6 +81,34 @@ underscore; the name is usually the better one anyway.
 
 ---
 
+### ...and not a *keyword* either — `other`, and the linter cannot see this one
+
+`other` is GM8's keyword for the other instance in a `with`/collision block, so it is not
+in `fnames` at all — it is not a built-in variable, it is part of the grammar. `gml-lint.js`
+reads `fnames` to build its shadowing list, so it passes this straight through:
+
+```gml
+var player, i, other, place;                        // COMPILATION ERROR, lints clean
+```
+
+The failure is the same as `score`'s and just as unhelpful: *"Variable name expected"* at
+the `var` line, the whole game fails to compile at load, and it launches into a window
+that paints, answers a ping, and does nothing. It cost a full `build-agent.js` cycle on
+2026-08-21 in `botRoleAssign`, where `other` is the obvious name for "the player I am
+comparing myself to".
+
+The other GM8 keywords worth not naming a local after: `self`, `all`, `noone`, `global`,
+`local`, `then`, `begin`, `end`, `div`, `mod`, `not`, `and`, `or`, `xor`. Most read as
+obviously reserved; `other` is the one that reads like a variable name.
+
+⚠️ **The general lesson, not the specific one: a clean `gg2_lint` is not proof the game
+will start.** The linter checks syntax, function existence, argument counts and the
+`fnames` shadowing set — everything outside that is only caught by launching. Budget for
+that when the change is a new script rather than an edit to an existing one, since a new
+script needs the ~1min full build either way.
+
+---
+
 ## `and`/`or` do not short-circuit
 
 This is worse than the compilation errors above, because it compiles clean, lints

@@ -21,6 +21,7 @@ node build-fast.js      # splice code changes into the last build         (~3s)
 node run-agent.js       # launch the game, wait for the bridge
 node build-agent.js     # full build - drives the GM8 IDE itself         (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
+node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
 ```
 
 `build-agent.js` used to be the one step that needed a person: Game Maker 8 has
@@ -224,6 +225,69 @@ inside the executable. Three ways to close that gap, cheapest first:
 
 So: experiment with `gg2_eval`, write the result into the source, and
 `gg2_rebuild`. Reach for the full build only when the fast one refuses.
+
+### Auditing the bot nav graph without a running game
+
+Every map a server has loaded leaves its whole nav graph on disk at
+`Source/build/botnav/<map>_a<area>.txt`. That is enough to answer "can a bot
+path from its spawn to the objective on this map" with no game, no bridge and no
+map rotation - seconds for all 22 shipped maps, against roughly a minute each to
+watch one live.
+
+```powershell
+node tools/navaudit.js                      # every cached graph, failures only
+node tools/navaudit.js koth_corinth         # one map, in detail
+node tools/navaudit.js koth_corinth --gaps  # near-miss pairs across a boundary
+node tools/navaudit.js koth_corinth --node 64
+node tools/navimage.js koth_corinth out.png --crop 228,100,300,145 --scale 14
+```
+
+`tools/navgraph.js` is the reader and the model (cache decoding, world<->node
+conversion, the gate rules); `navaudit.js` is the checks; `navimage.js` draws the
+graph over the map art. Run the audit **before** playtesting a map - a bot with
+no route stands perfectly still, which is indistinguishable from a dozen other
+bugs when you are watching it happen.
+
+Three things it does that a naive reachability BFS does not, each added after a
+human playtest found a map the previous version had passed:
+
+- **Gates are per-query, not baked into the graph.** `navGatePassable` answers by
+  the caller's team *and* whether it is carrying intel. A gate-blind traversal
+  asks "can a body get there" and passed a `ctf_conflict` where blue cannot reach
+  the red intel at all.
+- **The CTF return leg is a different query.** Carrying the intel closes your
+  *own* team gate. `ctf_conflict` passes outbound for red and fails the return -
+  the bot fetches the flag, cannot carry it home, and stands on it forever.
+- **"A region whose only entrance is a gated node"** localises a missing edge to
+  one chokepoint, which no percentage ever does.
+
+The cache format is not the obvious one - `ds_grid_write` is column-major with
+sixteen-byte cells and the double four bytes in, not packed doubles. `navgraph.js`
+documents it; do not re-derive it by hand.
+
+⚠️ **A full `build-agent.js` wipes `Source/build/`, and the nav cache with it.**
+Re-warm it by cycling a dedicated server through the rotation:
+
+```
+gg2_wait  setup: 'global.currentMapArea = N; serverGotoMap("<name>");'
+          expr:  'global.navKey == "<name>_a<N>" and global.navBuildState == 9'
+```
+
+Waiting on `navBuildState` alone races - it is still 9 from the previous map for
+a frame or two before `navServerTick` notices the key changed. Multi-stage maps
+(`cp_dirtbowl`) need one pass per `currentMapArea`.
+
+⚠️ **Do not `botRemove` and `botAdd` in the same call as a map change.** It leaves
+a dangling entry in `global.players`, and since `-1` is GM8's `self`, every later
+`player.team` read errors against whatever object asked. The server then raises
+the same error every frame forever and the instance has to be restarted.
+
+⚠️ **The overlay image tells you *where* to look and lies about *why*.** A picture
+of `koth_corinth` suggested an unreachable island needing an exotic jump; the
+edge lists showed an ordinary ramp with every edge present except one, running
+one-way downhill. An asymmetric edge list - outgoing edges to a neighbour with
+none coming back - is one line of `--node` output and is invisible at any zoom.
+Find the region with `navimage.js`, then diagnose with `--node` and `--gaps`.
 
 ## Why the fast rebuild works, and when it refuses
 
