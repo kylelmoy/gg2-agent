@@ -127,6 +127,14 @@ case "WAIT":
     deferTotal = n;
     return "";
 
+case "SPEED":
+    // SPEED <factor> - real, 0 or below restores normal speed. See
+    // agentBridgeSpeed for why deactivating RateController is required.
+    if (rest == "")
+        return "ERR SPEED needs a factor";
+    n = agentBridgeSpeed(real(rest));
+    return "OK room_speed " + string(n) + " (factor " + string(global.agentSpeedFactor) + ")";
+
 case "QUIT":
     return "OK bye";
 }

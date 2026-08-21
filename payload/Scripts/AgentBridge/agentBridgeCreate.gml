@@ -25,6 +25,9 @@ global.agentNavReachValid = false;
 // agentBridgeHudVisible and agentBridgeShot.
 global.agentHideHud = false;
 
+// gg2_speed's boost factor: 1 = normal. See agentBridgeSpeed.
+global.agentSpeedFactor = 1;
+
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer
 // sends the reply later. Nothing new is read while one is outstanding, so

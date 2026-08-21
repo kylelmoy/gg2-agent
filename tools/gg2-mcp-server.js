@@ -753,6 +753,38 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { ...INSTANCE_ARG }, additionalProperties: false },
   },
   {
+    name: 'gg2_speed',
+    description:
+      'Set how fast the game runs relative to real time, for burning through a slow stretch of bot behaviour ' +
+      'without gg2_step\'s frame-by-frame cost. GM8 paces its own step loop to hit room_speed steps a real ' +
+      'second, and RateController.Begin Step resets room_speed back to 30 or 60 every single frame - so a plain ' +
+      '`room_speed = ...` via gg2_eval gets stomped within one frame. This tool deactivates RateController first, ' +
+      'which is what makes a different value stick. Per-tick game logic is not affected: RateController only ' +
+      'recalculates delta_factor/frameskip/ticks_per_virtual for its own two supported rates, and deactivating ' +
+      'it leaves those alone - a boosted game does the same thing per tick, just more ticks per real second. ' +
+      'Verified live: factor 10 measured 296.7 sim-fps against a 30.0 sim-fps baseline, with an exact restore ' +
+      'to 30.0 on reset.\n' +
+      'Not sticky across the freeze-based tools: gg2_step, gg2_wait, gg2_resume and a frozen gg2_screenshot all ' +
+      'reactivate every instance, including RateController, which resets room_speed on its next Begin Step - so ' +
+      'the boost silently drops back to normal the moment any of those run. That is usually convenient (nothing ' +
+      'can accidentally leave the game stuck at 10x) but call gg2_speed again afterwards to keep fast-forwarding. ' +
+      'Also speeds up whatever services the network each frame - same caution as freezing: fine solo, careful ' +
+      'inside a gg2_session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        factor: {
+          type: 'number',
+          description:
+            'Ticks per real second, as a multiple of normal (1 = normal, 10 = ten times faster, 0.5 = half ' +
+            'speed). 0 or omitted resets to normal. Clamped to [0, 20].',
+        },
+        ...INSTANCE_ARG,
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'gg2_input',
     description:
       'Drive the game as a player would, not by writing to its variables. Commands are separated by ";" -\n' +
@@ -1306,6 +1338,12 @@ async function callTool(name, args) {
     case 'gg2_resume': {
       const where = target(args.instance);
       return await watched(where, () => command(where, 'RESUME'));
+    }
+
+    case 'gg2_speed': {
+      const where = target(args.instance);
+      const factor = clamp(args.factor, 0, 20, 0);
+      return await watched(where, () => command(where, 'SPEED ' + factor));
     }
 
     case 'gg2_input': {

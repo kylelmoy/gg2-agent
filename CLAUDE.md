@@ -49,6 +49,7 @@ Then drive the running game with the MCP tools:
 | `gg2_area_shot` | full-resolution **live** screenshot of an area bigger than one window, tiled and stitched |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
+| `gg2_speed` | run the live game faster (or slower) than real time, for burning through a slow stretch |
 | `gg2_input` | press, release and click; `aim` is currently broken, see below |
 | `gg2_wait` | run until a GML expression is true, or give up after N frames |
 | `gg2_watch` | sample expressions every frame; changes land in the bridge log |
@@ -145,6 +146,36 @@ call the game's own `Scripts/Input/input*.gml` directly with `gg2_eval`.
 **Freezing stops the objects that service the network.** A connected client or a
 hosting server falls behind while frozen and may drop. Freely on a single game;
 carefully inside a session.
+
+### Running faster than real time
+
+`gg2_speed` scales how many game ticks happen per real second - `factor: 10` for
+ten times normal, `factor: 0.5` for half-speed slow motion, no `factor` (or `0`)
+to reset. It exists because `gg2_step`/`gg2_wait` are for *inspecting* a handful
+of frames closely, not for skipping past a slow stretch of bot behaviour in real
+time before you get to the part worth looking at.
+
+GM8 paces its own step loop to hit `room_speed` steps a real second, and
+`RateController.Begin Step` resets `room_speed` back to 30 or 60 every single
+frame - confirmed live, 2026-08-20: setting `room_speed` directly with `gg2_eval`
+was already back to 30 by the very next `gg2_evalx` read. `gg2_speed` works by
+deactivating `RateController` first, which is what makes a different value
+stick. This does not touch per-tick game logic: `RateController` only
+recalculates `global.delta_factor`/`frameskip`/`ticks_per_virtual` for its own
+two supported rates, and deactivating it leaves those exactly as they were - so
+a boosted game does the same thing per tick, just more ticks per real second.
+Measured live at `factor: 10`: 296.7 sim-fps against a 30.0 sim-fps baseline,
+with an exact restore to 30.0 on reset.
+
+**It is not sticky.** `gg2_step`, `gg2_wait`, `gg2_resume` and a frozen
+`gg2_screenshot` all call `instance_activate_all()`, which reactivates
+`RateController` right along with everything else and lets it reset
+`room_speed` on its next `Begin Step` - confirmed live, the same call sequence
+above. So the boost silently drops back to normal the moment any of those run.
+Usually that is convenient (nothing can leave the game stuck at 10x by
+accident), but call `gg2_speed` again afterwards to keep fast-forwarding. And
+because it speeds up whatever services the network each frame too, it carries
+the same caution as freezing: fine solo, careful inside a `gg2_session`.
 
 ### More than one game at once
 
