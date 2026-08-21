@@ -19,20 +19,22 @@ AgentBridge);` line, or an `AgentBridge.heldMask` reference inside
 ```powershell
 node build-fast.js      # splice code changes into the last build         (~3s)
 node run-agent.js       # launch the game, wait for the bridge
-node build-agent.js     # full build - drives the GM8 IDE itself         (~1min)
+node build-agent.js     # full build - drives GM8 headlessly            (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
 ```
 
 `build-agent.js` used to be the one step that needed a person: Game Maker 8 has
-no command-line compile. It no longer does in the common case - `tools/gm8ide.js`
-drives the IDE itself with posted window messages (*File > Create Executable*,
-the save dialog, the confirmations either side of it), which needs an
-interactive desktop session but not a person at it. It only falls back to
-opening the project and waiting for someone if Game Maker 8 cannot be found, or
-driving it fails partway through - `--manual` forces that fallback. Either way
-it is much slower than `build-fast.js` and only needed to bootstrap the
-fast-rebuild template or after adding/removing/renaming a resource.
+no command-line compile. It no longer does in the common case -
+`tools/gm8directbuild.js` runs Game Maker on a desktop that is never displayed
+and calls straight into the compiled routine behind *File > Create Executable*,
+so there is no menu, no Save dialog, no window and no desktop session involved.
+It only falls back to opening the project and waiting for someone if Game Maker
+8 cannot be found, or is not the exact build the call address was
+reverse-engineered against (checked by sha256) - `--manual` forces that
+fallback. Either way it is much slower than `build-fast.js` and only needed to
+bootstrap the fast-rebuild template or after adding/removing/renaming a
+resource.
 
 Every script takes `--repo <path>` and `--help`, and each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
@@ -444,10 +446,15 @@ exactly what broke.
   DirectSound during engine startup, before any game code runs. With no audio
   endpoint it shows two modal errors and terminates. Over RDP that means audio
   redirection, or `tscon <id> /dest:console`. No code change can avoid this.
-- **A full build needs an interactive desktop session**, because Game Maker 8
-  has no command-line compile - `tools/gm8ide.js` drives the IDE for you with
-  posted window messages, so it needs a real desktop to open windows on but not
-  a person watching it. `build-fast.js` needs neither, which is the point of it.
+- **A full build does not need a desktop session any more**, but it does need
+  the exact Game Maker build it was reverse-engineered against.
+  `tools/gm8directbuild.js` makes its own desktop, which nothing ever displays,
+  so no window appears and nothing steals focus; against a different
+  `Game_Maker.exe` it refuses (rather than calling an address that means
+  something else there) and `build-agent.js` drops to asking a person. Do not
+  leave a thread on that hidden desktop: while switched to it, `win32.js` can
+  see no window on the machine at all, and `CloseDesktop` refuses with
+  `ERROR_BUSY`. `build-fast.js` needs none of this, which is the point of it.
 - **`gg2_input aim` hangs** rather than erroring: `window_views_mouse_set` never
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher

@@ -39,7 +39,8 @@ payload/            copied verbatim into the game's Source/gg2/
 tools/
   launcher.js       runs the game; clears the modal dialogs that freeze it
   win32.js          the slice of user32 the launcher needs, via koffi
-  gm8ide.js         drives the GM8 IDE through File > Create Executable
+  gm8directbuild.js builds a .gmk into an .exe with no window and no person
+  gm8directbuild/   the injected DLL and its 32-bit injector, with sources
   gg2-mcp-server.js the MCP server (JSON-RPC over stdio)
   instances.js      the register of running games, so they can be named
   session.js        a dedicated server and its clients, started together
@@ -165,17 +166,29 @@ executable, patches it with `gm8x_fix`, records the fast-rebuild template, and
 removes the bridge again. Cleanup runs from a `finally` block, so an
 interrupted build still leaves a clean checkout.
 
-The build step itself — *File > Create Executable* — is driven automatically by
-`tools/gm8ide.js`, which drives the GM8 IDE with posted window messages: the
-menu command, the save dialog's filename, and the confirmations either side of
-it. `PostMessage` rather than `SendMessage` throughout, same as the launcher, so
-nothing has to be focused or activated and the desktop is not stolen from
-whoever is using it — an interactive desktop session is needed, but not a
-person watching it. If Game Maker 8 cannot be found (pass `--gm8 <dir>` or set
-`GM8_DIR`), or driving it fails partway through, this falls back to opening the
-project and waiting for someone to finish it by hand — the original behaviour,
-and what `--manual` forces on purpose. A failed drive leaves the IDE open with
-the project loaded, so finishing by hand costs one menu click, not a reload.
+The build step itself — *File > Create Executable* — is done by
+`tools/gm8directbuild.js`, with no menu, no dialog and no window. It launches
+Game Maker attached to a desktop that is never displayed, injects a small DLL,
+and calls straight into the compiled routine behind that menu item, passing the
+output path the Save dialog would otherwise have collected. The desktop is not
+only there to hide the main window: a Delphi error box, a startup failure or a
+message box from inside the build path is a *separate* window that would
+otherwise land in front of whoever is using the machine and block the injected
+thread, and a desktop nobody is looking at contains all of them at once. The
+calling thread borrows that desktop to poll for Game Maker's window and hands
+it back afterwards, since a thread left on a hidden desktop can see no window
+on the machine at all.
+
+Because it calls a hardcoded address it is only valid for the one exact
+`Game_Maker.exe` build it was reverse-engineered against, checked by sha256
+before anything is injected. Against any other build — or with `--manual`, or
+if Game Maker cannot be found at all (pass `--gm8 <dir>` or set `GM8_DIR`) —
+this falls back to opening the project and waiting for someone to finish it by
+hand, which is the original behaviour.
+
+`tools/gm8directbuild/` holds the injected DLL, the 32-bit injector that loads
+it (a 64-bit Node cannot `CreateRemoteThread` into a 32-bit process), and the C
+sources for both, whose comments carry the reverse engineering.
 
 ## The fast rebuild
 

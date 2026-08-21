@@ -7,7 +7,7 @@
 //
 //   1. inject the agent bridge into the split source tree
 //   2. gmksplit    reassemble Source/gg2 into a .gmk
-//   3. Game Maker  drive the IDE to create the executable            (~40s)
+//   3. Game Maker  create the executable                              (~10s)
 //   4. gm8x_fix    patch the resulting executable
 //   5. template    keep this exe plus a manifest of the code it contains,
 //                  so build-fast.js can splice later code changes into it
@@ -17,12 +17,26 @@
 // Step 7 runs from a finally block, so an interrupted or failed build still
 // leaves the checkout clean.
 //
-// Step 3 is the one Game Maker 8 gives no command-line for, so tools/gm8ide.js
-// drives the IDE with posted window messages instead: File > Create Executable,
-// the save dialog, and the confirmations either side of it. That needs an
-// interactive desktop session but not a person. If Game Maker cannot be found,
-// or driving it fails, this falls back to opening the project and waiting - the
-// behaviour it always had.
+// Step 3 is the one Game Maker 8 gives no command-line for, so two ways to get
+// an executable out of it are tried in order:
+//
+//   1. tools/gm8directbuild.js - launches Game Maker on a desktop that is
+//      never displayed and calls straight into the compiled routine behind
+//      File > Create Executable. No desktop session, no person, no window.
+//      Only works against the one exact Game_Maker.exe build it was
+//      reverse-engineered against; refuses against any other rather than
+//      calling a hardcoded address that would mean something else there.
+//   2. Manual - opens the project and waits for a person. The behaviour this
+//      always had, and now only reached when tier 1 refuses or fails.
+//
+// --manual skips straight to the second tier.
+//
+// There used to be a middle tier, tools/gm8ide.js, which drove the visible IDE
+// through File > Create Executable with posted window messages. It needed an
+// interactive desktop session and about a minute; gm8directbuild.js needs
+// neither and does the same job against the same Game Maker build, so it was
+// removed rather than kept as a slower duplicate. Its git history is the place
+// to look if the direct call ever has to be re-derived.
 //
 // You need this only to bootstrap a template, or after adding, removing or
 // renaming a resource. Code changes go through build-fast.js.
@@ -36,7 +50,7 @@ const { inject } = require('./inject.js');
 const { cleanup } = require('./cleanup.js');
 const { packageBuild } = require('./package.js');
 const { GAME_IMAGE } = require('./run-agent.js');
-const gm8ide = require('./tools/gm8ide.js');
+const gm8directbuild = require('./tools/gm8directbuild.js');
 
 const USAGE = `
 usage: node build-agent.js [--repo <path>] [--keep-injected] [--package]
@@ -47,17 +61,24 @@ usage: node build-agent.js [--repo <path>] [--keep-injected] [--package]
                    before committing anything to the fork
   --package        also produce build.zip with music, licences and extensions
   --wait           how long to allow for the IDE build (default 15 minutes)
-  --manual         do not drive the IDE; open the project and wait for a person
+  --manual         do not build headlessly; open the project and wait for a
+                   person
   --gm8            the Game Maker 8 install (default: auto-detect, or GM8_DIR)
 
-Step 3 drives the Game Maker 8 IDE, since GM8 has no command-line compile. It
-needs an interactive desktop session but not a person. If Game Maker cannot be
-found, or driving it fails, this falls back to opening the project and waiting
-for someone to choose File > Create Executable. Code-only changes do not need
-any of this - use build-fast.js.
+Step 3 builds headlessly with gm8directbuild.js - no desktop session, no
+window, ~10s - and falls back to opening the project and waiting for a person
+if that is not available for this Game Maker build. Code-only changes do not
+need any of this - use build-fast.js.
 `;
 
-async function buildAgent({ repo, keepInjected = false, doPackage = false, waitMinutes = 15, manual = false, gm8Dir = null }) {
+async function buildAgent({
+  repo,
+  keepInjected = false,
+  doPackage = false,
+  waitMinutes = 15,
+  manual = false,
+  gm8Dir = null,
+}) {
   const repoFull = path.resolve(repo);
   const source = path.join(repoFull, 'Source');
   const build = path.join(source, 'build');
@@ -119,22 +140,19 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
     if (!fs.existsSync(gmkOut)) throw new Error(`gmksplit produced no ${gmkOut}`);
     lib.ok(`gg2.gmk (${fs.statSync(gmkOut).size} bytes)`);
 
-    // --- 3. build it in the Game Maker 8 IDE ----------------------------------
-    // Automatic when Game Maker can be found, which is the usual case. When it
-    // cannot, or when driving it fails, this falls back to what it always did:
-    // open the project and wait for a person. A failed drive leaves the IDE up
-    // with the project loaded, so finishing by hand costs a menu click rather
-    // than another two-minute load.
+    // --- 3. build it in Game Maker 8 -------------------------------------------
+    // gm8directbuild.js always tears its own Game Maker process down whatever
+    // the outcome - it runs on a desktop nobody can see, so there would be no
+    // sense in leaving a loaded project open on it - which means the fallback
+    // starts a fresh IDE rather than inheriting one.
     let done = false;
-    let ideOpen = false;
-    const ide = manual ? null : gm8ide.find(gm8Dir);
 
-    if (ide) {
-      lib.step('Building in the Game Maker 8 IDE');
+    if (!manual) {
+      lib.step('Building headlessly (gm8directbuild.js)');
       lib.detail(`project:  ${gmkOut}`);
       lib.detail(`save as:  ${exeOut}`);
       try {
-        await gm8ide.buildExe({
+        await gm8directbuild.buildExe({
           gmk: gmkOut,
           exe: exeOut,
           gm8: gm8Dir,
@@ -143,11 +161,8 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
         });
         done = true;
       } catch (e) {
-        lib.warn(`could not drive the IDE: ${e.message}`);
-        ideOpen = !!e.ideOpen;
+        lib.warn(`could not build headlessly: ${e.message}`);
       }
-    } else if (!manual) {
-      lib.warn('Game Maker 8 not found, so this step cannot be automated - pass --gm8 <dir> or set GM8_DIR');
     }
 
     if (!done) {
@@ -155,7 +170,7 @@ async function buildAgent({ repo, keepInjected = false, doPackage = false, waitM
       lib.warn('this step needs you: File > Create Executable');
       lib.detail(`project:  ${gmkOut}`);
       lib.detail(`save as:  ${exeOut}`);
-      if (!ideOpen) lib.openInShell(gmkOut);
+      lib.openInShell(gmkOut);
 
       const built = await lib.waitForStableFile(exeOut, waitMinutes * 60 * 1000, (waited) =>
         lib.detail(`still waiting for the executable (${waited}s)`)
