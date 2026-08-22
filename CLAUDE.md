@@ -250,6 +250,14 @@ inside the executable. Three ways to close that gap, cheapest first:
 So: experiment with `gg2_eval`, write the result into the source, and
 `gg2_rebuild`. Reach for the full build only when the fast one refuses.
 
+### Investigating bad bot navigation
+
+`NAVMETHOD.md` is the loop, written to be repeated: sweep offline with `navsuspects`, read
+the route, read the mask, then run it live and let `ticks / travel` say whether the route
+is long or the bot is broken. It also carries the two rules that have saved the most
+damage - model a generator change in Node before building it, and A/B it against rebuilt
+graphs on every map rather than against the scenario suite, which only covers three.
+
 ### Auditing the bot nav graph without a running game
 
 Every map a server has loaded leaves its whole nav graph on disk at

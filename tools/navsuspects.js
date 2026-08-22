@@ -12,8 +12,12 @@
 //
 // So this asks a METRIC question instead. For every node:
 //
+//   travel   how far the bot actually walks along the route Dijkstra picked, which
+//            is NOT what the graph charges it - see travelOf below
 //   dGraph   Dijkstra cost from that node to the objective, over the same edge
-//            costs A* itself uses
+//            costs A* itself uses. Kept in the output beside travel, because the two
+//            disagreeing IS a finding: a route charged 112 and walked 344 is one the
+//            planner is choosing for the wrong reason.
 //   dMin     straight-line distance in cells - which is exactly navFindPath's
 //            own heuristic, and therefore a guaranteed lower bound on dGraph
 //   ratio    dGraph / dMin
@@ -130,9 +134,43 @@ function straightLineCells(g, a, b) {
   return Math.hypot(ax - bx, g.floorY(a) - g.floorY(b)) / c.NAV_CELL_SIZE;
 }
 
+// How far a bot actually walks along a route, in cells, as opposed to what the graph
+// charges it. The two are not the same and the difference is not small: measured over
+// 17 legs, cp_egypt's n248 route is charged 112 cells and covers 344.
+//
+// The gap is structural, not a bug in any one edge. A walk between two runs on the SAME
+// row is charged a flat 1 cell - "they are, by construction, exactly adjacent" - and
+// crossing the run you land on is then free, so a route over a 378px platform is priced
+// at one cell. (navWalkEdges says as much in its own header, and defers it.)
+//
+// ⚠️ Do not "fix" that in the generator on the strength of this. It was tried offline
+// against every node of every cached map: charging same-row walks by midpoint distance
+// changes the real travel of the chosen routes by 0.0% overall - 61 nodes better on
+// ctf_conflict, a handful worse elsewhere, nothing else moves. The under-pricing does
+// not MISROUTE, because the cheap crossing is available to every candidate route
+// equally. What it does is hide long routes from THIS tool, which is why the fix belongs
+// here and not there.
+function travelOf(g, next, from, target) {
+  let at = from;
+  let travel = 0;
+  let hops = 0;
+  while (at !== target && next[at] && hops < 1000) {
+    const e = next[at];
+    const a = g.node[e.from];
+    const b = g.node[e.to];
+    travel += Math.abs((a.x0 + a.x1) / 2 - (b.x0 + b.x1) / 2) + Math.abs(a.row - b.row);
+    hops += 1;
+    at = e.to;
+  }
+  return { travel, hops };
+}
+
 function analyse(g, ctx, targetNode) {
   const out = [];
-  const toT = costsToTarget(g, targetNode, ctx);
+  const next = new Array(g.nodeCount).fill(null);
+  // Dijkstra still runs on the graph's own costs - that is the route A* will pick, and
+  // the point is to measure the route the bot will really take, not a nicer one.
+  const toT = costsToTarget(g, targetNode, ctx, next);
   const fromT = costsFromTarget(g, targetNode, ctx);
 
   for (let n = 0; n < g.nodeCount; n++) {
@@ -142,15 +180,19 @@ function analyse(g, ctx, targetNode) {
     if (!Number.isFinite(dGraph)) continue;
     const dMin = straightLineCells(g, n, targetNode);
     if (dMin < MIN_CELLS) continue;
-    const excess = dGraph - dMin;
+    const { travel, hops } = travelOf(g, next, n, targetNode);
+    // Rank on what the bot walks, not on what it is charged.
+    const excess = travel - dMin;
     if (excess < MIN_EXCESS_CELLS) continue;
 
     const [x0, x1] = g.worldSpan(n);
     const inTypes = g.in[n].map((e) => g.edgeTypeName(e.type));
     out.push({
       node: n,
-      ratio: dGraph / dMin,
+      ratio: travel / dMin,
       dGraph,
+      travel,
+      hops,
       dMin,
       excess,
       // Cheap in, expensive out. costIn is the walk from the objective down to
@@ -222,6 +264,79 @@ function printRoute(g, from, targetNode, ctx) {
   }
 }
 
+// Where a missing rung would collapse a long route.
+//
+// --route says a route is long. This says where to point a human test at it, which is a
+// different question and the one that actually gets answered: walk the route, then find
+// pairs of points on it that are physically within jump reach of each other but far apart
+// ALONG it. Each pair is a claim with a number attached - "if this 108px climb is
+// makeable, the graph is missing an edge worth 45 hops" - and a claim like that is settled
+// in half a minute in-game, where "koth_corinth feels wrong" is not.
+//
+// Only climbs are reported. A descent that shortcuts a route is a fall edge, and
+// navFallEdges already emits every one it can reach.
+//
+// One row per source node: the same climb otherwise appears against every later node it
+// beats, which is a dozen rows saying one thing.
+function printShortcuts(g, from, targetNode, ctx) {
+  const c = g.c;
+  const next = new Array(g.nodeCount).fill(null);
+  costsToTarget(g, targetNode, ctx, next);
+
+  const route = [from];
+  let at = from;
+  while (at !== targetNode && next[at] && route.length < 2000) { at = next[at].to; route.push(at); }
+  if (route.length < 2) { console.log(`  n${from} has no route to n${targetNode}`); return; }
+
+  const apex = (c.NAV_JUMP_V0 * c.NAV_JUMP_V0) / (2 * c.NAV_JUMP_GRAVITY);
+  const gapX = (a, b) => {
+    const [a0, a1] = g.worldSpan(a);
+    const [b0, b1] = g.worldSpan(b);
+    if (b0 > a1) return b0 - a1;
+    if (a0 > b1) return a0 - b1;
+    return 0;
+  };
+
+  const found = [];
+  for (let i = 0; i < route.length; i++) {
+    for (let j = i + 6; j < route.length; j++) {
+      const a = route[i];
+      const b = route[j];
+      const rise = g.floorY(a) - g.floorY(b);
+      if (rise <= 0) continue;
+      // One jump, or a two-rung climb that needs a ledge in between the graph may not have.
+      const rungs = rise <= apex ? 1 : rise <= 2 * apex ? 2 : 0;
+      if (!rungs) continue;
+      const gap = gapX(a, b);
+      if (gap > 96) continue;
+      found.push({ a, b, saves: j - i, rise: Math.round(rise), gap: Math.round(gap), rungs });
+    }
+  }
+  found.sort((x, y) => y.saves - x.saves);
+  const seen = new Set();
+  const rows = found.filter((f) => (seen.has(f.a) ? false : (seen.add(f.a), true))).slice(0, 10);
+
+  console.log(`  route n${from} -> n${targetNode}, ${route.length - 1} hops`);
+  if (!rows.length) {
+    console.log('  nothing on this route comes back within jump reach of itself - the detour is');
+    console.log('  the map, not a missing edge');
+    return;
+  }
+  console.log('');
+  console.log('  from      stand at          to        stand at         rise    gap  rungs  saves');
+  for (const f of rows) {
+    const [a0, a1] = g.worldSpan(f.a);
+    const [b0, b1] = g.worldSpan(f.b);
+    console.log(`  n${String(f.a).padEnd(5)} (${String(Math.round((a0 + a1) / 2)).padStart(5)},${String(g.floorY(f.a)).padStart(5)})   `
+      + `n${String(f.b).padEnd(5)} (${String(Math.round((b0 + b1) / 2)).padStart(5)},${String(g.floorY(f.b)).padStart(5)})   `
+      + `${String(f.rise).padStart(4)}px ${String(f.gap).padStart(4)}px    ${f.rungs}    ${String(f.saves).padStart(4)}`);
+  }
+  console.log('');
+  console.log(`  apex is ${apex.toFixed(1)}px, so a 1-rung climb is one ordinary jump and a 2-rung one`);
+  console.log('  needs a ledge in between. "gap" is the horizontal clearance between the two');
+  console.log('  surfaces, "saves" the hops the climb would remove. Go and try the top row.');
+}
+
 function scenarioFor(g, s, goal, teamName) {
   // botNodeSnap searches DOWNWARD, so the placement is the node's own chest
   // height - the same point botSetGoal uses - rather than a guess above the
@@ -231,16 +346,17 @@ function scenarioFor(g, s, goal, teamName) {
     name: `suspect-${g.map}-n${s.node}`,
     map: g.map,
     about:
-      `Auto-generated by navsuspects. Node ${s.node} (row ${s.row}, floor y ${s.floorY}) costs `
-      + `${Math.round(s.dGraph)} cells to reach the objective against a straight-line floor of `
-      + `${Math.round(s.dMin)} - a ratio of ${s.ratio.toFixed(1)}. `
+      `Auto-generated by navsuspects. Node ${s.node} (row ${s.row}, floor y ${s.floorY}) walks `
+      + `${Math.round(s.travel)} cells to reach the objective (the graph charges it `
+      + `${Math.round(s.dGraph)}) against a straight-line floor of ${Math.round(s.dMin)} - `
+      + `a ratio of ${s.ratio.toFixed(1)}, over ${s.hops} hops. `
       + (s.pocket ? 'Cheap to enter and expensive to leave, which is the trap shape. ' : '')
       + 'Confirm whether the detour is real map geometry or a missing edge before keeping this.',
     class: 'CLASS_SOLDIER',
     team: teamName,
     from: [s.fromX, s.fromY],
     to: [goal.goalX, goal.goalY],
-    budget: Math.max(600, Math.round(s.dGraph * 3)),
+    budget: Math.max(600, Math.round(s.travel * 3)),
   };
 }
 
@@ -287,7 +403,7 @@ function printReport(r) {
     console.log('  nothing above threshold\n');
     return;
   }
-  console.log('   node   ratio    graph     floor    excess  shape');
+  console.log('   node   ratio   travel     graph     floor    excess  shape');
   for (const s of r.rows) {
     const shape = [
       s.pocket ? 'pocket' : '',
@@ -296,7 +412,8 @@ function printReport(r) {
     ].filter(Boolean).join(', ');
     console.log(`  n${String(s.node).padEnd(5)}`
       + `${s.ratio.toFixed(1).padStart(6)}`
-      + `${Math.round(s.dGraph).toString().padStart(9)}`
+      + `${Math.round(s.travel).toString().padStart(9)}`
+      + `${Math.round(s.dGraph).toString().padStart(10)}`
       + `${Math.round(s.dMin).toString().padStart(10)}`
       + `${Math.round(s.excess).toString().padStart(10)}  ${shape}`);
   }
@@ -313,6 +430,8 @@ function usage() {
   console.log('  --scenarios       emit gg2_scenario definitions as JSON');
   console.log('  --route <n>       print the cheapest route from node n to the');
   console.log('                    objective instead of ranking, hop by hop. Needs a map.');
+  console.log('  --shortcuts <n>   where a climb would collapse that route - the list to');
+  console.log('                    take into the game and try by hand. Needs a map.');
   console.log('  --repo <path>     the Gang Garrison 2 checkout');
   console.log('  --help');
 }
@@ -329,9 +448,10 @@ function main() {
   const limit = Number(valOf('--limit', 5));
   const emitScenarios = argv.includes('--scenarios');
   const routeFrom = valOf('--route', null);
+  const shortcutFrom = valOf('--shortcuts', null);
 
   const flagValues = new Set();
-  for (const f of ['--limit', '--repo', '--route']) {
+  for (const f of ['--limit', '--repo', '--route', '--shortcuts']) {
     const i = argv.indexOf(f);
     if (i >= 0 && argv[i + 1]) flagValues.add(argv[i + 1]);
   }
@@ -353,7 +473,13 @@ function main() {
       console.log(`${key}  ERROR ${e.message}`);
       continue;
     }
-    if (routeFrom !== null) {
+    if (shortcutFrom !== null) {
+      if (r.skipped) { console.log(`${key}  (skipped: ${r.skipped})`); continue; }
+      console.log(`${r.key}  objective -> n${r.targetNode}`);
+      printShortcuts(r.g, Number(shortcutFrom), r.targetNode,
+        { team: r.g.c.TEAM_RED, hasIntel: false, setupClosed: false });
+      console.log('');
+    } else if (routeFrom !== null) {
       if (r.skipped) { console.log(`${key}  (skipped: ${r.skipped})`); continue; }
       console.log(`${r.key}  objective -> n${r.targetNode}`);
       printRoute(r.g, Number(routeFrom), r.targetNode, { team: r.g.c.TEAM_RED, hasIntel: false, setupClosed: false });
@@ -370,4 +496,4 @@ function main() {
 
 if (require.main === module) process.exit(main());
 
-module.exports = { costsToTarget, costsFromTarget, straightLineCells, analyse, printRoute };
+module.exports = { costsToTarget, costsFromTarget, straightLineCells, analyse, printRoute, printShortcuts };

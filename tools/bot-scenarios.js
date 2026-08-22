@@ -198,8 +198,8 @@ const SCENARIOS = [
       'worst ratio on any shipped map - and sent the bot down a ramp, across the map and back. ' +
       'On the way it crossed two fall edges whose takeoff end the follower guessed wrong, ' +
       'walked into a solid block and wedged. Both are fixed (navJumpTakeoff samples the swept ' +
-      'column; falls carry NAV_EDGE_TAKEOFF), and the leg is 538 cells -> 171 and 1032-1288 ' +
-      'ticks -> 263-272. A regression in either shows up here first.',
+      'column; falls carry NAV_EDGE_TAKEOFF), and the leg is 538 cells -> 205 and 1032-1288 ' +
+      'ticks -> 352-438. A regression in either shows up here first.',
     class: 'CLASS_SOLDIER',
     team: 'red',
     // n251 is one anchor column wide (x 1626-1626, floor y 840) - the stepped-terrain
@@ -213,10 +213,12 @@ const SCENARIOS = [
     // flake and is not. If this fails only as the first run after a map change, the MCP
     // server is still holding a cached copy of botscenario.js; reconnect it.
     //
-    // Measured 272, 268, 263 ticks against a graph price of 171. The budget is set at
-    // roughly twice the measurement rather than at the old 1635: anything near that
-    // figure means the climb out of the pocket is gone again and the bot is walking
-    // the long way round, which is precisely what a passing 1635 hid for four runs.
+    // Measured 352, 354, 438 ticks against a route the graph prices at 205 cells and
+    // that is 208 cells to actually walk - a ticks/travel of 1.7, which is mid-band for
+    // this project (see the table in gg2-agent/HANDOFF.md). The budget is set at roughly
+    // twice the measurement rather than at the old 1635: anything near that figure means
+    // the climb out of the pocket is gone again and the bot is walking the long way
+    // round, which is precisely what a passing 1635 hid for four runs.
     budget: 600,
     allow: { stuck: 0, blacklisted: 0 },
   },

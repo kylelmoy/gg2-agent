@@ -658,3 +658,173 @@ Two consequences worth knowing:
   client and the MCP session holds it), so it wants to be an MCP tool next to
   `gg2_scenario`.
 
+---
+
+## Sweeping the whole worklist, and what the sweep itself got wrong (2026-08-22, third pass)
+
+Every shipped map's top suspect has now been run live. **None of them is a bot bug.**
+The two chased in detail are honest map geometry, and the mask view says so in one call:
+`koth_corinth` n277 sits under a 264px void with the control point on a platform above
+it, and `dkoth_sixties` n185 sits under an eight-row slab with the point on top. A high
+ratio on those is permanent and correct.
+
+What the pass did find is three things about the tooling and one regression of its own.
+
+### 1. The wall-slide let a held-back jump catch up for free, and that invented edges
+
+The blacklist log earned its keep on the first run that used it: `cp_dirtbowl`'s suspect
+leg came back `blacklisted 2 (off:248>221, off:244>221)`, and both of those turned out to
+be edges the wall-slide had just created. A character in the air moves at most
+NAV_JUMP_VX, so a tick spent against a wall is a tick of travel that is gone; the first
+version let `cx` walk toward the plan a column per sample regardless, so an arc already
+flying at 96% of the speed cap could be stopped by a tread and then magically make it up.
+avanti's climb needs the slide and has slack to spare (0.35px/tick against a 4.53 cap);
+dirtbowl's near-flat crossing has none and must still be refused.
+
+Fixed with a per-sample budget - move toward the plan by at most `NAV_JUMP_VX * dt`,
+never past the plan. Both dirtbowl edges are gone, avanti's climb is kept, and the change
+is strictly more conservative than the unbounded version everywhere: **+3,200 jump edges
+over the whole set instead of +5,900, and 0-49 displaced per map instead of 0-84.**
+Re-A/B'd over all 21 rebuilt graphs: no reachability fell, classicwell +4, mantic +3,
+avanti +1, ctf_orange still 389/670 with its intel OK, the same two pre-existing
+objective failures, and the scenario suite 10/10.
+
+**`NAV_CACHE_VERSION` 12 means fall-takeoff plus the speed-capped slide.** There was
+briefly a v12 built with the unbounded one; it existed only in this working tree.
+
+### 2. A fall is now flown as the drop the generator actually modelled
+
+The same leg then blacklisted `off:186>193` - a *fall*, not a jump, and a 12px step down
+onto a two-column ledge. `navFallEdges` sweeps straight down from the takeoff column and
+credits whatever it hits, but the follower had no in-air plan for a fall at all: it walked
+off at whatever speed it had, GG2 bleeds hspeed slowly, and it sailed two columns past
+anything narrower than the drift. Falls were the one edge kind flown blind.
+
+`botPathKeys` now tracks the fall the same way it tracks a jump - hold `navColWorldX(takeoffCol)`
+while airborne, and set `botFlyingEdge` so evasion cannot add a hop mid-drop. This is
+only writable because falls now carry that column (previous pass); `c1 + BOT_ENTRY_LEAD`
+is a walk-off hint deliberately past the edge, and holding *that* would aim the drop a
+cell wide of the sweep that proved it.
+
+| | before | after |
+|---|---|---|
+| cp_dirtbowl suspect leg | 292 ticks, 2 blacklists | **130-192 ticks, 0** |
+| ctf_truefort spawn->intel, offRoute | 12-15 | **4** |
+| suite | 10/10 | 10/10 |
+
+### 3. navsuspects was ranking on a number the bot does not pay
+
+`cp_egypt` n248 measured 432 ticks against a graph price of 112 - a 3.9 ratio where every
+other leg sits at 1.4-2.7, which reads exactly like a follower problem. It is not. The
+route is charged 112 and **walks 344**: `navWalkEdges` charges a same-row touch a flat 1
+cell, so crossing the run you step onto is free, and cp_egypt's route crosses a 378px
+platform for one cell.
+
+⚠️ **Do not fix that in the generator.** Tested offline against every node of every
+cached map: charging same-row walks by midpoint distance changes the real travel of the
+routes actually chosen by **0.0%** - 61 nodes better on ctf_conflict, a handful worse
+elsewhere, nothing else moves. The cheap crossing is available to every candidate route
+equally, so it under-prices without misrouting. (A per-step cost floor for staircases was
+tried the same way and made the prediction *worse* at every value from 1.5 to 5.)
+
+So the fix belonged in the tool. `navsuspects` still runs Dijkstra on the graph's own
+costs - that is the route A* will pick - but now measures and ranks on the **travel** of
+that route, printing both. The two disagreeing is itself a finding. The worklist reorders
+accordingly and promotes routes the graph was hiding: cp_egypt 2.0 -> 6.4, ctf_orange's
+top goes from n524 (3.3) to n510 (5.8), ctf_2dfort 3.0 -> 4.3.
+
+### The measured band, which is the thing to compare against next time
+
+Every top suspect, run live after all of the above. **ticks / travel** is the honest
+efficiency number, and it lands in a narrow band - which is what says the follower is
+healthy and these routes are simply long:
+
+| leg | travel | ticks | ticks/travel |
+|---|---|---|---|
+| ctf_eiger n422 | 107 | 134 | 1.25 |
+| cp_egypt n248 | 344 | 432 | 1.26 |
+| cp_dirtbowl n232 | 91 | 130 | 1.43 |
+| ctf_orange n510 | 229 | 342 | 1.49 |
+| ctf_truefort spawn->intel | 1205 | 1810 | 1.50 |
+| ctf_avanti n209 | 106 | 171 | 1.61 |
+| ctf_avanti n251 | 208 | 352 | 1.69 |
+| koth_harvest n459 | 152 | 266 | 1.75 |
+| dkoth_sixties n185 | 95 | 169 | 1.78 |
+| koth_corinth n277 | 501 | 918 | 1.83 |
+| arena_montane n350 | 579 | 774 | 1.34 |
+| koth_valley floor->point | 118 | 261 | 2.21 |
+
+**Anything much above ~2.2 is worth opening.** Anything inside it is a long route, not a
+broken one - and the five in this table with a ratio over 4 on the ranked list
+(corinth 9.0, montane 8.4, egypt 6.4, sixties 6.3, orange 5.8) are all confirmed honest,
+so a future sweep should not spend the map load on them again.
+
+---
+
+## The body box was a cell too tall (2026-08-22, fourth pass)
+
+Reported from play as "the bots go a stupid way round on koth_corinth and arena_montane",
+and it was one constant.
+
+`NAV_BOX_H` was 7 cells = **42px**, on the stated grounds that it "covers Heavy". It
+over-covered Heavy by a whole cell. The class sprites carry MANUAL rectangle masks and the
+tallest of them is **Heavy at 19 x 36px** (Scout 13x34, Soldier 13x32, Pyro 15x30). Six
+rows is 36px - exactly Heavy - so the graph modelled a character taller than any that
+exists, and **every passage between 36 and 41px high read as solid rock**: 370 floor cells
+across the 21 shipped maps.
+
+What that cost on the two maps that were reported:
+
+| | two floor nodes at the same height | apart in the world | apart in the graph |
+|---|---|---|---|
+| koth_corinth | n267 / n268 | **84px of continuous floor** | **187 cells** |
+| arena_montane | n350 / n351 | **36px** | **639 cells** |
+
+Both are one node now. `NAV_BOX_W` stays at 4: 19px unaligned really does span four 6px
+cells.
+
+### The half of it that took a second pass
+
+Six rows is right for STANDING and wrong for FLIGHT, and the difference is exactly one
+row. GG2 rests a character with its feet on a surface, so a standing body is row-aligned
+and occupies precisely six rows; a body in the air is at an arbitrary y and touches seven.
+Sizing the whole clearance grid to six made every arc test optimistic by a row, and
+`valley-shaft-crate-to-point` caught it immediately - **707 ticks against its 300 bound,
+offRoute 11**, where the trace showed the bot landing on the two-column ledge and sliding
+straight back off it. The extra headroom had let `navJumpCeiling` report a taller rise,
+which bought a bigger landing lead, which is a faster arc, which overshoots a 12px ledge.
+
+So the airborne reads - `navJumpCeiling`'s two scans and `navJumpTakeoff`'s sampler and
+wall-slide - now test row `r` **and** row `r - 1`, which is the seven-row union, with above
+the mask counting as sky. Standing keeps six. The shaft went straight back to 113 ticks and
+0 offRoute.
+
+⚠️ **That second pass gives back gains the first pass appeared to make, and it is right to.**
+With the optimistic six-row arcs, ctf_orange read 601/672 reachable and dkoth_atalia's
+objective passed; with honest seven-row arcs they are back to 389/672 and failing. Those
+were arcs no body can fly - the shaft is the proof - so they were fictions, and losing them
+is the correct outcome, not a regression. Neither map is worse than it was before this
+pass. Do not "recover" them by loosening the airborne test.
+
+### Net, against the 42px box
+
+| | before | after |
+|---|---|---|
+| koth_corinth worst ratio | 9.0 (travel 501) | **5.0 (travel 378)** |
+| arena_montane worst ratio | 8.4 (travel 579) | **5.7 (travel 171)** |
+| ctf_avanti reachable | 226/322 | 232/324 |
+| ctf_conflict reachable | 554/750 | 568/762 |
+| maps whose reachability fell | - | **none** |
+| objective checks | 19/21 | 19/21, same two |
+| scenario suite | 10/10 | 10/10 |
+
+`NAV_CACHE_VERSION` is **13**.
+
+### The lesson worth keeping
+
+Every generator constant is a claim about the engine, and this one had never been checked
+against it. The comment said "covers Heavy" and it did - with a cell to spare, which is a
+50% error on the thing that decides what a bot can walk through. **Measure the sprite.**
+`Source/gg2/Sprites/Characters/<Class>/<Class>RedHS.xml` carries the mask rectangle; the
+tallest and widest across all nine classes is what the box should be, and nothing more.
+
