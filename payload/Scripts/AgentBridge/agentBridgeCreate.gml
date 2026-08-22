@@ -21,6 +21,12 @@ depth = -1000000;
 global.agentNavOverlay = false;
 global.agentNavReachValid = false;
 
+// The in-world diagnostic labels agentBridgeDraw paints above every Character. On by
+// default, because the only builds that have this code at all are the ones the bridge
+// was injected into and a playtest is what they are for. F11 turns it off live
+// (agentBridgeStep) - a firefight is exactly when a wall of text is most in the way.
+global.agentLabels = true;
+
 // gg2_area_shot's HUD-suppression state: off until an EVAL turns it on. See
 // agentBridgeHudVisible and agentBridgeShot.
 global.agentHideHud = false;
@@ -38,6 +44,11 @@ deferFrames = 0;
 deferTotal = 0;
 deferWaitOutcome = "";  // sentinel agentBridgeDefer uses to tell a raised WAIT
                         // expression apart from one that merely evaluated false
+
+// "#<id> " for a request that carried an id, "" for one that did not. Set once
+// per request by agentBridgeStep and prepended to the reply by agentBridgeSend,
+// including a deferred reply sent frames later - see agentBridgeStep.
+replyPrefix = "";
 
 // The world is frozen by deactivating every instance except this one, so the
 // game stops advancing between agent calls while the bridge keeps answering.

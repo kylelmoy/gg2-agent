@@ -17,10 +17,17 @@ work went to `GML.md` - notably that `-1` is `self` rather than "no instance", w
 the sentinel GG2 uses everywhere.
 
 **All three, plus the comma-in-grouping-paren gap left over from the lint gate's item 3,
-are fixed in the second pass below** - see *Fixed 2026-08-20 (second pass)*. What is left
-after that pass is at the bottom, under *Still open*: a wedged bridge needing a manual
-reconnect, and the wire protocol having no request ids. Both were deliberately left alone
-rather than fixed as a reflex - see their own entries for why.
+are fixed in the second pass below** - see *Fixed 2026-08-20 (second pass)*. That pass
+left two: a wedged bridge needing a manual reconnect, and the wire protocol having no
+request ids. Both were deliberately left alone rather than fixed as a reflex - see their
+own entries for why.
+
+**Both are fixed on 2026-08-22** - see *Fixed 2026-08-22*. Doing the second one properly
+turned up three more bugs that no amount of reading would have found: the bridge checked
+for a departed client on the one code path that could not reach the check, `tcp_eof` stays
+false while anything is unread so an ordinary close was invisible, and the client opened
+one socket per concurrent call against a game that accepts exactly one. The same session
+added walkmask rendering, which is a different kind of entry and has its own section.
 
 The GML-dialect lessons live in `GML.md`, not here - this file is about what the
 *tooling* does, not what the language does.
@@ -253,28 +260,142 @@ whole real tree again: `node tools/gml-lint.js --tree ../Gang-Garrison-2/Source/
 
 ---
 
+## Fixed 2026-08-22 (the two that were left open)
+
+Both of the previous edition's *Still open* items, and three bugs that only turned up
+because fixing them properly meant running them against a real game. Verified against a
+live exe throughout - an isolated copy of the build on port 17790, so a session already
+driving the shared one on 17777 was never touched.
+
+### 1. The wire protocol now has request ids (was: the real fix)
+
+The frame body is `#<id> <request>`, and the reply comes back `#<id> <reply>`.
+`agentBridgeStep` strips the prefix into `replyPrefix`; `agentBridgeSend` puts it back on
+every reply, which covers the deferred ones `agentBridgeDefer` sends frames later without
+either of them having to remember. Client-side, `pending` became a Map keyed by id, so a
+reply is a lookup rather than a `shift()`.
+
+**The id is optional to the game and mandatory to the client**, deliberately and not
+symmetrically: a game rebuilt with this still answers a client that predates it (the
+prefix is simply absent, `replyPrefix` stays `""`), which mattered because the shared
+build was rebuilt mid-session by another session while its client kept running. The other
+direction is refused outright with a message naming `gg2_rebuild`, because a reply with no
+id cannot be matched to anything and guessing is exactly how a wrong answer that looks
+right gets produced.
+
+What this buys, concretely: the ordering discipline that the whole "abandoned slot" dance
+existed to protect is now a property of the format. A late reply is dropped as the call it
+belongs to; a reply to something already forgotten is logged and ignored.
+
+Verified live: ping/evalx/state/step/resume/wait/wait-with-setup all round-trip with ids,
+including both deferred paths. Plus 133 selftest assertions, which now include a fake
+bridge that echoes the id exactly as the real one does.
+
+### 2. A wedged bridge reconnects itself (was: needs a manual reconnect)
+
+A call that finds *every* outstanding request abandoned drops the connection and opens a
+new one before sending. The catch the previous edition flagged - that this silently
+resumes a game the caller froze - is handled rather than avoided: the client tracks
+whether it was the one that froze the game, re-applies the freeze after reconnecting, and
+then **fails the call that triggered the recovery** instead of answering it. The world
+moved by a few uncounted frames; saying so is worth more than a number measured after it.
+Retrying is a clean call against a game in the state it was left in.
+
+**The premise turned out to be worth measuring, and the first attempt did not work.**
+While a deferred `STEP` or `WAIT` is outstanding the bridge reads nothing else, so a
+`WAIT 3600` whose caller gave up after 10s blocks every later call for the remaining ~110
+seconds. Measured: a `PING` sent behind one came back only as a timeout with "1 earlier
+call(s) never answered". Reconnecting is the only thing that can clear that, because
+nothing sent down the old connection is being read. Two separate bugs stood in the way:
+
+- **`agentBridgeStep` checked for a dropped client *after* the deferred-reply branch**,
+  which `exit`s while the reply is still pending - so a client that dropped mid-`WAIT` was
+  not noticed until the whole budget expired, and the reconnecting client sat in the accept
+  backlog the entire time. The EOF check now runs before the defer branch. This is
+  load-bearing ordering, not tidying, and it is commented as such in the script.
+- **`tcp_eof` is false while anything is still unread**, buffered request included. A
+  client that gave up with two requests in flight leaves the second one sitting there, so
+  an ordinary FIN is invisible to the game for exactly as long as it is not reading.
+  Proved with a raw socket both ways: FIN, and the game held the dead connection for the
+  full 120s; RST, and the next client was served 95ms later. `Bridge.disconnect` now uses
+  `resetAndDestroy()`. Nothing in flight is worth delivering to a client that has stopped
+  waiting for all of it.
+
+Then a third, which was the actual reason the fix appeared not to work at all:
+**`connect()` had no in-flight guard**, so two calls starting together opened a socket
+each. The game accepts one client, so the loser's requests went into the accept backlog
+and were never read - and a reconnect only ever tore down whichever socket happened to be
+`this.sock`, leaving the game's real connection alive and owned by nobody. One shared
+promise fixes it. This bug predates this edition and would have looked like "the game
+randomly ignores a call".
+
+Diagnosis is also better when reconnecting does *not* help: a call that times out on a
+freshly recovered connection says so specifically ("already reconnected once ... the game
+is not servicing the bridge at all"), because a game that ignores a client it has just
+accepted has stopped stepping, which is a different problem with a different cure.
+
+Measured, end to end: an abandoned `WAIT 3600` used to block the next call for ~114s; it
+now answers in **70ms**. The frozen variant re-freezes (confirmed by reading `frozen` back
+from the game) and fails the triggering call with the explanation.
+
+### 3. `gamedata.patch` now lints against the tree it is building
+
+Found while building the isolated exe. The lint gate spawns `gml-lint.js --stdin`, which
+had nothing to go on and autodetected a checkout beside this repo - so a build of any
+*other* tree was checked against a different tree's scripts, reported every script the
+build has and that tree does not as an unknown function, and refused the build. It now
+passes `--tree`. No behaviour change for the ordinary `build-fast.js` path, where the two
+are the same directory.
+
+---
+
+## Walkmask rendering (2026-08-22)
+
+`tools/walkmask.js` is new: it decodes a map's collision mask straight out of the map
+PNG's own `zTXt` "Gang Garrison 2 Level Data" chunk - the same data the game reads
+(`Scripts/Maps/CustomMaps`), six bits per character, one continuous row-major bitstream.
+No game, no bridge, exact.
+
+The other session of the same day found the same chunk independently and put a reader in
+`navgraph.js`. **They are one decoder now** - `walkmask.js` owns it, `navgraph.js`
+re-exports `levelData` and `walkmask` from it, and a selftest case asserts both names
+return the same bits. See *The tools this needed* below for the detail.
+
+The point is that **the nav graph is built against the mask and nothing else**, so the map
+art agrees with a nav overlay only by coincidence: it paints scenery nothing collides with
+and draws real geometry as background. Rendering the same `koth_valley` overlay both ways
+settles it - on the art the node bars float over a dark night scene; on the mask every bar
+is visibly sitting on the surface it belongs to, and the two vertical shafts that cost this
+project a bug are plain.
+
+- `gg2_map_image` gained `base: art|mask|both`, defaulting to **mask when `overlay` is on**
+  and art when it is not, because those are different questions.
+- `navimage.js` gained `--base`, defaulting to mask - it exists only to answer nav
+  questions.
+- `gg2_area_shot` gained `walkmask: true`, which traces the solid/open boundary in magenta
+  over the live shot. Composited on the Node side: one mask cell is exactly
+  `NAV_CELL_SIZE` (6) world px and tiles are captured at 1:1, so it lands on the collision's
+  own pixels with no resample and no GML. **A fill was tried first and rejected on the
+  evidence** - over a map painted this dark it either vanishes into the art or hides what
+  the shot was taken for. The outline costs one world pixel per boundary and covers nothing.
+
 ## Still open
 
-### A truly wedged bridge needs a manual reconnect
+### The bridge reads nothing while a reply is deferred
 
-With the ordering-discipline fix from two editions ago, requests behind one the game
-never answers all time out in turn. That is honest - the game is not servicing the
-bridge, and only a restart helps - but the tooling could notice a bridge with abandoned
-slots and reconnect on the next call rather than making the caller work it out. A fresh
-connection is cheap and the game handles a dropped client cleanly (`agentBridgeStep`
-detects EOF, destroys the socket, clears `deferKind` and unfreezes).
+Reconnecting now clears a `STEP`/`WAIT` that outlived its caller, and does it in 70ms, but
+the mechanism is still "tear the connection down and build another". A bridge that drained
+buffered frames into a queue while deferred - dispatching them after, which request ids
+now make safe - could take an explicit `CANCEL` instead, and would make `tcp_eof` reachable
+without the RST. It is a bigger change to `agentBridgeStep` than this edition wanted to
+make while another session was building from the same tree.
 
-Not done because the unfreeze is the catch: dropping the connection silently resumes a
-game the caller may have deliberately frozen with `gg2_step`. Worth doing with that
-thought through, not as a reflex.
+### Nothing yet uses the walkmask except pictures
 
-### The wire protocol has no request ids
-
-Everything about ordering discipline in this file is compensating for a protocol where
-replies are matched to requests by position alone. A one-byte sequence number in the
-frame would make the whole class of problem impossible instead of merely handled. It
-touches `payload/Scripts/AgentBridge/` and every caller, so it is a deliberate change,
-not a cleanup - but it is the real fix.
+`navaudit`/`navsuspects` report a suspect node as coordinates and a ratio. The mask is now
+decodable in Node, so a suspect could come with a cropped picture of the geometry around
+it, or - more interestingly - the audit could compare the graph against the mask directly
+and name a surface with no node on it at all.
 
 ## What already works well - do not regress these
 
@@ -297,3 +418,243 @@ not a cleanup - but it is the real fix.
   question about one node. The answer was a real generator bug (jump takeoffs pinned to
   the end of a run), and reachability went 13/270 to 150/270. The overlay is the right
   first move on any nav question - reach for it before summing edges by hand.
+
+---
+
+## navsuspects.js: finding tricky routes without watching a bot (2026-08-22)
+
+`tools/navsuspects.js` is new. It exists because the `koth_valley` shaft bug was found
+by a human happening to watch a bot fall into a hole, and that does not scale to twenty
+maps.
+
+`navaudit` asks a boolean question - can a bot reach the objective - and that question
+was green for the entire life of that bug, honestly: every node in the shaft *was*
+reachable from spawn. What was wrong was the price. So `navsuspects` asks a metric one:
+Dijkstra cost to the objective over the real edge costs, against straight-line distance
+in cells (which is `navFindPath`'s own heuristic and therefore a guaranteed lower
+bound). Rank by the ratio.
+
+**It was validated against the bug it was designed for**, using the pre-fix graph:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| n261 / n262 (the two crates) | **ratio 7.9, top of the list** | below threshold, off the list |
+| n264 | 7.9, cost 262 | 2.7, cost 90 |
+| n263 / n265 | 5.3, cost 235 | 2.2, cost 98 |
+
+That is the whole argument for the tool: it puts the answer at the top of the list
+before anyone plays the map.
+
+### What the first full sweep found
+
+All 20 shipped maps were cached (`gg2_wait` + `serverGotoMap`, ~100-300 frames each) and
+swept. Ranked by ratio, the shipped maps that look like `koth_valley` did:
+
+| map | node | ratio | graph cost | shape |
+|---|---|---|---|---|
+| **ctf_avanti** | n251 | **7.1** | 538 | pocket, fall-in |
+| koth_corinth | n277 | 6.5 | 362 | pocket, fall-in |
+| arena_montane | n350 | 5.8 | 402 | fall-in |
+| cp_dirtbowl (both areas) | n232 | 5.4 | 91 | pocket, fall-in |
+| dkoth_sixties | n185 | 4.5 | 95 | fall-in |
+
+All five were then run live. Four arrive and are just long - candidates for a recorded
+baseline, not bugs. **`ctf_avanti` n251 is a real failure** and is now a `known` entry in
+`bot-scenarios.js`: four runs at 1032-1211 ticks against a predicted 545, 1-2 edges
+blacklisted *every* run, stuck in three of four. Blacklisting means the follower tried an
+edge and could not fly it, so avanti has a follower/geometry problem on top of a long
+route. n251 is one anchor column wide (x 1626-1626, floor y 840) with five outgoing jump
+edges - the stepped-terrain shape `navNodeFromWorld`'s `round()` fix was about. Nobody
+has instrumented which edge gets blacklisted; that is the next step there.
+
+`cp_dirtbowl` is worth a second look for a different reason: predicted 90 cells, actual
+368 ticks. A prediction miss that large is the "graph promised an arc the follower cannot
+fly" signature rather than a missing edge, which is the other half of what this tool is
+for.
+
+### Using it
+
+    node tools/navsuspects.js                    # every cached graph
+    node tools/navsuspects.js koth_valley_a1     # one
+    node tools/navsuspects.js <key> --scenarios  # emit gg2_scenario definitions
+
+⚠️ It ranks **suspicion, not breakage**. A map with one legitimate bridge between its
+halves ranks high forever and is working as designed. Adjacent nodes in one pocket all
+score alike, so treat a run of near-identical rows as one candidate - the sweep above
+collapsed clusters of four by hand. And a graph only exists on disk once a server has
+loaded that map, so warm the cache before trusting a sweep to be complete.
+
+### The regression this sweep caught, which is the real argument for it
+
+The first version of the navJumpCeiling fix widened the ceiling scan into a corridor
+unconditionally. Every scenario passed, koth_valley was fixed, and `navaudit` on the
+three maps that happened to be cached said nothing was wrong. Sweeping all twenty found
+that **ctf_orange had lost the only ungated route to the enemy intel**: 117 jump edges
+fewer, and n379 sitting in a 106-node pocket behind a blueteam gate.
+
+The mechanism is worth remembering because it is counter-intuitive. Reporting MORE
+headroom can only ever let more arcs be costed - it cannot refuse one that used to
+work. But `NAV_JUMP_MAX_PER_SIDE` keeps a fixed number of jump edges per node per side,
+so a larger candidate pool means a DIFFERENT set kept, not a superset. A permissive
+change upstream of a fixed-size filter is a destructive change downstream of it.
+
+The fix was to gate the corridor on `needRise`: consult it only when the straight-up
+scan does not already give the jump the climb it asked for. Every jump the strict scan
+allowed keeps its exact capHeight, its arc, its cost and its place in the pruning order,
+so only jumps that were being refused outright can appear. That version is strictly
+better than pre-fix everywhere measured:
+
+| ctf_orange | reachable | jump edges | intel |
+|---|---|---|---|
+| pre-fix | 335/670 | 3618 | OK |
+| corridor, ungated | 387/670 | 3501 | **FAIL** |
+| corridor, gated on needRise | **389/670** | **3710** | OK |
+
+Two lessons for whoever touches the jump generator next. **A/B any generator change
+against a rebuilt graph, not against the scenario suite** - the suite covers three maps
+and this regression was on a fourth. And **`git checkout` of the two generator scripts
+plus a 3s `gg2_rebuild` plus a cache delete is a complete A/B**, which makes it cheap
+enough that there is no excuse for skipping it.
+
+---
+
+## What the suspects list was actually pointing at (2026-08-22, second pass)
+
+`navsuspects` put `ctf_avanti` n251 at the top of the whole sweep and the previous pass
+left it as a `known` failure with a note saying "nobody has instrumented which edge is
+being blacklisted". Doing that turned out to answer a much bigger question than the one
+it was asked, because n251 was **two** bugs stacked on one leg, and both of them are
+general - every shipped map has instances of the first, and the second is a whole class
+of climb the generator could not describe.
+
+The leg: **538 graph cells -> 171, and 1032-1288 measured ticks -> 263-272.**
+
+### 1. Falls now carry the end they leave from (the instrumentation found this in one run)
+
+`botBlacklistEdge` gained a `why` tag and `botBlacklistLog` - a bounded, space-free
+string of `reason:from>to@frame` on the Player, printed by the scenario runner next to
+the blacklist count. One instrumented run said `off:94>138@1396,stk:92>104@1489`, and
+both of those are fall edges.
+
+`navFallEdges` drops from the cell just past one end of a run and knows which end.
+`botPathKeys` did not: it re-derived the end with "is the column just past the run
+inside the landing node", which is true of **both** ends wherever the landing surface
+reaches under the whole run - a platform standing on a wider ledge - and the test then
+always picked the right-hand one. n92 has a solid block against its right end, so the
+bot walked into the block and stood there pressing until the stuck detector took the
+edge away.
+
+Falls now store their takeoff column in `NAV_EDGE_TAKEOFF`, exactly the way jumps
+already did (the F41 lesson in `navEdgeAdd`'s header), and the follower reads it, with
+the old guess kept as a fallback for a pre-v12 cache. **Measured over all 21 cached
+graphs: 231 of 10,307 fall edges (2.2%) had the takeoff at the end the old rule did not
+pick - and every single shipped map has some**, from 3 on gen_destroy to 29 on
+cp_dirtbowl. Rebuilding every graph after the change produced byte-identical node
+counts, edge counts and per-team reachability, because it only fills in a field.
+
+### 2. A jump may now slide up a wall, which is what a player does
+
+n251 stands one anchor column from a 54px block whose top is n229, the way out of the
+pocket. GG2's apex is 57.4px, so the climb needs 94% of it - which means the character
+cannot have moved sideways *at all* before its feet are over the top. `navJumpTakeoff`
+walked the arc at constant vx and treated the first sample that overlapped the block as
+fatal, so every lead was refused and n251 had no upward edge.
+
+That is not what the engine does. GG2 does not move a character into terrain, it stops
+it against it and keeps the vertical motion, and a bot pressing toward its landing does
+exactly that - the follower's steering is bang-bang toward `jumpWantX`, not a constant
+velocity. So the clearance walk now tracks the column the character is *actually* in,
+stepping it one column at a time toward where the arc wants to be and stopping against
+terrain, and requires it to have reached the landing column by the end - otherwise the
+wall held it back and the edge would be a fiction.
+
+⚠️ **This is a permissive change upstream of `NAV_JUMP_MAX_PER_SIDE`**, which is the
+exact shape that cost ctf_orange its intel route last time. It was A/B'd properly:
+
+| | before | after |
+|---|---|---|
+| jump edges (21 graphs) | 55,288 | 61,190 (+11%) |
+| maps whose reachability fell | - | **none** |
+| maps whose reachability rose | - | 5 (dirtbowl a1 208->221, avanti 225->230, classicwell 613->617, mantic blue 244->247) |
+| ctf_orange intel, both teams | OK, 389/670 | OK, 389/670 |
+| objective failures | 2 (dkoth_atalia, gen_destroy) | the same 2, unchanged |
+| scenario suite | 7/7 + 2 shaft legs | 7/7 + 2 shaft legs |
+
+The suspects list moved down across the board afterwards: avanti's worst went 7.1 ->
+3.7 (n251 off the list entirely), dirtbowl 5.4 -> 5.3, and dkoth_atalia and gen_destroy
+now have nothing above threshold at all. **The new top of the whole sweep is
+`koth_corinth` n277 at 6.2** (348 cells against a floor of 56, pocket, one fall in),
+with `arena_montane` n350 at 5.8 behind it. That is where the next pass should start.
+
+`NAV_CACHE_VERSION` is **12**. Both changes alter what a cached graph means, so a v11
+cache silently keeps the old behaviour - it does not fail, which is worse.
+
+### The tools this needed, which are the durable part
+
+- ✅ **`navgraph.walkmask(map)` and `tools/walkmask.js` were the same discovery made
+  twice, in parallel sessions on 2026-08-22. Collapsed the same day**, the way this
+  entry asked for: `tools/walkmask.js` owns the one decoder and the zTXt reader under
+  it, and `navgraph.js` re-exports both (`nav.levelData` for the entity list,
+  `nav.walkmask` for the mask) so every existing caller kept working. `decode()` returns
+  `{ width, height, bits, solid(x, y) }` - the Buffer for whole-image work, the
+  bounds-checked accessor for cell queries - which is both original shapes in one
+  object; `navaudit --mask` moved from `wm.w`/`wm.h` to `wm.width`/`wm.height` and is
+  otherwise untouched. A selftest case now asserts the two names return the same bits,
+  so they cannot quietly fork again.
+- **`navgraph.walkmask(map)` reads the terrain off disk.** The map PNG's `zTXt` chunk
+  carries the map builder's own `{WALKMASK}` block - one bit per mask cell, six to a
+  character - so "what does the mask actually say here" needs no game, no map load and
+  no bridge. Verified against the running game: a 35x30 window came back identical,
+  cell for cell, to `collision_point` against the live `CollisionDummy`.
+- **`navaudit --mask x0,y0,x1,y1`** prints that as text with node floors drawn on it as
+  `=`. This is what turned "why is there no edge here" into a picture in one call, and
+  the answer was visible in it immediately: a 10x8 block sitting flush against a
+  one-column node. Reach for it earlier than feels necessary.
+- **`navsuspects --route <n>`** prints the cheapest route hop by hop with cumulative
+  cost. The ranked list says a route is seven times its geometry; only the hops say
+  whether that is a missing rung, a legitimate one-way drop, or a long map. Reading
+  avanti's 101 hops showed it descending a ramp, crossing the map and coming back to a
+  point 260px above where it started, which is what named n229.
+- **The Node model of the clearance walk is worth rebuilding if you touch the
+  generator again.** ~150 lines against the real mask and the real node list reproduced
+  the shipped jump-edge count **exactly on all 21 maps** (1679 on avanti, 3710 on
+  orange, ...), which is what made it trustworthy enough to predict the delta before
+  spending a build on it. It is a scratch file, not committed - but the recipe is:
+  freeGrid from `walkmask` dilated by NAV_BOX_W/H, nodeGrid from the cached node list,
+  and GM8's `round` is half-to-even where JS's is half-up, which decides marginal arcs.
+
+### A scenario run during setup measures a different map (found chasing a "flake")
+
+The avanti leg read 897 ticks once and 266-289 on the three runs after it, with every
+counter clean in all four. That is not variance. **A round starts in setup, the setup
+gates are shut for it, and ctf_avanti has 63 setup-gated edges** - so the first run after
+a map change was routed the long way round, entirely correctly, against a graph where
+the short way did not exist. Verified directly: `areSetupGatesClosed()` returns 1
+immediately after `serverGotoMap("ctf_avanti")` and 0 about 160 frames later, and the
+first run after waiting for it came in at 268 ticks like all the others.
+
+`ensureMap` now waits for the gates to open before anything is placed (`pastSetup`).
+Two consequences worth knowing:
+
+- **Any measurement taken as the first run after a map change, before this, is suspect** -
+  including `cp_dirtbowl`'s "predicted 90 cells, actual 368 ticks" from the first sweep,
+  which is a cp map with its own setup gates. Re-measure it before treating it as the
+  "graph promised an arc the follower cannot fly" case it was filed as.
+- The harness now cannot measure setup-phase behaviour at all. That wants an explicit
+  scenario field rather than being had by accident of ordering.
+
+### Still worth doing here
+
+- **`gg2_scenario`'s runner is cached in the MCP server process.** Editing
+  `tools/bot-scenarios.js` or `tools/botscenario.js` has no effect until the MCP
+  connection is restarted - a scenario added in a previous session was simply not in
+  the list, and a new field added to the report did not appear. Either re-`require` on
+  each call or stat the files and drop the cache; until then, an inline `scenario:`
+  plus a `gg2_evalx` for anything new is the way round it.
+- **A cache-warming tool.** Every A/B in this session cost 21 hand-written `gg2_wait`
+  calls cycling a dedicated server through the rotation. It is the single most
+  mechanical part of the loop and it is what makes "A/B against a rebuilt graph"
+  expensive enough to be tempted to skip. It cannot be a CLI (the bridge serves one
+  client and the MCP session holds it), so it wants to be an MCP tool next to
+  `gg2_scenario`.
+

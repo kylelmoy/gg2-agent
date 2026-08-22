@@ -214,8 +214,34 @@ function rebuild(stream, edits) {
 // search exact rather than a guess.
 //---------------------------------------------------------------------------
 
+// The text in the executable is not the text on disk for any file holding a character
+// above ASCII. Game Maker 8 reads the project's source as UTF-8 and stores it as ANSI,
+// and every character it cannot represent becomes a single '?' - so a `///  warning`
+// comment is six bytes on disk, two characters after the UTF-8 decode, and two '?' in
+// the exe. Verified byte-for-byte against botObjectiveUpdate in the shipped template:
+// latin1 -> UTF-8 decode -> map every code point above 126 to '?' reproduces the exe's
+// 24443-character string exactly, from the 24451-character one the snapshot recorded.
+//
+// Both directions have to go through this. The needle, or the splice never finds code
+// that is really there - which presented as "the template exe is out of date, run
+// build-agent.js" for a template that was minutes old, and cost this exact diagnosis
+// once already. And the replacement, so a spliced exe holds the same bytes the IDE
+// would have written rather than raw UTF-8 that no real build would ever produce.
+//
+// Twelve of the project's ~1140 code strings are affected, all of them bot and nav
+// scripts under active development (they are the ones whose headers use warning signs
+// and arrows), and snapshot() has always counted them in its `unplaced` list. Before
+// this they were simply unspliceable: editing any one of them forced a full ~1min IDE
+// build, for a comment character.
+function asStored(text) {
+  const decoded = Buffer.from(text, 'latin1').toString('utf8');
+  let out = '';
+  for (const ch of decoded) out += ch.charCodeAt(0) > 126 ? '?' : ch;
+  return out;
+}
+
 function findString(data, text) {
-  const body = Buffer.from(text, 'latin1');
+  const body = Buffer.from(asStored(text), 'latin1');
   const head = Buffer.alloc(4);
   head.writeUInt32LE(body.length, 0);
   const needle = Buffer.concat([head, body]);
@@ -230,7 +256,7 @@ function findString(data, text) {
 }
 
 function replaceString(data, at, oldLen, text) {
-  const body = Buffer.from(text, 'latin1');
+  const body = Buffer.from(asStored(text), 'latin1');
   const head = Buffer.alloc(4);
   head.writeUInt32LE(body.length, 0);
   return Buffer.concat([data.slice(0, at), head, body, data.slice(at + oldLen)]);
@@ -440,14 +466,23 @@ function describeTreeDiff(before, after) {
 // and refuses that outcome, so it runs on every string we are about to write.
 //---------------------------------------------------------------------------
 
-function lint(changes) {
+// `tree` is the tree being built, and naming it matters: with nothing to go on
+// the linter falls back to autodetecting a checkout next to this repo, so a
+// build of any other one (--repo elsewhere, or a scratch copy) was checked
+// against a different tree's scripts - which reports every script the build
+// does have and that tree does not as an unknown function, and refuses the
+// build for it.
+function lint(changes, tree) {
   const { spawnSync } = require('child_process');
   const linter = path.join(__dirname, 'gml-lint.js');
   if (!fs.existsSync(linter)) return [];
 
+  const args = [linter, '--stdin', '--json'];
+  if (tree) args.push('--tree', tree);
+
   const problems = [];
   for (const c of changes) {
-    const r = spawnSync(process.execPath, [linter, '--stdin', '--json'], {
+    const r = spawnSync(process.execPath, args, {
       input: c.to,
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024,
@@ -582,7 +617,7 @@ function patch(manifestPath, tree, outPath, dryRun, log = () => {}) {
 
   for (const c of changes) log(`[*] ${c.key}  (${c.from.length} -> ${c.to.length} bytes)`);
 
-  const problems = lint(changes);
+  const problems = lint(changes, tree);
   if (problems.length) {
     throw new Error(
       'refusing to build: this GML would not compile, and a built exe has no error recovery - ' +

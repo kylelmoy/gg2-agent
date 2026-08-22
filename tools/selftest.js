@@ -117,6 +117,49 @@ function tinyBmp() {
   return Buffer.concat([header, pixels]);
 }
 
+// A map PNG the way the game ships one: art, plus the level data deflated into
+// a zTXt chunk keyed "Gang Garrison 2 Level Data". The walkmask inside it is
+// the same six-bits-per-character bitstream compressWalkmask.gml writes - one
+// continuous run, row-major, most significant bit first, padded only at the
+// very end.
+function fakeMapPng(width, height, solid) {
+  const zlib = require('zlib');
+  const image = require('./image.js');
+
+  let packed = '';
+  let value = 0;
+  let filled = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      value = (value << 1) | (solid(x, y) ? 1 : 0);
+      if (++filled === 6) {
+        packed += String.fromCharCode(value + 32);
+        value = 0;
+        filled = 0;
+      }
+    }
+  }
+  if (filled > 0) packed += String.fromCharCode((value << (6 - filled)) + 32);
+
+  const level =
+    '{ENTITIES}\n[{type:meta}]\n{END ENTITIES}\n' +
+    `{WALKMASK}\n${width}\n${height}\n${packed}\n{END WALKMASK}`;
+  const body = Buffer.concat([
+    Buffer.from('Gang Garrison 2 Level Data\0\0', 'latin1'),
+    zlib.deflateSync(Buffer.from(level, 'latin1')),
+  ]);
+  const chunk = Buffer.alloc(12 + body.length);
+  chunk.writeUInt32BE(body.length, 0);
+  chunk.write('zTXt', 4, 'latin1');
+  body.copy(chunk, 8);
+  chunk.writeUInt32BE(image.crc32(chunk.slice(4, 8 + body.length)) >>> 0, 8 + body.length);
+
+  // Straight after IHDR, which is where the game's own maps carry it.
+  const png = image.encodePngRgba(width, height, Buffer.alloc(width * height * 4, 200));
+  const afterIhdr = 8 + 25;
+  return Buffer.concat([png.slice(0, afterIhdr), chunk, png.slice(afterIhdr)]);
+}
+
 function startFakeBridge(port) {
   const seen = [];
   const live = [];
@@ -124,8 +167,12 @@ function startFakeBridge(port) {
   let fakeClock = 1000000;
   const server = net.createServer((sock) => {
     live.push(sock);
+    // The client tears a wedged connection down abortively (see Bridge's
+    // disconnect), so ECONNRESET here is normal and not a failure - the real
+    // game notices the same reset and goes back to accepting.
+    sock.on('error', () => {});
     let rx = Buffer.alloc(0);
-    const reply = (text) => {
+    const send = (text) => {
       const body = Buffer.from(text, 'latin1');
       const head = Buffer.alloc(4);
       head.writeUInt32LE(body.length, 0);
@@ -138,8 +185,20 @@ function startFakeBridge(port) {
         if (rx.length < 4) return;
         const n = rx.readUInt32LE(0);
         if (rx.length < 4 + n) return;
-        const request = rx.slice(4, 4 + n).toString('latin1');
+        let request = rx.slice(4, 4 + n).toString('latin1');
         rx = rx.slice(4 + n);
+
+        // The id the reply has to carry back, exactly as agentBridgeStep does
+        // it: strip "#<digits> " off the front and put it back on every reply,
+        // including a deferred one sent later. Everything below - and every
+        // assertion against `seen` - then sees the request itself.
+        let prefix = '';
+        const idEnd = request.indexOf(' ');
+        if (request[0] === '#' && idEnd > 1 && /^\d+$/.test(request.slice(1, idEnd))) {
+          prefix = request.slice(0, idEnd + 1);
+          request = request.slice(idEnd + 1);
+        }
+        const reply = (text) => send(prefix + text);
         seen.push(request);
 
         const [verb, ...restParts] = request.split(' ');
@@ -157,6 +216,12 @@ function startFakeBridge(port) {
           fs.writeFileSync(rest, tinyBmp());
           reply('OK ' + rest);
         } else if (verb === 'EVAL' || verb === 'EVALX') {
+          if (rest.includes('oldBridgePretendsNoId')) {
+            // A game built before replies carried ids: framed the same way,
+            // but with nothing to match it to a call.
+            send('OK 42');
+            continue;
+          }
           // The two ways a game answers badly: a runtime error, which only the
           // launcher log reveals, and a suite reporting through show_message.
           if (rest.includes('aTypoNobodyDefined')) {
@@ -265,6 +330,8 @@ function startFakeBridge(port) {
             reply('OK ' + fakeClock);
           } else if (rest.trim() === 'global.gg2ProfileMs') {
             reply('OK 12');
+          } else if (rest.trim() === 'global.currentMap') {
+            reply('OK fakemap');
           } else {
             reply(verb === 'EVAL' ? 'OK' : 'OK 42');
           }
@@ -525,13 +592,13 @@ async function main() {
       }
     };
 
-    // The game answers in order, one reply per request, so a reply that arrives
-    // after its caller gave up must be swallowed rather than handed to whoever
-    // asks next - an answer that belongs to the previous call is exactly the
-    // plausible wrong answer the rest of this file exists to prevent.
+    // A reply that arrives after its caller gave up belongs to that call by id,
+    // so it is dropped as such - handing it to whoever asked next is exactly
+    // the plausible wrong answer the rest of this file exists to prevent.
     contains('a slow reply times out', await failed('EVALX global.answersTooLate', 200), 'did not reply');
     await new Promise((r) => setTimeout(r, 400));
     contains('and a late reply is not handed to the next caller', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+    check('and every request carried an id', seen.length > 0 && !seen.some((s) => s.startsWith('#')), seen.slice(-3).join(' | '));
 
     const message = await failed('EVALX global.neverAnswers', 300);
     contains('a call that never answers still reports what the launcher saw', message, 'Unknown variable winners');
@@ -541,17 +608,66 @@ async function main() {
     contains('and message boxes are reported here too', message, 'Assertion 7 failed');
     contains('and it still says how long it waited', message, '300ms');
 
-    // Queued behind that one, which never answered: the game reads requests in
-    // order, so this call was never looked at and nothing about it is at fault.
-    const queued = await failed('EVALX global.quietlyNeverAnswers', 300);
-    contains('a silent hang is not blamed on a dialog that did not happen', queued, 'dismissed no dialog');
-    check('and does not invent one', !queued.includes('| ERROR in'), queued);
-    contains('and says it was stuck behind an earlier call', queued, '1 earlier call(s) never answered');
+    // HANDOFF.md: a bridge whose every outstanding call has been given up on is
+    // reconnected before the next one goes out, rather than left for the caller
+    // to work out. Dropping the connection is the only thing that reaches a
+    // game that has stopped reading - a deferred STEP or WAIT that outlived its
+    // caller blocks every later request until its whole budget runs out. So
+    // this call goes down a connection opened moments ago, and the dialogs the
+    // one before it collected are not its to explain.
+    const connectionsBefore = live.length;
+    const quiet = await failed('EVALX global.quietlyNeverAnswers', 300);
+    check('a wedged bridge is reconnected before the next call', live.length > connectionsBefore, `${live.length} connection(s)`);
+    contains('a silent hang is not blamed on a dialog that did not happen', quiet, 'dismissed no dialog');
+    check('and does not invent one', !quiet.includes('| ERROR in'), quiet);
 
-    // Two requests are still outstanding against a game that will never answer
-    // them; the rest of the file needs a bridge that is not queued behind them.
+    // Reconnecting cures a game that stopped reading; it cannot cure one that
+    // stopped stepping, and failing again straight after one has to say so
+    // rather than repeat the first diagnosis.
+    contains('and failing again after a reconnect is diagnosed differently', quiet, 'already reconnected once');
+    contains('and that says to restart the instance', quiet, 'gg2_session stop');
+
+    // A reply clears the suspicion again, so the next real failure is not
+    // reported as if this one had never been answered.
+    contains('a reconnected bridge answers normally', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+
+    // Two calls in flight at once against a game that answers neither. The
+    // second is not at fault for its own wait: the game reads requests in
+    // order, so it may never have been looked at. (Concurrently, or the
+    // reconnect above would clear the first out of the way.)
+    const [, behind] = await Promise.all([
+      failed('EVALX global.quietlyNeverAnswers', 200),
+      failed('EVALX global.quietlyNeverAnswers', 500),
+    ]);
+    contains('and says it was stuck behind an earlier call', behind, '1 earlier call(s) never answered');
+
+    // The rest of the file needs a bridge that is not queued behind either of
+    // those.
     mcp.disconnectAll('selftest: clearing a deliberately wedged bridge');
     contains('a fresh connection recovers', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+
+    // The catch that kept this fix on the shelf: the game unfreezes when its
+    // client vanishes, so reconnecting resumes a world the caller deliberately
+    // stopped. The freeze is re-applied, and the call that triggered all this
+    // is failed rather than answered - a value measured after the world moved
+    // is worth less than being told that it moved.
+    await mcp.command(fake, 'FREEZE');
+    const freezes = seen.filter((s) => s === 'FREEZE').length;
+    await failed('EVALX global.quietlyNeverAnswers', 200);
+    const refroze = await failed('EVALX room_speed', 500);
+    contains('recovering a frozen game says the world moved', refroze, 'frozen at your request');
+    contains('and says to retry rather than answering', refroze, 'retry it');
+    check('and freezes it again', seen.filter((s) => s === 'FREEZE').length === freezes + 1, seen.slice(-4).join(' | '));
+    contains('and the retry then works', await mcp.command(fake, 'EVALX room_speed'), '42');
+    await mcp.command(fake, 'RESUME');
+
+    // A game whose bridge predates request ids answers frames that cannot be
+    // matched to anything. Guessing at an alignment is how a wrong answer that
+    // looks right gets produced, so it says what to do instead.
+    const old = await failed('EVALX global.oldBridgePretendsNoId', 500);
+    contains('a reply with no id is refused, not guessed at', old, 'older AgentBridge');
+    contains('and names the fix', old, 'gg2_rebuild');
+    contains('and the next call reconnects and works', await mcp.command(fake, 'EVALX room_speed'), '42');
   }
 
   // The other error channel: a compilation error inside execute_string raises
@@ -587,6 +703,74 @@ async function main() {
   const shot = await mcp.callTool('gg2_screenshot', {});
   check('a screenshot comes back as an image block', Array.isArray(shot) && shot[0].type === 'image' && shot[0].mimeType === 'image/png');
   check('and the temporary file is cleared away', !fs.existsSync(path.join(BUILD, `agent_shot_${PORT}.png`)));
+
+  // The walkmask: the collision the nav graph is built against, read out of the
+  // map PNG's own level data. Synthesised here rather than taken from the game
+  // repo, so the encoding is checked against a pattern this file knows the
+  // answer to - a mask decoded one bit out of step still looks like a map.
+  process.stdout.write('\nwalkmask\n');
+  {
+    const walkmask = require('./walkmask.js');
+    const W = 10;
+    const H = 4;
+    // Solid: the whole bottom row, plus a single block in the middle of row 1.
+    const solid = (x, y) => (y === H - 1 || (y === 1 && x === 4) ? 1 : 0);
+    fs.mkdirSync(path.join(TREE, 'Included Files'), { recursive: true });
+    fs.writeFileSync(path.join(TREE, 'Included Files', 'fakemap.png'), fakeMapPng(W, H, solid));
+
+    const mask = walkmask.decode('fakemap', SCRATCH);
+    check('a walkmask decodes at the map art\'s own size', mask.width === W && mask.height === H, `${mask.width}x${mask.height}`);
+    check(
+      'and every pixel lands where it was encoded',
+      [...mask.bits].every((b, i) => b === solid(i % W, Math.floor(i / W))),
+      [...mask.bits].join(''),
+    );
+
+    // navgraph reads the same chunk for its entity list and exposes the mask to
+    // navaudit's --mask. There must be one decoder behind both names, or the
+    // two grow apart in exactly the way that makes a picture and a text dump
+    // disagree about the same map.
+    const viaNav = require('./navgraph.js').walkmask('fakemap', SCRATCH);
+    check(
+      'navgraph.walkmask is the same decoder',
+      viaNav.width === mask.width && viaNav.height === mask.height && viaNav.bits.equals(mask.bits),
+      `${viaNav.width}x${viaNav.height}`,
+    );
+    check('and answers cell queries the same way', viaNav.solid(4, 1) === 1 && viaNav.solid(0, 0) === 0);
+
+    const art = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
+    const solidOnly = walkmask.tint(art, mask, { strength: 1, only: 'solid' });
+    const openPx = (im, x, y) => im.rgba[(y * W + x) * 4];
+    check('tinting solids leaves open space alone', openPx(solidOnly, 0, 0) === 0);
+    check('and paints the solid ones', openPx(solidOnly, 4, 1) === walkmask.SOLID[0], String(openPx(solidOnly, 4, 1)));
+
+    // Six world pixels to the mask cell, always (navSolidityBuild): a live shot
+    // is tinted through that scale and an offset, and getting either wrong puts
+    // the geometry somewhere it is not.
+    const shot = { width: 12, height: 12, rgba: Buffer.alloc(12 * 12 * 4, 0) };
+    const overWorld = walkmask.tint(shot, mask, { cell: 6, originX: 24, originY: 6, strength: 1, only: 'solid' });
+    const at = (x, y) => overWorld.rgba[(y * 12 + x) * 4];
+    check('a live shot maps 6 world px to one mask cell', at(0, 0) === walkmask.SOLID[0], String(at(0, 0)));
+    check('and the origin offsets it', at(6, 0) === 0, String(at(6, 0)));
+
+    // The outline, which is what a live shot actually gets: one world pixel on
+    // the solid side of the boundary, and nothing at all inside or outside it.
+    const traced = walkmask.outline(shot, mask, { cell: 6, originX: 24, originY: 6 });
+    const edge = (x, y) => traced.rgba[(y * 12 + x) * 4 + 2] === walkmask.EDGE[2];
+    check('the outline marks the top of a solid cell', edge(0, 0));
+    check('and the cell interior is left alone', !edge(2, 2));
+    check('and open space is untouched', !edge(6, 0));
+
+    await throws('a map with no level data says so', async () => {
+      fs.writeFileSync(path.join(TREE, 'Included Files', 'bare.png'), image.encodePngRgba(2, 2, Buffer.alloc(16, 255)));
+      return walkmask.decode('bare', SCRATCH);
+    }, 'Level Data');
+
+    const drawn = await mcp.callTool('gg2_map_image', { base: 'mask', scale: 1 });
+    check('gg2_map_image can draw the mask', Array.isArray(drawn) && drawn[0].type === 'image', JSON.stringify(drawn).slice(0, 80));
+    contains('and says which base it used', drawn[1].text, 'base mask');
+    contains('and art is still available', (await mcp.callTool('gg2_map_image', { scale: 1 }))[1].text, 'base art');
+  }
 
   contains('find sees code inside events', await mcp.callTool('gg2_find', { pattern: 'closestDist' }), '.events/');
   contains('find sees scripts too', await mcp.callTool('gg2_find', { pattern: 'test_unit_begin' }), '.gml:');

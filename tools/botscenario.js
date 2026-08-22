@@ -193,12 +193,35 @@ async function ensureMap(call, inst, map) {
   const now = await evalExpr(call, inst, 'global.currentMap');
   if (String(now).trim() === map) {
     await waitFor(call, inst, `global.navReady and global.navKey == "${map}_a1"`, 1800);
+    await pastSetup(call, inst);
     return false;
   }
   lib.step(`map -> ${map}`);
   await waitFor(call, inst, `global.navKey == "${map}_a1" and global.navBuildState == 9`, 3600,
     `global.currentMapArea = 1; serverGotoMap("${map}");`);
+  await pastSetup(call, inst);
   return true;
+}
+
+// A round starts in setup, and during setup the setup gates are SHUT - which is not a
+// detail, it is a different map. ctf_avanti has 63 setup-gated edges, and a leg measured
+// inside that window is measured against a graph where they do not exist: the same
+// avanti scenario read 897 ticks as the first run after a map change and 266-289 on
+// every run after it, because the first one was routed the long way round quite
+// correctly. Nothing in the counters says so, which is what makes it dangerous - it
+// looks exactly like flake, and "run it again" makes it go away.
+//
+// So a scenario waits for the gates to open before anything is placed. ⚠️ That means
+// this harness cannot currently measure setup-phase behaviour at all; a scenario that
+// wants to would need a field here saying so, and to say what it expects, rather than
+// getting it by accident of ordering.
+//
+// areSetupGatesClosed() is safe on every map - global.setupTimer is 0 where there is no
+// setup phase, and the FauxCPHUD branch simply does not run.
+async function pastSetup(call, inst) {
+  if (Number(await evalExpr(call, inst, 'areSetupGatesClosed()')) === 0) return;
+  lib.step('waiting for the setup gates to open');
+  await waitFor(call, inst, 'not areSetupGatesClosed()', 3600);
 }
 
 //---------------------------------------------------------------------------
@@ -521,6 +544,10 @@ global.scenReport = "frame=" + string(GameServer.frame)
     + " replans=" + string(p.botReplans)
     + " stuck=" + string(p.botStuckFires)
     + " blacklisted=" + string(p.botBlacklistFires)
+    // Space-free by construction (see botBlacklistEdge), so it survives the
+    // whitespace-split field parser as one token. Empty when nothing was
+    // blacklisted, which parses to "" and prints as nothing.
+    + " blacklistLog=" + p.botBlacklistLog
     + " offRoute=" + string(p.botOffRouteFires)
     + " path=" + string(p.botPath)
     + " sameChar=" + string(p.object == global.scenChar)
@@ -605,8 +632,13 @@ function metrics(r) {
       `acquired ${r.last.acquired ? 'yes' : 'no'}, firing ${r.last.firing ? 'yes' : 'no'}`;
   }
   const t = r.ticks === null || r.ticks === undefined ? `no arrival (${r.last.d}px short)` : `${r.ticks} ticks`;
+  // WHICH edges were blacklisted, when there were any. A count says an arc
+  // misled the follower; the endpoints say which arc, and that is the line that
+  // turns a scenario result into a `navaudit --node` query. Printed only when
+  // non-empty, so the common all-clear line stays short.
+  const bl = r.last.blacklistLog ? ` (${r.last.blacklistLog})` : '';
   return `${t}, replans ${r.last.replans}, stuck ${r.last.stuck}, ` +
-    `blacklisted ${r.last.blacklisted}, offRoute ${r.last.offRoute}`;
+    `blacklisted ${r.last.blacklisted}${bl}, offRoute ${r.last.offRoute}`;
 }
 
 function report(results) {
@@ -802,10 +834,36 @@ function select(names, adhoc) {
 async function runAll(call, { instance, names, scenario, speed = 20, keep = false } = {}) {
   const todo = select(names, scenario);
   const factor = Math.max(1, Math.min(20, Number(speed) || 20));
+
+  // What the population manager was doing before we turned it off, so it can be
+  // turned back on. clearBots sets global.botsEnabled = false - it has to, or the
+  // manager refills the roster mid-scenario and the role assignment moves under
+  // the test - but game_init writes every one of these globals back out to
+  // gg2.ini on shutdown. So a suite run used to leave `[Bots] Enabled=0` on
+  // disk, and the next ordinary game the user started had no bots in it at all,
+  // with nothing anywhere saying why. Measured exactly that, 2026-08-21.
+  let botsWere = null;
+  try {
+    botsWere = await evalExpr(call, instance, 'global.botsEnabled');
+  } catch (e) {
+    // Not fatal: an older build without the population manager still runs
+    // scenarios fine, it just has nothing to restore.
+  }
+
   const results = [];
-  for (const s of todo) results.push(await runOne(call, instance, s, factor));
-  if (!keep) await clearBots(call, instance);
-  await call('gg2_speed', { instance, factor: 0 });
+  try {
+    for (const s of todo) results.push(await runOne(call, instance, s, factor));
+    if (!keep) await clearBots(call, instance);
+  } finally {
+    await call('gg2_speed', { instance, factor: 0 });
+    if (botsWere !== null && String(botsWere).trim() !== '0') {
+      try {
+        await evalCode(call, instance, 'global.botsEnabled = true;');
+      } catch (e) {
+        lib.warn('could not restore global.botsEnabled - check [Bots] Enabled in gg2.ini');
+      }
+    }
+  }
   return results;
 }
 

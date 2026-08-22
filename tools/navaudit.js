@@ -74,6 +74,10 @@ navaudit.js - can a bot path to the objective on this map?
   --gaps            list near-miss node pairs across a component boundary,
                     closest first - where an edge should probably exist
   --node <n>        dump one node's outgoing and incoming edges
+  --mask <x0,y0,x1,y1>
+                    print that rectangle of the map's own walkmask as text, with
+                    node floors drawn on it. Mask cells, not world px (a cell is
+                    6 world px). Needs no running game.
   --all             in a full audit, list passing maps too (default: failures
                     and warnings only)
   --repo <path>     the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
@@ -238,7 +242,7 @@ function chokepoints(g, spawn, team, targets) {
 // Reporting
 //---------------------------------------------------------------------------
 
-function reportOne(g, { showGaps = false, node = null } = {}) {
+function reportOne(g, { showGaps = false, node = null, mask = null } = {}) {
   const c = g.c;
   const ents = nav.entities(g.map, g.repo);
   const mode = nav.gameMode(ents);
@@ -290,6 +294,7 @@ function reportOne(g, { showGaps = false, node = null } = {}) {
   }
 
   if (node !== null) reportNode(g, node);
+  if (mask) reportMask(g, mask);
   if (showGaps) reportGaps(g, ents, c);
   return !failed;
 }
@@ -310,6 +315,76 @@ function reportNode(g, n) {
   if (oneWay.length) {
     console.log(`    one-way OUT to ${oneWay.map((t) => `n${t}`).join(', ')} `
       + '(this node can leave to them and not come back)');
+  }
+}
+
+// The terrain, as text, with the nodes drawn on it.
+//
+// The last resort of every nav question, and it should be reached for earlier
+// than it usually is: "why is there no edge here" always ends up being about
+// what the mask actually says, and until this existed the only way to see that
+// was collision_point queries against a running game. It reads the {WALKMASK}
+// block off the map PNG, so it needs no game at all.
+//
+// `#` is solid, `.` is open. A node's floor row is drawn as `=` across its
+// anchor span, so a node reads as the line the character stands ON - the anchor
+// column is the LEFT edge of the body box, which is why a node's `=` run stops
+// NAV_BOX_W short of where the floor visibly does. Overlapping nodes on one row
+// are drawn once; the list underneath names them all.
+//
+// Gates and platforms are instances, not mask (see navgraph.walkmask), so a cell
+// shown open here can still be closed to a bot.
+function reportMask(g, spec) {
+  const parts = String(spec).split(',').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+    console.log('');
+    console.log('  --mask wants four mask-cell numbers: x0,y0,x1,y1 (a cell is 6 world px)');
+    return;
+  }
+  const wm = nav.walkmask(g.map, g.repo);
+  const x0 = Math.max(0, Math.min(parts[0], parts[2]));
+  const x1 = Math.min(wm.width - 1, Math.max(parts[0], parts[2]));
+  const y0 = Math.max(0, Math.min(parts[1], parts[3]));
+  const y1 = Math.min(wm.height - 1, Math.max(parts[1], parts[3]));
+
+  console.log('');
+  console.log(`  mask cells x ${x0}-${x1}, y ${y0}-${y1}`
+    + `  (world x ${x0 * 6}-${x1 * 6 + 5}, y ${y0 * 6}-${y1 * 6 + 5})`);
+
+  // Which nodes have a floor row inside the window, so terrain and graph can be
+  // read against each other in one picture.
+  const floorRow = (n) => g.node[n].row + g.c.NAV_BOX_H;
+  const here = [];
+  for (let n = 0; n < g.nodeCount; n++) {
+    const r = floorRow(n);
+    if (r < y0 || r > y1) continue;
+    if (g.node[n].x1 < x0 || g.node[n].x0 > x1) continue;
+    here.push(n);
+  }
+
+  // Column ruler, written down the page so three digits cost three lines.
+  for (const p of [100, 10, 1]) {
+    let line = '';
+    for (let x = x0; x <= x1; x++) line += (p === 100 && x < 100) ? ' ' : String(Math.floor(x / p) % 10);
+    console.log(`        ${line}`);
+  }
+
+  for (let y = y0; y <= y1; y++) {
+    const row = [];
+    for (let x = x0; x <= x1; x++) row.push(wm.solid(x, y) ? '#' : '.');
+    for (const n of here) {
+      if (floorRow(n) !== y) continue;
+      for (let x = Math.max(x0, g.node[n].x0); x <= Math.min(x1, g.node[n].x1); x++) row[x - x0] = '=';
+    }
+    console.log(`  ${String(y).padStart(4)}  ${row.join('')}`);
+  }
+
+  if (!here.length) { console.log('    no node floors in this window'); return; }
+  console.log('');
+  for (const n of here) {
+    const [wx0, wx1] = g.worldSpan(n);
+    console.log(`    n${String(n).padEnd(5)} floor row ${floorRow(n)}, anchors ${g.node[n].x0}-${g.node[n].x1}`
+      + `, world x ${wx0}-${wx1}, floor y ${g.floorY(n)}`);
   }
 }
 
@@ -415,7 +490,7 @@ function reportAll(repo, showAll) {
 //---------------------------------------------------------------------------
 
 async function main() {
-  const { flags, positional } = lib.parseArgs(process.argv.slice(2), ['repo', 'node']);
+  const { flags, positional } = lib.parseArgs(process.argv.slice(2), ['repo', 'node', 'mask']);
   if (flags.help) lib.helpAndExit(USAGE);
   const repo = flags.repo || lib.defaultRepo();
 
@@ -439,6 +514,7 @@ async function main() {
   const ok = reportOne(g, {
     showGaps: !!flags.gaps,
     node: flags.node === undefined ? null : Number(flags.node),
+    mask: flags.mask === undefined ? null : flags.mask,
   });
   process.exit(ok ? 0 : 1);
 }

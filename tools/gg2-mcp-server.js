@@ -7,7 +7,13 @@
 // protocol to the AgentBridge object inside each game.
 //
 // Wire format to the game: uint32 little-endian length, then that many bytes.
-// Replies come back framed the same way, as "OK", "OK <text>" or "ERR <text>".
+// The body is "#<id> <request>"; the reply comes back framed the same way as
+// "#<id> OK", "#<id> OK <text>" or "#<id> ERR <text>". The id is what matches a
+// reply to the call that asked for it - a late reply belongs to the call that
+// gave up on it by name, rather than to whoever happens to be next in a queue.
+// The game treats it as optional and echoes whatever it is given, so a rebuilt
+// game still answers a client that predates ids; this client does not send
+// requests without one.
 //
 // More than one game can be up at once - a dedicated server and its clients are
 // the only way to see the network protocol work - so every tool that talks to a
@@ -32,6 +38,7 @@ const lib = require('./lib.js');
 const instances = require('./instances.js');
 const gmlerror = require('./gmlerror.js');
 const image = require('./image.js');
+const walkmask = require('./walkmask.js');
 const events = require('./events.js');
 const session = require('./session.js');
 const gmllint = require('./gml-lint.js');
@@ -79,24 +86,65 @@ class Bridge {
   constructor(port) {
     this.port = port;
     this.sock = null;
+    this.connecting = null; // the one in-flight connect(), shared by every caller
     this.rx = Buffer.alloc(0);
-    this.pending = [];
+    // id -> slot, in the order the requests went out. A slot whose caller has
+    // given up stays here, marked abandoned, until the game answers it or the
+    // connection goes: that is what lets a late reply be recognised as late
+    // rather than handed to whoever asked next, and what makes "how many calls
+    // ahead of this one never answered" answerable.
+    this.pending = new Map();
+    this.nextId = 1;
+    // Whether this client stopped the world and has not started it again.
+    // Nothing else can know it across a reconnect, and it is what decides
+    // whether recovering a wedged bridge is free or costs the caller frames.
+    this.frozen = false;
+    // Set when this bridge was reconnected because nothing was answering, and
+    // cleared by the first reply after it. A call that times out while it is
+    // still set has just proved the reconnect did not help, which is a
+    // different diagnosis from the first timeout - see timedOut.
+    this.recoveredFromWedge = false;
   }
 
   disconnect(reason) {
     if (this.sock) {
       this.sock.removeAllListeners();
-      this.sock.destroy();
+      // Abortive, not graceful, and this is load-bearing rather than tidy:
+      // the game notices a closed client through tcp_eof, which Faucet only
+      // reports once the read buffer is *also* exhausted. A client that gave up
+      // with more than one request in flight leaves unread bytes sitting in that
+      // buffer, so an ordinary FIN is invisible to the game for as long as it is
+      // not reading - which is exactly the wedge this reconnect exists to clear
+      // (measured live on 2026-08-22: FIN, no accept for the whole 120s budget;
+      // RST, served 95ms later). A reset makes socket_has_error true whatever is
+      // buffered, and nothing this client had in flight is worth delivering
+      // anyway - it has stopped waiting for all of it.
+      if (typeof this.sock.resetAndDestroy === 'function' && !this.sock.destroyed) this.sock.resetAndDestroy();
+      else this.sock.destroy();
       this.sock = null;
     }
     this.rx = Buffer.alloc(0);
-    while (this.pending.length) this.pending.shift().reject(new Error(reason));
+    // The game unfreezes itself the moment it loses its client, and it has just
+    // lost one - so neither of these is true of it any more, whoever dropped the
+    // connection and why. recoverIfWedged reads them before it calls this.
+    this.frozen = false;
+    this.recoveredFromWedge = false;
+    for (const p of this.pending.values()) p.reject(new Error(reason));
+    this.pending.clear();
   }
 
+  // One connection, however many callers ask for it at once. Two calls that
+  // start together used to open a socket each, and the game accepts exactly one
+  // client: the loser's requests went into the accept backlog and were never
+  // read, so a call could time out having never been looked at while a socket
+  // nothing owned kept the game's real connection alive. Sharing the in-flight
+  // attempt is the whole fix (found live on 2026-08-22, chasing a reconnect
+  // that appeared not to reach the game).
   connect() {
-    return new Promise((resolve, reject) => {
-      if (this.sock && !this.sock.destroyed) return resolve();
+    if (this.sock && !this.sock.destroyed) return Promise.resolve();
+    if (this.connecting) return this.connecting;
 
+    this.connecting = new Promise((resolve, reject) => {
       const s = net.connect({ port: this.port, host: HOST });
       const onErr = (e) => {
         s.removeAllListeners();
@@ -123,15 +171,7 @@ class Bridge {
             if (this.rx.length < 4 + n) break;
             const payload = this.rx.slice(4, 4 + n).toString('latin1');
             this.rx = this.rx.slice(4 + n);
-            const p = this.pending.shift();
-            // A call that timed out leaves its slot behind rather than removing
-            // it, because the game may still answer: the game replies in order,
-            // one reply per request, so dropping the slot would hand a late
-            // reply to the next caller and every answer after it would belong
-            // to the call before. Swallowing it here keeps the two sides lined
-            // up - a wrong answer that looks right is the worst thing this
-            // bridge can produce.
-            if (p && !p.abandoned) p.resolve(payload);
+            if (!this.deliver(payload)) break;
           }
         });
         s.on('error', (e) => this.disconnect('bridge socket error: ' + e.message));
@@ -139,13 +179,119 @@ class Bridge {
         resolve();
       });
     });
+
+    // Cleared either way: a failed attempt must not be handed to the next
+    // caller as if it were still in progress.
+    const done = () => {
+      this.connecting = null;
+    };
+    this.connecting.then(done, done);
+    return this.connecting;
+  }
+
+  // Hand one reply frame to the call that asked for it. Returns false if the
+  // connection was torn down and there is nothing left to read into.
+  //
+  // Replies carry the id of their request (see agentBridgeStep), so this is a
+  // lookup and not an assumption about order. That matters most for a reply
+  // that arrives after its caller gave up: it belongs to that abandoned call by
+  // name, is dropped as such, and nothing after it is shifted onto the wrong
+  // caller - which is the worst thing this bridge can produce, and used to be
+  // prevented only by never removing a timed-out slot from a queue.
+  deliver(payload) {
+    if (payload[0] !== '#') {
+      // A game built before replies carried ids. Nothing here can be matched to
+      // anything, so say what to do rather than guessing at an alignment.
+      this.disconnect(
+        `The game on port ${this.port} is running an older AgentBridge: it replied without the request id ` +
+          'this protocol carries, so replies cannot be matched to calls. Apply the current bridge with ' +
+          `gg2_rebuild (~3s), or rebuild by hand with build-fast.js. (it said ${JSON.stringify(payload.slice(0, 60))})`
+      );
+      return false;
+    }
+
+    const sp = payload.indexOf(' ');
+    const id = Number(payload.slice(1, sp < 0 ? payload.length : sp));
+    const body = sp < 0 ? '' : payload.slice(sp + 1);
+    const p = this.pending.get(id);
+    if (!p) {
+      log(`bridge on ${this.port}: reply to #${id}, which nothing is waiting for - ignored`);
+      return true;
+    }
+    this.pending.delete(id);
+    if (p.abandoned) {
+      log(`bridge on ${this.port}: #${id} answered after its caller gave up - dropped`);
+    } else {
+      // Answering at all clears the suspicion a reconnect left behind.
+      this.recoveredFromWedge = false;
+      p.resolve(body);
+    }
+    return true;
+  }
+
+  // True when every request still outstanding has been given up on: the game
+  // has answered nothing since, and is not necessarily reading either.
+  wedged() {
+    if (!this.sock || this.sock.destroyed || this.pending.size === 0) return false;
+    for (const p of this.pending.values()) if (!p.abandoned) return false;
+    return true;
+  }
+
+  // Recover a bridge that has stopped answering, before sending anything else
+  // down it.
+  //
+  // Dropping the connection is the only thing that reaches a game that has
+  // stopped *reading*, and one that has is the common case rather than an
+  // exotic one: while a deferred STEP or WAIT is outstanding the bridge reads
+  // no further requests at all, so a WAIT whose caller gave up after 10s blocks
+  // every later call for the rest of its frame budget - up to two minutes.
+  // agentBridgeStep notices the EOF, clears deferKind, unfreezes and accepts
+  // the next client, which is exactly the reset that was wanted.
+  //
+  // The unfreeze is why this is not unconditional: it silently resumes a game
+  // the caller deliberately stopped. So when this client is the one that froze
+  // it, the freeze is re-applied and the call that triggered the recovery is
+  // failed rather than answered - the world moved, and a result measured after
+  // it moved is exactly the plausible wrong answer the rest of this file exists
+  // to prevent. Retrying is then a working call against a game in the state it
+  // was left in, minus a few frames that are named rather than hidden.
+  async recoverIfWedged() {
+    if (!this.wedged()) return;
+
+    const lost = this.pending.size;
+    const wasFrozen = this.frozen;
+    this.disconnect(`the bridge on port ${this.port} was reconnected while this call was outstanding`);
+    await this.connect();
+    this.recoveredFromWedge = lost;
+    log(`bridge on ${this.port}: reconnected after ${lost} unanswered call(s)${wasFrozen ? ', re-freezing' : ''}`);
+
+    if (!wasFrozen) return;
+    await this.request('FREEZE');
+    throw new Error(
+      `The bridge on port ${this.port} had stopped answering - ${lost} call(s) went unanswered, and while a ` +
+        'deferred STEP or WAIT is outstanding the game reads no further requests at all, so nothing sent down ' +
+        'that connection could clear it. Reconnecting did: the game drops the old client, cancels what it was ' +
+        'waiting on, and accepts a new one.\n\n' +
+        'It also unfreezes on losing a client, and this game was frozen at your request - so it ran on for a ' +
+        'moment before being frozen again. It is frozen now, but has advanced by a few frames that nothing ' +
+        'counted. That is why this call failed instead of answering: retry it, and the answer will be honest.'
+    );
   }
 
   // A request that spans frames - STEP, WAIT, a test run that stops on forty
   // message boxes - cannot answer inside the ordinary budget, so callers that
   // know how long they are asking for say so.
   async request(text, timeoutMs = CALL_TIMEOUT_MS) {
+    await this.recoverIfWedged();
     await this.connect();
+
+    // Whether the world is stopped is not the transport's business, except that
+    // it is the only thing that survives a reconnect - see recoverIfWedged. A
+    // STEP leaves the game frozen exactly when it was frozen before, so it does
+    // not appear here.
+    if (text === 'FREEZE') this.frozen = true;
+    else if (text === 'RESUME') this.frozen = false;
+
     // Where the logs stood before the command went out. The launcher writes
     // every dialog it dismisses to disk while a call is in flight, and that
     // happens whether or not the reply ever arrives - so a call that times out
@@ -155,17 +301,24 @@ class Bridge {
     // failure reads as a full diagnosis or as nothing at all, depending only on
     // whether the reply beat the clock.
     const marks = logMarks(this.port);
+    const id = this.nextId;
+    this.nextId = this.nextId >= 1000000000 ? 1 : this.nextId + 1;
+
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        const at = this.pending.findIndex((p) => p.timer === timer);
         // Requests are answered in order, so anything still abandoned ahead of
         // this one means the game never got as far as looking at this one.
-        const behind = at < 0 ? 0 : this.pending.slice(0, at).filter((p) => p.abandoned).length;
-        if (at >= 0) this.pending[at].abandoned = true;
-        reject(new Error(timedOut(this.port, marks, timeoutMs, behind)));
+        let behind = 0;
+        for (const [key, p] of this.pending) {
+          if (key === id) break;
+          if (p.abandoned) behind++;
+        }
+        const slot = this.pending.get(id);
+        if (slot) slot.abandoned = true;
+        reject(new Error(timedOut(this.port, marks, timeoutMs, behind, this.recoveredFromWedge)));
       }, timeoutMs);
 
-      this.pending.push({
+      this.pending.set(id, {
         timer,
         resolve: (v) => {
           clearTimeout(timer);
@@ -177,7 +330,7 @@ class Bridge {
         },
       });
 
-      const body = Buffer.from(text, 'latin1');
+      const body = Buffer.from(`#${id} ${text}`, 'latin1');
       const head = Buffer.alloc(4);
       head.writeUInt32LE(body.length, 0);
       this.sock.write(Buffer.concat([head, body]));
@@ -402,7 +555,7 @@ function hints(collapsed) {
 // Why a call never came back, from what the game wrote down while it was in
 // flight. The launcher log is written independently of the socket, so this is
 // available on exactly the path that used to have nothing but a guess.
-function timedOut(port, marks, timeoutMs, behind = 0) {
+function timedOut(port, marks, timeoutMs, behind = 0, recovered = 0) {
   const head = `The game on port ${port} did not reply within ${timeoutMs}ms.`;
   const collapsed = troublesSince(port, marks, { messages: true });
 
@@ -416,12 +569,25 @@ function timedOut(port, marks, timeoutMs, behind = 0) {
         'Restart the instance (gg2_session stop, then start).'
       : '';
 
+  // The stronger version of the same story: the connection this call went down
+  // was opened moments ago, precisely because the last one had stopped
+  // answering. A game that ignores a client it has only just accepted is not
+  // deferring a reply - it is not running the bridge's Step event at all.
+  const again =
+    recovered > 0
+      ? `\n\nThis bridge was already reconnected once, after ${recovered} call(s) the game never answered, and it ` +
+        'still has not answered anything. Reconnecting is what clears a deferred STEP or WAIT that outlived its ' +
+        'caller, so that is not what this is: the game is not servicing the bridge at all - stopped stepping, ' +
+        'stuck in a loop, or gone. Restart the instance (gg2_session stop, then start).'
+      : '';
+
   if (collapsed.length === 0) {
     return (
       `${head} The launcher dismissed no dialog while the call was in flight, so the game is probably not ` +
       'blocked on a modal one: more likely it is still working (ask for a longer timeout), it stopped stepping, ' +
       'or it is gone. gg2_ping says which; gg2_log with source: "launcher" shows the whole log.' +
-      queued
+      queued +
+      again
     );
   }
 
@@ -434,7 +600,8 @@ function timedOut(port, marks, timeoutMs, behind = 0) {
     `${head} While it was in flight the launcher dismissed ${counts.join(' and ')}, which is very likely why:\n` +
     renderTroubles(collapsed) +
     hints(collapsed) +
-    queued
+    queued +
+    again
   );
 }
 
@@ -685,11 +852,25 @@ const TOOLS = [
       'map pixel, so this needs no unit conversion either. Built for "what does the map actually look like" ' +
       'and "why is the nav graph disconnected here" without touching the live game beyond reading its current ' +
       'map name and, if overlay is on, the nav graph. Custom (player-uploaded) maps are not resolvable from ' +
-      'disk yet and return a clear error rather than a wrong image - only the maps shipped in this repo work.',
+      'disk yet and return a clear error rather than a wrong image - only the maps shipped in this repo work.\n' +
+      'base picks what the graph is drawn over: "mask" is the map\'s own collision walkmask (dark = solid, ' +
+      'light = open), read out of the same PNG\'s embedded level data; "art" is the painted map; "both" blends ' +
+      'them. It defaults to mask whenever overlay is on and art otherwise, because those are different ' +
+      'questions: the nav graph is built against the mask and nothing else, so the art agrees with the overlay ' +
+      'only by coincidence - it paints scenery nothing collides with and draws solid geometry as background. ' +
+      'On koth_valley the art is a dark night scene in which the two vertical shafts that cost this project a ' +
+      'bug are invisible; the mask shows them at a glance.',
     inputSchema: {
       type: 'object',
       properties: {
-        overlay: { type: 'boolean', description: 'Plot the nav graph on top, coloured by reachability. Default: false (map art alone).' },
+        overlay: { type: 'boolean', description: 'Plot the nav graph on top, coloured by reachability. Default: false (the map alone).' },
+        base: {
+          type: 'string',
+          enum: ['art', 'mask', 'both'],
+          description:
+            'What to draw: "mask" the collision walkmask (dark = solid), "art" the painted map, "both" blended. ' +
+            'Default: mask when overlay is on, art when it is not.',
+        },
         x: { type: 'number', description: 'World x to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
         y: { type: 'number', description: 'World y to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
         scale: { type: 'integer', description: 'Nearest-neighbour upscale factor - the native map-pixel art is often small. Default: 3.' },
@@ -724,6 +905,13 @@ const TOOLS = [
         width: { type: 'number', description: 'Area width, world px. Default: the whole map.' },
         height: { type: 'number', description: 'Area height, world px. Default: the whole map.' },
         hide_hud: { type: 'boolean', description: 'Suppress HUD and the cursor sprite for the capture. Default: true.' },
+        walkmask: {
+          type: 'boolean',
+          description:
+            'Trace the map\'s collision boundary - where solid meets open - in magenta over the shot, so what ' +
+            'the geometry actually is can be read off the same picture as what everyone is doing in it. It is ' +
+            'an outline rather than a wash: one world pixel per boundary, so nothing live is covered up. Default: false.',
+        },
         save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
         ...INSTANCE_ARG,
       },
@@ -1334,6 +1522,13 @@ async function callTool(name, args) {
         );
       }
 
+      // The nav graph is built against the walkmask and nothing else, so a
+      // picture asking a nav question should be of the mask. A picture asking
+      // what the map looks like should be of the art. Neither is a good default
+      // for the other question, so the default follows the question.
+      const base = args.base || (args.overlay ? 'mask' : 'art');
+      if (!['art', 'mask', 'both'].includes(base)) throw new Error('base must be "art", "mask" or "both"');
+
       let overlayText = '';
       let nodes = null;
       if (args.overlay) {
@@ -1372,7 +1567,13 @@ async function callTool(name, args) {
         overlayText = `, ${reached} nodes reached from (${sx}, ${sy})`;
       }
 
-      const { width, height, rgba } = image.decodePng(fs.readFileSync(mapFile));
+      const art = image.decodePng(fs.readFileSync(mapFile));
+      const mask = base === 'art' ? null : walkmask.decode(mapName, REPO);
+      const picture =
+        base === 'art' ? art
+          : base === 'both' ? walkmask.tint(art, mask)
+            : walkmask.toRgba(mask);
+      const { width, height, rgba } = picture;
 
       if (nodes) {
         const GREEN = [0, 255, 0, 255];
@@ -1404,7 +1605,9 @@ async function callTool(name, args) {
         {
           type: 'text',
           text:
-            `${mapName}: ${scaled.width}x${scaled.height} (native ${width}x${height}, ${scale}x)${overlayText}` +
+            `${mapName}: ${scaled.width}x${scaled.height} (native ${width}x${height}, ${scale}x), ` +
+            `base ${base}${base === 'mask' ? ' (dark = solid; pass base: "art" for the map art)' : ''}` +
+            `${overlayText}` +
             (args.save_to ? `, saved to ${args.save_to}` : ''),
         },
       ];
@@ -1499,14 +1702,35 @@ async function callTool(name, args) {
         }
       }
 
-      const png = image.encodePngRgba(rw, rh, canvas);
+      // The mask over the live picture, composited here rather than drawn in
+      // the game: one mask cell is exactly NAV_CELL_SIZE (6) world pixels and
+      // the tiles are captured at 1:1, so this lands on the exact pixels the
+      // collision does - no resample, no GML, and nothing that could disturb a
+      // running server. Outlined rather than filled, because a fill over a map
+      // this dark and this detailed either vanishes into the art or hides
+      // whatever the shot was taken for (both tried, live).
+      let shotImage = { width: rw, height: rh, rgba: canvas };
+      let maskText = '';
+      if (args.walkmask) {
+        const mapName = await watched(where, () => command(where, 'EVALX global.currentMap'));
+        shotImage = walkmask.outline(shotImage, walkmask.decode(mapName, REPO), {
+          cell: 6,
+          originX: rx0,
+          originY: ry0,
+        });
+        maskText = ', collision boundary outlined in magenta';
+      }
+
+      const png = image.encodePngRgba(shotImage.width, shotImage.height, shotImage.rgba);
       if (args.save_to) fs.writeFileSync(args.save_to, png);
 
       return [
         { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
         {
           type: 'text',
-          text: `${where.name}: ${rw}x${rh} (${cols}x${rows} tiles of ${wport}x${hport})` + (args.save_to ? `, saved to ${args.save_to}` : ''),
+          text:
+            `${where.name}: ${rw}x${rh} (${cols}x${rows} tiles of ${wport}x${hport})${maskText}` +
+            (args.save_to ? `, saved to ${args.save_to}` : ''),
         },
       ];
     }

@@ -49,8 +49,8 @@ Then drive the running game with the MCP tools:
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
 | `gg2_screenshot` | look at the game; works while it is frozen |
-| `gg2_map_image` | full-resolution map art, no camera involved; `overlay: true` adds bot nav-graph reachability |
-| `gg2_area_shot` | full-resolution **live** screenshot of an area bigger than one window, tiled and stitched |
+| `gg2_map_image` | full-resolution map, no camera involved; `base` picks walkmask/art/both, `overlay: true` adds bot nav-graph reachability |
+| `gg2_area_shot` | full-resolution **live** screenshot of an area bigger than one window, tiled and stitched; `walkmask: true` traces the collision boundary over it |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
 | `gg2_speed` | run the live game faster (or slower) than real time, for burning through a slow stretch |
@@ -104,6 +104,18 @@ the second is "what is actually happening on the map right now."
   worth knowing if `gg2_nav_map` shows up in an old transcript. It only knows built-in
   maps; a custom (player-uploaded) one has no fixed path on disk and gets a clear error
   rather than a wrong image.
+  **The base layer is the walkmask, not the art, whenever the overlay is on** (`base:
+  "mask" | "art" | "both"` overrides; it defaults to `art` with the overlay off, since
+  that is a different question). The same PNG carries the map's collision mask in its own
+  `zTXt` "Gang Garrison 2 Level Data" chunk - the game reads it the same way, see
+  `Scripts/Maps/CustomMaps` - and `tools/walkmask.js` decodes it with no game running.
+  This matters because **the nav graph is built against the mask and nothing else**, so
+  the art agrees with an overlay only by coincidence: it paints scenery nothing collides
+  with, and draws real geometry as though it were background. `koth_valley` is the plain
+  case - a dark night scene whose underground is nearly black, in which the two vertical
+  shafts that cost this project a bug are invisible, and where the mask shows every
+  standable surface the node bars are sitting on. `node tools/walkmask.js <map> out.png`
+  renders one on its own; `navimage.js --base` is the same switch.
 - **`gg2_area_shot`** is for when the *live* game is what needs seeing at more than one
   window's worth at a time - players, projectiles, capture progress, an actual running
   match - which `gg2_map_image` fundamentally cannot show, since it never asks the game
@@ -134,6 +146,14 @@ the second is "what is actually happening on the map right now."
   `global.agentHideHud` is set - confirmed live across two separate tile captures in a
   row, not just one. `TeamSelectController`/`ClassSelectController` are the one exception
   that *does* need only `visible`, since neither has a custom Draw event of its own.
+  **`walkmask: true` traces the collision boundary over the shot in magenta**, so what the
+  geometry is and what everyone is doing in it can be read off one picture. It is
+  composited on the Node side, not drawn in the game: one mask cell is exactly
+  `NAV_CELL_SIZE` (6) world pixels and the tiles are captured at 1:1, so it lands on the
+  pixels the collision actually uses - no resample, no GML, and nothing that can disturb a
+  running server. It is an *outline* because a fill was tried first and lost: over a map
+  painted this dark, tinting solid ground either disappears into the art or hides whatever
+  the shot was taken for.
 
 The underlying pieces (`agentNavReach`, `agentNavDump`, `agentBridgeDraw`,
 `agentBridgeHudVisible`) live permanently in the bridge payload, not a spare, since this
@@ -248,9 +268,20 @@ node tools/navimage.js koth_corinth out.png --crop 228,100,300,145 --scale 14
 
 `tools/navgraph.js` is the reader and the model (cache decoding, world<->node
 conversion, the gate rules); `navaudit.js` is the checks; `navimage.js` draws the
-graph over the map art. Run the audit **before** playtesting a map - a bot with
-no route stands perfectly still, which is indistinguishable from a dozen other
-bugs when you are watching it happen.
+graph over the map's own collision mask. Run the audit **before** playtesting a
+map - a bot with no route stands perfectly still, which is indistinguishable
+from a dozen other bugs when you are watching it happen.
+
+**`tools/walkmask.js` is the one decoder for what a map is made of** - the zTXt
+level-data chunk, the `{WALKMASK}` bitstream inside it, and the three ways of
+drawing it (`toRgba`, `tint`, `outline`). `navgraph.js` re-exports `levelData`
+and `walkmask` from it rather than keeping a second copy, so `nav.entities`,
+`navaudit --mask`, `navimage --base` and `gg2_map_image`/`gg2_area_shot` all
+read one implementation. `decode()` hands back `{ width, height, bits,
+solid(x, y) }`: the buffer for whole-image work, the bounds-checked accessor for
+asking about a handful of cells. Solidity only - **gates, player walls and
+drop-through platforms are instances, not mask**, stamped into the graph by
+`navMarkInstances`, so a cell the mask calls open can still be closed to a bot.
 
 ### Behaviour scenarios (`tools/botscenario.js`)
 
@@ -553,7 +584,29 @@ exactly what broke.
   `agent_launcher_<port>.log` and `agent_instances.json`, all beside the exe, so
   two games in one directory never interleave.
 - **Only one bridge client at a time.** The game accepts a single connection;
-  a second one waits.
+  a second one waits. A second one also waits *forever* while a deferred `STEP`
+  or `WAIT` is outstanding, because the bridge reads nothing else until that
+  reply goes out — so the only thing that reaches a game in that state is
+  dropping the connection, and the client does exactly that (see below).
+- **Every request carries an id, and a wedged bridge reconnects itself.** The
+  frame body is `#<id> <request>` and the reply comes back `#<id> <reply>`, so a
+  reply belongs to the call that asked for it by name rather than by position —
+  a late reply to a call that already gave up is dropped as that call's, not
+  handed to whoever asked next. The game treats the id as optional and echoes
+  whatever it is given, so rebuilding a game does not break an older client;
+  this client always sends one, and refuses (with instructions) to talk to a
+  bridge that answers without one. On top of that, a call that finds *every*
+  outstanding request abandoned reconnects first: the game notices the dropped
+  client, cancels what it was deferring, and accepts the new connection, which
+  turns a two-minute `WAIT` nobody is waiting for into a 70ms recovery. If the
+  game was frozen at this client's request it is frozen again afterwards, and
+  the call that triggered the recovery *fails* rather than answering — the world
+  ran on for a few frames in between, and a value measured after that is worth
+  less than being told it happened. Retry and the answer is honest.
+  ⚠️ **The client's disconnect is abortive (RST) on purpose.** `tcp_eof` only
+  goes true once the read buffer is *also* exhausted, so with a second request
+  still sitting unread behind the deferred one, an ordinary FIN is invisible to
+  the game for the whole frame budget. Measured live both ways.
 - **The listener binds all interfaces**, because that is what Faucet's
   `tcp_listen` does. The accept path drops anything that is not loopback. Do not
   remove that check — the bridge runs arbitrary GML.

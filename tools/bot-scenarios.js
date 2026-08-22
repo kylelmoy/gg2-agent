@@ -120,24 +120,105 @@ const SCENARIOS = [
     budget: 1200,
   },
   {
+    name: 'valley-shaft-crate-to-point',
+    map: 'koth_valley',
+    about:
+      'The climb OUT of the control point shaft, starting on the crate at its bottom. The ' +
+      'shaft is a dogleg: the free channel sits at cols 367-370 between the crate and the ' +
+      'lower ledge, then jogs three columns left to 364-367 at the ledge row and above. The ' +
+      'climb therefore rises AND moves sideways, which is the case navJumpCeiling did not ' +
+      'model - it scanned straight up from the takeoff column, hit the wall shoulder nine ' +
+      'rows up, and reported 48px of headroom against the 54px the rung needs, so ' +
+      'navJumpLanding refused every arc and n261 had no upward edge at all. A human makes ' +
+      'the jump comfortably: measured takeoff (2232.66, 768.40), landing (2198.60, 714.46), ' +
+      'a 53.9px rise inside a 57.6px apex. This scenario does not test arrival - the bot ' +
+      'always got out eventually by walking a ~45-node detour through the rest of the map - ' +
+      'it tests the COST of getting out. Measured 532 and 673 ticks by the detour before the ' +
+      'fix, and 100 ticks with zero stuck/blacklisted/offRoute after it. The bound is set ' +
+      'well clear of both: anything near the detour figure means the rung is missing again.',
+    class: 'CLASS_SOLDIER',
+    team: 'red',
+    // Above the crate, not on it: botNodeSnap searches downward, so a point level
+    // with the surface you mean resolves to whatever is under it instead. The
+    // crate node n261 spans x 2226-2274 with its floor at y 792.
+    from: [2250, 780],
+    to: [2331, 546],
+    budget: 1200,
+    expect: { ticks: { max: 300 } },
+  },
+  {
+    name: 'valley-shaft-floor-to-point',
+    map: 'koth_valley',
+    about:
+      'The same shaft one rung lower, from the underground floor n263 (x 2088-2220, floor ' +
+      'y 828) rather than from the crate. Worth having separately from the crate scenario ' +
+      'because it exercises the floor->crate rung as well, and because it is the position a ' +
+      'bot actually falls into: n177, n216 and n242 all have fall edges down here. Measured ' +
+      '489 and 1139 ticks by the detour before the fix - within a 1200 budget only barely, ' +
+      'which is why this always read as "the bot took the long way" rather than as a failure ' +
+      'anywhere, and why arrival alone asserts nothing useful here. 161 ticks after the fix. ' +
+      'The right-hand shaft (n262 -> n243) is the mirror of this and was verified by hand at ' +
+      '679 ticks before and 100 after; it is not duplicated here because it exercises the ' +
+      'same generator path.',
+    class: 'CLASS_SOLDIER',
+    team: 'red',
+    from: [2150, 815],
+    to: [2331, 546],
+    budget: 1200,
+    expect: { ticks: { max: 400 } },
+  },
+  {
     name: 'truefort-spawn-to-intel',
     map: 'ctf_truefort',
     about:
       'Red spawn to the enemy intel on the largest shipped map - the long-route case, and ' +
       'the one where a pruning regression in the jump edge generator would show up first, ' +
-      'since truefort is where NAV_JUMP_DIVERSITY_ROWS was needed.',
+      'since truefort is where NAV_JUMP_DIVERSITY_ROWS was needed. Keep it: it is the only ' +
+      'scenario that covers two stacked jumps in a row - and both of the bugs that made it ' +
+      'a KNOWN failure from the day it was written until 2026-08-21 lived in exactly that: ' +
+      'the follower advancing its route index in mid-air, and navNodeFromWorld flooring the ' +
+      'feet row so a bot on a ramp believed it was a step behind where it stood. Arrives in ' +
+      '2200-2500 ticks with no blacklists now.',
     class: 'CLASS_SOLDIER',
     team: 'red',
     from: [384, 864],
     to: [4962, 864],
     budget: 6000,
-    known:
-      'the bot stalls ~740px short, inside the blue base, and never arrives - measured 262 ' +
-      'off-route events in 6000 ticks, one every ~22 ticks. It is NOT a missing route: ' +
-      'navaudit passes red -> blue intel (n650), and asking navFindPath from where the bot ' +
-      'is standing, with its own team and intel state, returns a 19-node path every time. ' +
-      'So the graph promises a route the follower cannot execute, which is the one class of ' +
-      'bug only this tier can see. Found by the first run of this harness, 2026-08-21.',
+  },
+  {
+    name: 'avanti-ramp-pocket-to-intel',
+    map: 'ctf_avanti',
+    about:
+      'Found by tools/navsuspects.js rather than by watching a bot, and it turned out to be ' +
+      'two bugs stacked on one leg. n251 stands one anchor column from a 54px block whose top ' +
+      '(n229) is the way out; the climb needs 54px of a 57.4px apex, so the character cannot ' +
+      'have moved sideways AT ALL before it is over the top, and the clearance walk treated ' +
+      'that first cell of lateral overlap as fatal instead of as a wall to slide up. With no ' +
+      'edge there, the graph priced this run at 538 cells against a straight line of 76 - the ' +
+      'worst ratio on any shipped map - and sent the bot down a ramp, across the map and back. ' +
+      'On the way it crossed two fall edges whose takeoff end the follower guessed wrong, ' +
+      'walked into a solid block and wedged. Both are fixed (navJumpTakeoff samples the swept ' +
+      'column; falls carry NAV_EDGE_TAKEOFF), and the leg is 538 cells -> 171 and 1032-1288 ' +
+      'ticks -> 263-272. A regression in either shows up here first.',
+    class: 'CLASS_SOLDIER',
+    team: 'red',
+    // n251 is one anchor column wide (x 1626-1626, floor y 840) - the stepped-terrain
+    // shape that navNodeFromWorld's round() fix was about, where the node one row up
+    // is also one column across.
+    from: [1626, 817],
+    to: [1218, 607],
+    // ⚠️ This budget assumes the runner waits out the setup phase (ensureMap ->
+    // pastSetup). ctf_avanti has 63 setup-gated edges, so a run started inside setup is
+    // routed the long way round quite correctly and reads 897+ ticks - which looks like
+    // flake and is not. If this fails only as the first run after a map change, the MCP
+    // server is still holding a cached copy of botscenario.js; reconnect it.
+    //
+    // Measured 272, 268, 263 ticks against a graph price of 171. The budget is set at
+    // roughly twice the measurement rather than at the old 1635: anything near that
+    // figure means the climb out of the pocket is gone again and the bot is walking
+    // the long way round, which is precisely what a passing 1635 hid for four runs.
+    budget: 600,
+    allow: { stuck: 0, blacklisted: 0 },
   },
   {
     name: 'soldier-shells-generator',

@@ -143,6 +143,7 @@ async function start({ repo, clients = 1, map = DEFAULT_MAP, port = 17777, timeo
   // and a test session has no business appearing in a server list.
   if (setIniValue(buildDir, 'Settings', 'UseLobby', 0)) lib.ok('set UseLobby=0 in gg2.ini', quiet);
 
+
   // One clean slate, then nothing else in this function is allowed to kill by
   // image name: every later launch would take the earlier ones with it.
   await lib.stopProcess(GAME_IMAGE);
@@ -164,6 +165,19 @@ async function start({ repo, clients = 1, map = DEFAULT_MAP, port = 17777, timeo
     throw new Error('the server never opened its bridge - see the log tails above');
   }
   started.push({ name: SERVER_NAME, port, role: 'server' });
+
+  // Both games read the same gg2.ini, and [Server] Dedicated=1 makes any game
+  // started from it host on startup - a client included, which then dies over
+  // and over on "Unable to host: Maybe the port is already in use" because the
+  // server already holds HostingPort, with nothing in the bridge log to say so.
+  // This has to happen *here*, not before the server starts: game_init reads
+  // the file and writes it straight back, so the server - dedicated by its
+  // command line, not by the file - stamps Dedicated=1 over anything set
+  // earlier. A client reads 0, writes 0 back, and leaves the file as it found
+  // it.
+  if (clients > 0 && setIniValue(buildDir, 'Server', 'Dedicated', 0)) {
+    lib.ok('set Dedicated=0 in gg2.ini so the clients join instead of hosting', quiet);
+  }
 
   for (let i = 1; i <= clients; i++) {
     const name = `client${i}`;

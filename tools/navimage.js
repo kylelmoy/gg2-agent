@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //=============================================================================
-// navimage.js - draw the nav graph over the map's own art.
+// navimage.js - draw the nav graph over the map's own collision mask.
 //
 // Renders Included Files/<map>.png at native resolution with one bar per node,
 // green if a start point can reach it and red if not. A nav cell is exactly one
@@ -8,6 +8,14 @@
 // the overlay needs no coordinate conversion at all - which is the whole reason
 // this reads the PNG off disk instead of screenshotting the camera. No window
 // resolution cap, no aspect-ratio warping, nothing to stitch.
+//
+// The base layer is the walkmask, not the art (--base art for the art, --base
+// both for the two blended). The graph is built against the mask and nothing
+// else, so the art can only ever agree with the picture by coincidence: it
+// paints scenery nothing collides with, and draws solid geometry as though it
+// were background. koth_valley is the plain case - a dark night scene whose
+// underground is nearly black, in which the two vertical shafts that cost this
+// project a bug are invisible, and which the mask shows at a glance.
 //
 // ⚠️ WHAT THIS IS GOOD FOR, AND WHAT IT WILL LIE TO YOU ABOUT.
 //
@@ -35,9 +43,10 @@ const fs = require('fs');
 const lib = require('./lib');
 const img = require('./image');
 const nav = require('./navgraph');
+const walkmask = require('./walkmask');
 
 const USAGE = `
-navimage.js - the nav graph drawn over the map art
+navimage.js - the nav graph drawn over the map's collision mask
 
   node navimage.js <map|key> <out.png> [options]
 
@@ -50,6 +59,8 @@ navimage.js - the nav graph drawn over the map art
   --crop <x0,y0,x1,y1> map-pixel rectangle to render (default: the whole map).
                        Map pixels are world/6.
   --scale <n>          nearest-neighbour upscale, default 3
+  --base mask|art|both what to draw the graph over (default: mask). The graph
+                       is built against the walkmask; the art is decoration.
   --repo <path>        the Gang Garrison 2 checkout
   --help
 
@@ -78,9 +89,16 @@ function render(key, outPath, opts = {}) {
 
   const seen = g.reach(start, ctx);
 
-  const src = img.decodePng(fs.readFileSync(
+  const base = opts.base || 'mask';
+  if (!['mask', 'art', 'both'].includes(base)) throw new Error(`--base wants mask, art or both, not "${base}"`);
+
+  const art = img.decodePng(fs.readFileSync(
     require('path').join(require('path').resolve(repo), 'Source', 'gg2', 'Included Files', `${g.map}.png`),
   ));
+  const src =
+    base === 'art' ? art
+      : base === 'both' ? walkmask.tint(art, walkmask.decode(g.map, repo))
+        : walkmask.toRgba(walkmask.decode(g.map, repo));
   const { width: W, height: H } = src;
   const rgba = Buffer.from(src.rgba);
   const put = (x, y, r, gr, b) => {
@@ -124,7 +142,7 @@ function render(key, outPath, opts = {}) {
 
 async function main() {
   const { flags, positional } = lib.parseArgs(
-    process.argv.slice(2), ['repo', 'team', 'from', 'crop', 'scale'],
+    process.argv.slice(2), ['repo', 'team', 'from', 'crop', 'scale', 'base'],
   );
   if (flags.help || positional.length < 2) lib.helpAndExit(USAGE);
 

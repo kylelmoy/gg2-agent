@@ -51,12 +51,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
 
 const lib = require('./lib');
+const walkmaskModule = require('./walkmask');
 
 const CACHE_DIR = path.join('Source', 'build', 'botnav');
-const MAP_DIR = path.join('Source', 'gg2', 'Included Files');
 
 const GRID_HEADER = 12;
 const GRID_CELL = 16;
@@ -389,40 +388,30 @@ class NavGraph {
 }
 
 //---------------------------------------------------------------------------
-// The map's own entity list
+// The map's own entity list, and the terrain under it
 //
 // Every built-in map ships as a PNG whose zTXt chunk holds the entity list and
 // a 1-bit walkmask (F21). Entity coordinates are already WORLD coordinates - no
 // x6 conversion, despite the art being 1/6 scale.
+//
+// Both readers live in walkmask.js, which also renders the mask; these two are
+// re-exports so that `nav.levelData`/`nav.walkmask` keep working. There is one
+// decoder, not two - they were written independently on 2026-08-22, from the
+// same GML, and merged the same day.
+//
+// Worth knowing the mask is here before reaching for the game: it is the ground
+// truth every nav question is really about ("is there a wall at the end of this
+// run?", "how tall is that step?"), and it is on disk, so answering one costs no
+// server, no map load and no bridge. Solidity only, though - gates, player walls
+// and drop-through platforms are instances stamped in at build time by
+// navMarkInstances and are NOT here; a cell this calls open can still be closed
+// to a bot.
 //---------------------------------------------------------------------------
 
-const ENTITY_KEYWORD = 'Gang Garrison 2 Level Data';
+const levelData = (map, repo = lib.defaultRepo()) => walkmaskModule.levelData(map, repo);
 
-function levelData(map, repo = lib.defaultRepo()) {
-  const file = path.join(path.resolve(repo), MAP_DIR, `${map}.png`);
-  if (!fs.existsSync(file)) {
-    // A custom (player-uploaded) map has no fixed path on disk. Say so rather
-    // than returning an empty entity list, which reads as "this map has no
-    // objective" and is a much more confusing answer.
-    throw new Error(`no built-in map art for "${map}" (custom maps are not resolvable from disk)`);
-  }
-  const b = fs.readFileSync(file);
-  let o = 8;
-  while (o + 8 <= b.length) {
-    const len = b.readUInt32BE(o);
-    const type = b.toString('ascii', o + 4, o + 8);
-    if (type === 'zTXt') {
-      const data = b.slice(o + 8, o + 8 + len);
-      const z = data.indexOf(0);
-      if (data.toString('latin1', 0, z) === ENTITY_KEYWORD) {
-        // keyword \0 compressionMethod <deflate>
-        return zlib.inflateSync(data.slice(z + 2)).toString('latin1');
-      }
-    }
-    o += 12 + len;
-  }
-  throw new Error(`${map}.png has no "${ENTITY_KEYWORD}" chunk`);
-}
+// { width, height, bits, solid(x, y) } - see walkmask.decode.
+const walkmask = (map, repo = lib.defaultRepo()) => walkmaskModule.decode(map, repo);
 
 function entities(map, repo = lib.defaultRepo()) {
   const txt = levelData(map, repo);
@@ -509,5 +498,5 @@ function spawns(ents, team, c) {
 module.exports = {
   constants, jumpEnvelope,
   cacheDir, listKeys, mapOf, load, NavGraph,
-  levelData, entities, gameMode, objectives, spawns,
+  levelData, walkmask, entities, gameMode, objectives, spawns,
 };
