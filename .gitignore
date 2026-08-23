@@ -5,3 +5,9 @@ tools/*.exe
 tools/*.jar
 
 node_modules/
+
+# Session handoffs and scratch notes: written for the next session, not for the
+# repo. See CLAUDE.md, "Where documentation goes". Ignored here rather than only
+# in a machine-level gitignore, so the convention travels with the checkout -
+# two docs CLAUDE.md told sessions to read were lost to exactly that gap.
+.claude/

@@ -36,22 +36,52 @@ cleanup.js          remove it, and verify with git status
 payload/            copied verbatim into the game's Source/gg2/
   Objects/          AgentBridge and the four AgentSpare objects, with their events
   Scripts/          the GML implementing the bridge
+
+docs/               durable reference; see CLAUDE.md, "Where documentation goes"
+  OPEN.md           what is known to be wrong right now (rewritten, not appended)
+  NAVMETHOD.md      how to investigate bad bot navigation, offline first
+  NAVLOG.md         what each nav generator change measured
+  ROUTEVARIETY.md   route variety: why it went, what a replacement must do
+
 tools/
+  -- driving a running game --
+  gg2-mcp-server.js the MCP server (JSON-RPC over stdio): transport and dispatch
+  mcp-schemas.js    the tool table it advertises - declarations only, no behaviour
+  control.js        a browser control panel for playtesting, over the same tools
+  control-ui.html   the page it serves
   launcher.js       runs the game; clears the modal dialogs that freeze it
   win32.js          the slice of user32 the launcher needs, via koffi
-  gm8directbuild.js builds a .gmk into an .exe with no window and no person
-  gm8directbuild/   the injected DLL and its 32-bit injector, with sources
-  gg2-mcp-server.js the MCP server (JSON-RPC over stdio)
   instances.js      the register of running games, so they can be named
   session.js        a dedicated server and its clients, started together
-  events.js         reading, writing and searching the GML inside object events
+
+  -- building --
+  gm8directbuild.js builds a .gmk into an .exe with no window and no person
+  gm8directbuild/   the injected DLL and its 32-bit injector, with sources
   gamedata.js       reads and rewrites the gamedata inside a built exe
+  events.js         reading, writing and searching the GML inside object events
   gml-lint.js       checks GML against the installed Game Maker 8
+  gml-extensions.txt  the .gex functions the linter cannot discover on its own
   gmlerror.js       turns a GM8 error dialog back into file:line
-  image.js          turns what screen_save wrote into a PNG
   payload.js        what the payload consists of, so inject and cleanup agree
+
+  -- the bot nav graph, offline --
+  navgraph.js       the cache reader and the model: coordinates, gates, reachability
+  navaudit.js       can a bot path from spawn to the objective, on every map
+  navsuspects.js    which routes are long enough to be worth watching a bot on
+  navimage.js       the graph drawn over the map's collision mask
+  walkmask.js       the one decoder for what a map is made of
+
+  -- pictures --
+  mapimage.js       one map picture, drawn one way: base layer, node bars, scale
+  areashot.js       a live screenshot bigger than one window, tiled and stitched
+  image.js          turns what screen_save wrote into a PNG
+
+  -- behaviour --
+  botscenario.js    live bot scenarios: does a bot still WALK the route it planned
+  bot-scenarios.js  the scenarios themselves - edit this one, not the runner
+
   selftest.js       exercises all of the above against a fake game
-  lib.js            shared helpers (file edits, tool discovery, processes)
+  lib.js            shared helpers (file edits, tool discovery, processes, paths)
 ```
 
 Every script is a plain module as well as a CLI — which is how the MCP server's

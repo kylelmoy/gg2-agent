@@ -23,6 +23,7 @@ node build-agent.js     # full build - drives GM8 headlessly            (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
 node tools/botscenario.js # do bots still WALK those routes?              (~1min)
+node tools/control.js   # a browser control panel, for playtesting by hand
 ```
 
 `build-agent.js` used to be the one step that needed a person: Game Maker 8 has
@@ -92,7 +93,12 @@ the second is "what is actually happening on the map right now."
   22) and, if asked, plots the bot nav graph on top: a directed BFS from a start point
   (a bot's own position by default), green if reached and red if not, one bar per node.
   A nav cell is exactly one map pixel (F10's ×6 world-scale constant is the same
-  `NAV_CELL_SIZE`), so the overlay needs no coordinate conversion. This is what
+  `NAV_CELL_SIZE`), so the overlay needs no coordinate conversion. **The drawing itself
+  is `tools/mapimage.js`, shared with `navimage.js`** — the same picture was being built
+  twice and had drifted apart by 2026-08-22, the live overlay drawing each node's span to
+  `x1` where the offline one drew it to `x1 + NAV_BOX_W - 1`. A node's span is in *anchor*
+  columns (the left edge of the body box), so the second is right and every surface in the
+  live overlay was reading three cells short. Selftest now pins the geometry. This is what
   root-caused a real `navJumpFlight` bug (2026-08-20 — a steep jump-up was being
   rejected; see `Gang-Garrison-2`'s bot plan for the detail): a screenshot answered in
   one look what used to take a dozen `gg2_eval` round-trips summing edges by hand, and
@@ -218,6 +224,20 @@ is the same address; and `UseLobby` must be 0 or a dedicated server announces
 itself to the public lobby. `gg2_session` handles all three. Both games share one
 `gg2.ini` and one working directory — only the logs are separated, by port.
 
+### Driving it by hand, rather than by call
+
+`node tools/control.js` serves a browser control panel on `localhost:7311`: freeze,
+teleport, set the bot count, change map. The MCP tools are shaped for an agent — one call,
+one answer — and playtesting wants the opposite, so this exists alongside them rather than
+instead of them. It drives the game through the MCP server's own `callTool`, so the
+framing, the request ids and the wedged-bridge recovery are the same code.
+
+⚠️ **The bridge serves one client at a time**, and this process is a client. It and an
+editor's MCP session cannot both hold a game — whoever is second is queued in the accept
+backlog forever, which presents as every call timing out for no stated reason. `/api/release`
+(there is a button) drops this process's sockets so an agent can take the game back without
+stopping the panel; the next request from the page reconnects.
+
 ### The spare objects, and the spare scripts
 
 `AgentSpare0..3` are blank objects built into the executable. `build-fast.js` can
@@ -252,7 +272,7 @@ So: experiment with `gg2_eval`, write the result into the source, and
 
 ### Investigating bad bot navigation
 
-`NAVMETHOD.md` is the loop, written to be repeated: sweep offline with `navsuspects`, read
+`docs/NAVMETHOD.md` is the loop, written to be repeated: sweep offline with `navsuspects`, read
 the route, read the mask, then run it live and let `ticks / travel` say whether the route
 is long or the bot is broken. It also carries the two rules that have saved the most
 damage - model a generator change in Node before building it, and A/B it against rebuilt
@@ -411,6 +431,36 @@ executable.
 `node tools/gamedata.js selftest "<exe>"` proves the unpack/repack round-trip is
 byte-identical; run it if you suspect the splicer.
 
+## Where documentation goes
+
+Four kinds of writing, and only three of them are checked in. Sessions that skip this
+step leave notes at the repo root that read like reference material and are not, or in
+`.claude/`, which is gitignored — so the next session is told to read a file that no
+longer exists anywhere.
+
+| Kind | Lives | Rule |
+|---|---|---|
+| **Entry points** — `README.md`, `CLAUDE.md`, `GML.md` | repo root | Edited in place. Anything a session must know *before* it starts belongs in one of these, not in a new file. |
+| **Durable reference** — a method, a format, a measured result | `docs/` | One file per subject, named for the subject. Add to the matching file; a new one needs a subject no existing file covers. |
+| **What is open right now** | `docs/OPEN.md` | **Rewritten, not appended.** An item leaves when it is fixed — the record of the fix is the commit. |
+| **A session handoff** — "here is where I got to, go and look at X" | `.claude/notes/` | Gitignored and disposable. Write these freely; they are for the next session, not for the repo. |
+
+**A handoff is not documentation.** It is a message to one reader, with a shelf life of
+one investigation. When the investigation ends, exactly one of two things happens to it:
+
+- what it established that stays true gets **promoted** — into `docs/`, into `GML.md`, or
+  into the header comment of the tool it is about, which is where this repo keeps most of
+  its reasoning and where it is hardest to miss;
+- everything else is **deleted**, because git has it.
+
+What earns promotion is a measurement, a format, or a rule that will still be true next
+month: "the cache is column-major with the double four bytes in", "reachability went
+13/270 to 150/270 when takeoffs stopped being pinned to the end of a run". What does not
+is narrative — what was tried, in what order, and how it felt.
+
+If you are asked for a handoff document, write it to `.claude/notes/` and say so. Do not
+put it at the repo root; nothing there is disposable.
+
 ## Writing GML for this game
 
 This is Game Maker 8 (2008), not modern GameMaker. Your training data is mostly
@@ -500,6 +550,14 @@ modules against a fake bridge and a scratch copy of the tree, in about three
 seconds and with no Game Maker anywhere. Run it after changing anything under
 `tools/`.
 
+The offline nav layer is covered against a **synthetic** graph written by the test
+itself — four ledges, one deliberately one-way edge, one gated node — because a real
+map's cache can only ever be checked against the reader that produced the expectation.
+That is what pins the `ds_grid_write` column-major layout, the gate table (including the
+CTF return leg, where carrying intel closes your *own* team gate), and the overlay bar
+geometry. It also asserts that every tool in `mcp-schemas.js` has a `case` in `callTool`
+and vice versa, since the table and the behaviour are now in separate files.
+
 ## Error handling has no safety net
 
 GM8 has no exceptions. A GML error raises a **modal dialog** that freezes the
@@ -549,7 +607,7 @@ exactly what broke.
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher
   forcing focus with `AttachThreadInput`/`SetForegroundWindow` - was tried and
-  failed with access-denied/invalid-parameter errors (see the HANDOFF.md at
+  failed with access-denied/invalid-parameter errors (see the HANDOFF.md at repo root as of
   commit `efedf8b` for the detail, before trying it again). Expect a ~10s
   timeout and no effect. `press`/`click` do not depend on focus and work fine.
 - **A frozen game's own instances cannot be read by field while they stay
