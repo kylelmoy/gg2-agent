@@ -809,7 +809,7 @@ async function main() {
     check('tinting solids leaves open space alone', openPx(solidOnly, 0, 0) === 0);
     check('and paints the solid ones', openPx(solidOnly, 4, 1) === walkmask.SOLID[0], String(openPx(solidOnly, 4, 1)));
 
-    // Six world pixels to the mask cell, always (navSolidityBuild): a live shot
+    // Six world pixels to the mask cell, always (NAV_CELL_SIZE): a live shot
     // is tinted through that scale and an offset, and getting either wrong puts
     // the geometry somewhere it is not.
     const shot = { width: 12, height: 12, rgba: Buffer.alloc(12 * 12 * 4, 0) };

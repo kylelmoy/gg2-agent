@@ -1,8 +1,10 @@
 //=============================================================================
 // navgraph.js - read and reason about the bot nav graph, without a running game.
 //
-// Every map a Gang Garrison 2 server has loaded leaves its whole nav graph on
-// disk, at Source/build/botnav/<map>_a<area>.txt (navCacheSave.gml). That file
+// A Gang Garrison 2 nav graph lives on disk, at
+// Source/build/botnav/<map>_a<area>.txt, written by gg2-nav-gen and read by the
+// game's navCacheLoad.gml. (Servers used to write these themselves; the
+// generator has since moved out of the game entirely.) That file
 // plus the map's own PNG is enough to answer "can a bot get from its spawn to
 // the objective on this map" with no game, no agent bridge, and no map rotation
 // - which is the fastest possible answer to "why are the bots standing still",
@@ -403,9 +405,9 @@ class NavGraph {
 // truth every nav question is really about ("is there a wall at the end of this
 // run?", "how tall is that step?"), and it is on disk, so answering one costs no
 // server, no map load and no bridge. Solidity only, though - gates, player walls
-// and drop-through platforms are instances stamped in at build time by
-// navMarkInstances and are NOT here; a cell this calls open can still be closed
-// to a bot.
+// and drop-through platforms are instances stamped in at generation time by
+// gg2-nav-gen's instances.js and are NOT here; a cell this calls open can still
+// be closed to a bot.
 //---------------------------------------------------------------------------
 
 const levelData = (map, repo = lib.defaultRepo()) => walkmaskModule.levelData(map, repo);

@@ -31,8 +31,8 @@
 // collision_point against the live CollisionDummy.
 //
 // ⚠️ Solidity only. Gates, player walls and drop-through platforms are instances,
-// stamped into the graph at build time by navMarkInstances, and are NOT here: a
-// cell this calls open can still be closed to a bot.
+// stamped into the graph at generation time by gg2-nav-gen's instances.js, and
+// are NOT here: a cell this calls open can still be closed to a bot.
 //
 // This is the one decoder. navgraph.js reads the same chunk for the entity list
 // and re-exports levelData/walkmask from here rather than keeping a second copy
@@ -161,7 +161,7 @@ function toRgba({ width, height, bits }) {
 // `cell` is how many of the image's pixels one mask cell covers, and
 // origin is where the image's top-left corner sits in those same units - so
 // map art is cell 1 at (0, 0), and a live screenshot is cell NAV_CELL_SIZE (6,
-// always: see navSolidityBuild) at the world coordinate the capture started
+// always: it is NAV_CELL_SIZE) at the world coordinate the capture started
 // from. That is the whole coordinate conversion, and it is exact in both
 // directions rather than a resample.
 // `only: 'solid'` leaves open space exactly as it came, which is what a

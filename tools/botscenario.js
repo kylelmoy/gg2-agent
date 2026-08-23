@@ -189,6 +189,11 @@ async function probe(call, inst, code) {
 // already there. Waiting on navBuildState alone races: it is still 9 from the
 // previous map for a frame or two before navServerTick notices the key changed,
 // so the key has to be part of the condition.
+//
+// A timeout here usually means the map has no nav graph on disk rather than that
+// the map change failed - the game loads graphs and no longer builds them, so a
+// map gg2-nav-gen has not been run over never reaches state 9. Run
+// `gg2navgen build --all`.
 async function ensureMap(call, inst, map) {
   const now = await evalExpr(call, inst, 'global.currentMap');
   if (String(now).trim() === map) {

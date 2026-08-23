@@ -418,9 +418,11 @@ async function changeMap(where, name, wait) {
 
   if (!wait) return 'switching to ' + name + ' in ' + (MAP_CHANGE_TICKS / 30).toFixed(1) + 's';
 
-  // The nav graph is rebuilt from scratch on arrival and the bots are useless
-  // until it is: navBuildState 9 is done. Generous budget - truefort is the
-  // big one. (Matches what botscenario.js waits for.)
+  // The nav graph is loaded on arrival and the bots are useless until it is:
+  // navBuildState 9 is done. That is a single file read now rather than the
+  // multi-second build it used to be, but the budget stays generous because the
+  // wait is really on the map change. A map gg2-nav-gen has not been run over has
+  // no file, never reaches 9, and times out here. (Matches botscenario.js.)
   await mcp.callTool('gg2_wait', {
     instance: where.name,
     expr: 'global.navKey == "' + name + '_a1" and global.navBuildState == 9',

@@ -314,24 +314,28 @@ exactly like the edit doing nothing.
 
 ## Warming the cache
 
-Every A/B needs all 21 graphs rebuilt, and that is one call per map, cycling a dedicated
-server through the rotation:
+Every A/B needs all 21 graphs rebuilt. That is now one command:
 
-```
-gg2_wait  setup: 'global.currentMapArea = 1; serverGotoMap("<map>");'
-          expr:  'global.navKey == "<map>_a1" and global.navBuildState == 9'
-          frames: 3600
+```powershell
+node ..\gg2-nav-gen\bin\gg2navgen.js build --all
 ```
 
-`cp_dirtbowl` needs `currentMapArea = 2` for its second stage. Waiting on `navBuildState`
-alone races - it is still 9 from the previous map for a frame or two.
+About 0.4 seconds for all 24 graphs, every stage of every map, straight from the map
+PNGs with no game running.
 
-It is the most mechanical part of the loop and the thing most likely to tempt you into
-skipping an A/B. **It wants to be a tool** (an MCP one - the bridge serves one client and
-an editor session holds it). Until it is, budget four minutes.
+This section used to read: *one call per map, cycling a dedicated server through the
+rotation, budget four minutes, and it wants to be a tool*. It became one. The generator
+was ported out of the game into `gg2-nav-gen` and then removed from the game, so there is
+no longer any way to build a graph from inside a running server, and no longer any reason
+to want one.
 
-A full `build-agent.js` wipes `Source/build`, cache included. Copy `build/botnav`
-somewhere first if you have just spent four minutes warming it.
+What that changes for the A/B loop above: the "edit the GML, rebuild, re-warm, compare"
+cycle is now "edit `gg2-nav-gen/src/`, `build --all`, compare" - no Game Maker build at
+all unless the *follower* changed. `gg2navgen verify --all` does the comparison itself,
+map by map, and names every graph that moved.
+
+A full `build-agent.js` still wipes `Source/build`, cache included; just run `build --all`
+again afterwards rather than copying it somewhere first.
 
 ---
 

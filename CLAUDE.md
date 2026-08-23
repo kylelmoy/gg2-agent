@@ -329,8 +329,9 @@ and `walkmask` from it rather than keeping a second copy, so `nav.entities`,
 read one implementation. `decode()` hands back `{ width, height, bits,
 solid(x, y) }`: the buffer for whole-image work, the bounds-checked accessor for
 asking about a handful of cells. Solidity only - **gates, player walls and
-drop-through platforms are instances, not mask**, stamped into the graph by
-`navMarkInstances`, so a cell the mask calls open can still be closed to a bot.
+drop-through platforms are instances, not mask**, stamped into the graph at
+generation time by `gg2-nav-gen`'s `instances.js`, so a cell the mask calls open
+can still be closed to a bot.
 
 ### Behaviour scenarios (`tools/botscenario.js`)
 
@@ -399,7 +400,25 @@ sixteen-byte cells and the double four bytes in, not packed doubles. `navgraph.j
 documents it; do not re-derive it by hand.
 
 ⚠️ **A full `build-agent.js` wipes `Source/build/`, and the nav cache with it.**
-Re-warm it by cycling a dedicated server through the rotation:
+Re-warm it with `gg2-nav-gen`, which is one command and about half a second:
+
+```powershell
+node ..\gg2-nav-gen\bin\gg2navgen.js build --all
+```
+
+This used to mean cycling a dedicated server through the whole rotation and
+waiting for each map to build - four minutes of the most mechanical work in the
+loop. **The game does not build nav graphs any more**; the generator lives in
+`gg2-nav-gen` and `Scripts/BotNav/` keeps only `navCacheLoad` and the search.
+
+⚠️ **A map with no cache file is a map with no bot navigation.** `global.navReady`
+stays false, bots stand perfectly still, and any wait on `navBuildState == 9` sits
+there until it times out. That is now the first thing to check when bots do
+nothing on a map that used to work - `node tools/navaudit.js` answers it offline
+in a second. The server retries the load every five seconds, so generating the
+file while it is running is enough; no restart, no map change.
+
+The map-change wait itself is unchanged and still needs the key in it:
 
 ```
 gg2_wait  setup: 'global.currentMapArea = N; serverGotoMap("<name>");'
