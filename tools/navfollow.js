@@ -238,6 +238,11 @@ function analyse(g, p, opts) {
     // Two takeoff speeds, both capped by the gate: the follower refuses to leave
     // while it is going faster than the arc asks for.
     const cap = needVx + c.BOT_JUMP_VTOL;
+    // Scored WITHOUT the six px of intra-cell lead botPathKeys allows itself, to
+    // match gg2-nav-gen's canFly - see the note there for why the generator does
+    // not spend it. This is deliberately the pessimistic reading: it asks whether
+    // the arc works for a bot that jumps the moment it reaches the takeoff
+    // column, which is the bot BOT_TAKEOFF_PATIENCE eventually produces.
     const vBest = Math.min(runupSpeed(runupCols * cell, p), cap, p.maxSpeed);
 
     const best = flyJump(needVx, ticks, vBest, p);

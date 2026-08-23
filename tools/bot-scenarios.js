@@ -276,6 +276,19 @@ const SCENARIOS = [
     // crosses several marginal arcs and blacklisting one, re-planning and arriving is a
     // healthy outcome. It is never arriving that this scenario is about.
     expect: { ticks: { max: 800 } },
+    // WARNING: this leg is a coin flip, and its verdict must not be used as an A/B
+    // signal. Run in isolation on one unchanged build it measured 2/5 and then 1/6, with
+    // passes at 123-319 ticks and failures all landing 222-259px short. The failures
+    // repeat IDENTICAL (px short, replans, offRoute) triples, so they are not independent
+    // samples of a random process either - something in the entry state decides it and
+    // then plays out the same way every time.
+    //
+    // It was believed on 2026-08-23 and cost a wrong revert: a 275 -> 530 -> never-arrived
+    // sequence read as a regression from a change to the takeoff gate that turned out to
+    // be innocent. Use valley-shaft-floor-to-point or oldfort-perch-reroutes to compare
+    // builds, take n >= 5, and settle anything about the GRAPH offline instead, where the
+    // measurement is deterministic. What this scenario is still good for is the thing it
+    // was written for: if it fails on EVERY run, the takeoff machinery is broken.
   },
   {
     name: 'soldier-shells-generator',
@@ -355,6 +368,71 @@ const SCENARIOS = [
     // this scenario is about, and on a 216px-wide platform it is not stable
     // enough to assert.
     expect: { acquired: true, damage: { min: 1 } },
+  },
+  {
+    name: 'atalia-ground-to-point',
+    map: 'dkoth_atalia',
+    about:
+      'The ascent slot in the jump quota, and the map that proved it was needed. dkoth_atalia shipped with BOTH ' +
+      'control points unreachable by either team - on a mode where standing on the point IS the goal - and it ' +
+      'was not a geometry bug: navJumpTakeoff proved the 54px climb off the ground onto the point stepped ' +
+      'left face perfectly, and NAV_JUMP_MAX_PER_SIDE then threw the edge away. Cost is charged in flight ' +
+      'ticks, so a climb hangs ~17 ticks to gain 54px where a step down is over in 8; the ground beside the ' +
+      'point fans onto four steps DOWN (rows 204-207), spends its diversity slot on a fifth at row 214, and ' +
+      'drops the one candidate that climbs - the point itself - as the 6th cheapest at 23.20 against 22.87. ' +
+      'One reserved slot for the cheapest ascending landing fixes it, and across all 24 shipped graphs only ' +
+      '6 node-sides of 19,902 claim that slot, two of them being these two points. The route here is exactly ' +
+      'three hops - n153 -> n133 -> n127 -> n123 - and the first of them is the recovered edge. If the ascent ' +
+      'slot regresses, the reachable set for red drops from 240 nodes to 230 and this leg has no route at all.',
+    class: 'CLASS_HEAVY',
+    team: 'red',
+    from: [1300, 1240],
+    to: [1338, 1176],
+    // Three hops over ~70px of ground. The budget is loose because the failure
+    // this guards is "there is no route", not "the route is slow".
+    budget: 600,
+    allow: { stuck: 0 },
+  },
+  {
+    name: 'oldfort-perch-reroutes',
+    map: 'ctf_oldfort',
+    about:
+      'The character veto in the generator, seen from the other side: the bot must decline a shortcut that ' +
+      'was never real and take the long way instead. n41 is a ONE-COLUMN perch on the stepped face of a ' +
+      'block - it overhangs to the left and steps up to the right, so a bot standing on it has nowhere to ' +
+      'back up to and every arc off it leaves at a standstill. The graph used to offer n41 -> n29 at 4.36 ' +
+      'px/tick over 23.4 ticks, which is 102px of plan against the 75px a standing Heavy actually covers, so ' +
+      'the bot flew it, landed short, blacklisted it, and BOT_BLACKLIST_TICKS later got handed the identical ' +
+      'route again. 26% of the nodes on the red side had a cheapest route across an arc like that. gg2-nav-gen now runs ' +
+      'the tick law the follower itself uses over every candidate arc (src/follow.js) and never writes that edge, so ' +
+      'the routes around it go up the perch one step at a time instead. Against the pre-fix graph this leg ' +
+      'never arrives; a pass with blacklisted > 0 means the veto has regressed and a lying arc is back.',
+    class: 'CLASS_HEAVY',
+    team: 'red',
+    // n31 is a 94-cell-wide ledge, so a teleported bot stays on it, and its
+    // CHEAPEST route to the enemy intel is one of the 56 on red side that used
+    // to cross a lying arc. The narrow perch itself (n41, one column) is a bad
+    // start point for a scenario for exactly the reason it is a bad takeoff:
+    // a bot placed on it slides off before it has planned anything.
+    from: [6885, 174],
+    to: [7434, 660],
+    // Measured 1199 ticks against a route the graph prices at 397 cells. The
+    // A/B is the point rather than the figure: against the PRE-veto graph the
+    // same leg reads 1369 ticks, blacklisted 1 (off:44>30 - one of the twelve
+    // arcs navfollow named) and offRoute 28; after it, 1199 with both at zero.
+    // The budget is loose because what is being guarded is the thrash loop -
+    // fly, land short, blacklist, get handed the same route again.
+    //
+    // ⚠️ Re-running this A/B needs a server RESTART between the two graphs, not
+    // just a file swap. navServerTick retries a MISSING cache file every 5s but
+    // never re-reads one it has already loaded, and botscenario skips the map
+    // change when the server is already on that map - so the second half of the
+    // A/B silently measures the first half's graph. It read "blacklisted 1"
+    // twice in a row that way before the restart made it read 0.
+    budget: 1800,
+    // The whole point is that nothing is blacklisted any more: the bot is never
+    // offered the arc it cannot fly, so it never has to discover that in flight.
+    allow: { stuck: 0, blacklisted: 0 },
   },
 ];
 

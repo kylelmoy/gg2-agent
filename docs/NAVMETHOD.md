@@ -39,6 +39,8 @@ geometry you have not looked at.
 
 ⚠️ **A graph only exists on disk once a server has loaded that map.** Warm the cache
 before trusting a sweep to be complete - see *Warming the cache* at the bottom.
+(Since 2026-08-23 the reverse also holds: a running server re-reads the file on every map
+load, so a regenerated graph goes live by returning to the same map. See caveat 3 in §4.)
 
 ---
 
@@ -62,12 +64,15 @@ that asks for most of that ceiling has no surplus at all.
 
 Two things follow, and both are worth knowing before reading any output:
 
-- **The run-up is the source node.** Backing up is clamped into that node's own columns,
-  so a ONE-COLUMN node offers none and every arc off it starts from a standstill. That is
-  why the tool prints `best` (full run-up) and `worst` (standstill) - an edge that fails at
-  `best` is a lie for everyone; one that only fails at `worst` is the intermittent kind,
-  flown by a bot with room to run and missed by a bot that has just landed there. And even
-  `best` is short: `BOT_RUNUP_CELLS` is 36px, which buys a Heavy 86% of its cap, not its cap.
+- **The run-up is a fact about the map, not about the bot.** Backing up follows WALK edges
+  out of the source node (it used to be clamped into that node's own columns, which was a
+  bug and is fixed), so what a takeoff column offers is however much continuous floor lies
+  behind it. A one-column perch that overhangs in the direction it is jumping still offers
+  nothing - not because of a clamp, but because there is nowhere to go. That is why the
+  tool prints `best` (full run-up) and `worst` (standstill) - an edge that fails at `best`
+  is a lie for everyone; one that only fails at `worst` is the intermittent kind, flown by
+  a bot with room to run and missed by a bot that has just landed there. And even `best` is
+  short: `BOT_RUNUP_CELLS` is 36px, which buys a Heavy 86% of its cap, not its cap.
 - **The graph is class-blind and the classes are not the same bot.**
   `basemaxspeed = baseRunPower * baseControl / (baseFriction - 1)`, so Heavy tops out at
   4.53 px/tick and Scout at 7.93. `NAV_JUMP_VX` is 4.53 - it *is* Heavy's ceiling - and the
@@ -82,7 +87,7 @@ arc; the bot flies it, lands elsewhere, blacklists it, and `BOT_BLACKLIST_TICKS`
 handed the identical route again. So the number `navfollow` prints is *how many nodes have a
 cheapest route across an arc this class cannot fly*, which is the population that will thrash.
 
-Measured 2026-08-23:
+Measured 2026-08-23, before the generator was taught to check:
 
 | map | class | unflyable jump edges | routes crossing one |
 |---|---|---|---|
@@ -91,6 +96,69 @@ Measured 2026-08-23:
 | koth_gallery | heavy | 105 / 1618 | 23% |
 | koth_gallery | soldier | 62 / 1618 | 0% |
 | koth_gallery | scout | 0 / 1618 | 0% |
+
+✅ **All of these are now zero, and the fix was upstream.** `gg2-nav-gen/src/follow.js`
+is this same model inside the generator: `jumpEdges` hands every candidate arc to a Heavy
+before offering it, so an arc whose speed no character can build is never written to the
+cache at all. Across all 24 graphs that removed 293 jump edges and kept 174 others in the
+slots they freed, and **navfollow now reports 0 unflyable-at-best-run-up on every map for
+every class** - ctf_oldfort's 26% of routes, cp_dirtbowl's 8% and ctf_orange's 4% with it.
+Live A/B on one oldfort leg: 1369 ticks with `blacklisted 1 (off:44>30)` and `offRoute 28`
+before, 1199 with both at zero after.
+
+What that changes for this document: **navfollow is now a regression check, not a survey.**
+A non-zero count means the generator and the follower have stopped agreeing - most likely
+because one of `runupCols` (generator) and `runupAvailable` (this tool) moved without the
+other. They agreed on all 66,553 jump edges when the filter went in, and that equality is
+the thing worth re-running:
+
+    node tools/navfollow.js --class heavy      # every map: expect 0 unflyable
+
+### The intra-cell six pixels: kept in the follower, refused in the graph
+
+A nav column is not a point. `navAnchorCol` is `floor(x / NAV_CELL_SIZE) - NAV_BOX_W div 2`
+so a whole six-px cell resolves to one anchor column, and `navColWorldX` hands back the NEAR
+end of it. A bot on the takeoff column is somewhere in that band and `jumpNeed` assumed the
+near end.
+
+**In `botPathKeys` that is now credited** (`takeoffLead`), and it is sound: the in-flight
+tracker aims at an ABSOLUTE world x anchored at the column, so leaving further along does
+not move the landing point, it just leaves less ground to cover. Only ever a credit, never a
+debit, clamped to one cell.
+
+**In the generator it is deliberately NOT credited**, and that is the interesting half.
+Crediting it there - plus the extra cell of floor the bot accelerates over to earn it -
+hands back 209 of the 293 arcs the veto refuses. Measured against a bot that gets no lead,
+that relaxed graph puts ctf_oldfort back to **18% of red's routes crossing an arc it cannot
+fly** (0% without), cp_dirtbowl to 7%, ctf_orange to 4%. Those arcs are flyable only by a bot
+that drifts to the far side of its cell first, and `BOT_TAKEOFF_PATIENCE` fires a jump after
+60 ticks whether it has or not. So the graph keeps the conservative line - an arc is honest
+when the run-up the NODE offers is enough - and the lead is margin on top of it.
+
+⚠️ **Both halves of that were nearly decided on noise, and this is the lesson.**
+`gallery-pit-climb` read 275 -> 530 ticks and then a hard failure, which looked exactly like
+a regression from the follower change and caused it to be reverted. Re-run in isolation on
+the same build it measures **2/5 and then 1/6** - the leg is a coin flip, and its failures
+repeat identical `(px short, replans, offRoute)` triples, so they are not even independent
+samples. `valley-shaft-floor-to-point` looked like a 162 -> 212 regression; six runs of the
+baseline gave 165/162/154/**208**/163/159. **Take n>=5 on any leg before believing a
+difference, and prefer the low-variance legs as discriminators.** The graph question above
+was settled offline instead, where the measurement is deterministic.
+
+The `only from a standstill` column is NOT covered by the filter and is still worth
+reading. The generator guarantees the arc works with the run-up the source node offers; a
+bot that has just landed on the takeoff column and jumps again without backing up gets
+less. That is a follower-timing question, not a lying edge.
+
+⚠️ **navfollow SKIPS an edge whose landing run straddles the takeoff column** (`dir === 0`,
+"no crossing to fly"), and anything reusing its model as a FILTER has to skip them too. The
+first version of the generator veto did not: it took the near column on the fan's sweep
+side, which for a straddling run is the far side of a node the bot is already standing
+under, and so asked an 18px near-vertical hop onto the ledge overhead to cover 102px. That
+silently deleted all ten arcs of koth_gallery's pit climb - a map navfollow scored 0 on,
+before and after, because it never looked at those edges. **The offline sweeps were all
+green and only `botscenario` caught it.** The rule is botPathKeys' own: the ground to cover
+is zero when the landing run already spans the takeoff column.
 
 The live check on the same leg (`koth_gallery`, 1102,906 -> 1228,738): Scout 101 ticks and
 nothing blacklisted; Heavy and Soldier never arrive inside 1200, blacklisting exactly the
@@ -135,6 +203,49 @@ at that part of the map.
    resolve perfectly well against the current graph - to the wrong surfaces. Events naming a
    pair that is not an edge in the loaded graph are held out and counted, but `--reset` then
    `--since` is the way to be sure.
+
+---
+
+## 0d. When the graph is right and the QUOTA threw the answer away
+
+`navaudit` said dkoth_atalia's control points were unreachable by either team - on a mode
+where standing on the point is the whole game. `--gaps` said the nearest reachable node was
+directly below the point with a 54px rise, inside the 57.4px envelope and marked *"inside
+the jump envelope, barely"*. So the arc was makeable and the graph did not have it.
+
+**It was not a geometry bug. `navJumpTakeoff` proved that arc perfectly** - the edge was
+built, costed, and then dropped by `NAV_JUMP_MAX_PER_SIDE`. Worth knowing because steps 1-3
+above cannot see it: the graph is not missing an arc it failed to prove, it is missing an
+arc it proved and did not keep, and nothing that reads the finished graph can tell those
+apart.
+
+The way to see it is to replay the fan for one node and one side, printing every provable
+candidate with its cost and marking who survives the selection loop. ~60 lines against
+`gg2-nav-gen/src`, and it says this immediately:
+
+```
+n153 row 202 cols 204-229
+dir +1 right: 9 provable candidates
+  n157  row 204  cost 14.49  KEPT          <- a step DOWN
+  n159  row 205  cost 15.69  KEPT          <- the next step down
+  n161  row 206  cost 16.74  KEPT
+  n165  row 207  cost 17.70  KEPT
+  n189  row 214  cost 22.87  KEPT (bonus)  <- further down still
+  n133  row 193  cost 23.20  dropped       <- THE CONTROL POINT
+```
+
+**The bias is structural, not a tuning accident.** Cost is charged in flight ticks, and a
+climb is systematically the dearer candidate: it hangs ~17 ticks in the air to gain 54px
+where a step down is over in 8. So "cheapest few" selects *against* the one direction a
+jump edge exists for - walk and fall already go down. The diversity slot does not save it,
+because it measures rows apart rather than up versus down, and a descending staircase
+satisfies that test just as well.
+
+The fix is a second reserved slot for the cheapest ascending landing, claimed only by a
+side that would otherwise keep no upward jump at all. **Sweep for the population before
+writing it**: across all 24 shipped graphs that is 6 node-sides out of 19,902, so it adds
+six edges and removes none - and two of the six were atalia's two control points. Predict
+the delta, then check the build produced exactly that delta and nothing else.
 
 ---
 
@@ -236,7 +347,7 @@ blacklisted 2 (off:248>221@135015, off:244>221@135084)
 `off` = finished the move off its route, `stk` = the stuck detector, `thr` = re-planned
 twice in the same spot. Take the endpoints straight to `--node` and `--mask`.
 
-⚠️ **Two ways a live run lies, both found the hard way:**
+⚠️ **Three ways a live run lies, all found the hard way:**
 
 1. **A round starts in setup and the setup gates are SHUT.** ctf_avanti has 63 setup-gated
    edges, so the first run after a map change is routed the long way round, entirely
@@ -245,6 +356,22 @@ twice in the same spot. Take the endpoints straight to `--node` and `--mask`.
    `not areSetupGatesClosed()` yourself.
 2. **The MCP server caches its modules.** Editing `bot-scenarios.js` or `botscenario.js`
    has no effect until the connection is restarted.
+3. ~~**So does the running server, for the nav cache.**~~ **Fixed 2026-08-23 - a map LOAD
+   now reloads the graph.** It used to be that `navServerTick` compared `navCacheKey()`,
+   which is the map's *identity*, so re-loading the same map changed nothing and the server
+   went on pathing against the copy it read the first time. Swapping graphs under a running
+   server for an A/B then measured the first half's graph twice: the oldfort leg read
+   `blacklisted 1` on a graph that no longer contained the edge being blacklisted.
+   `CustomMapProcessLevelData` now bumps `global.navMapGen` on the one line that brings a
+   map's collision geometry into existence, and `navServerTick` reloads on either trigger.
+
+   **So the iteration loop is now:** edit `gg2-nav-gen/src`, `build --all`, send the server
+   back to the map it is already on, and the new graph is in play. Verified live by swapping
+   ctf_oldfort's file under a running server: `edges=2144 -> 2149 -> 2144` across two
+   same-map reloads.
+
+   ⚠️ The flip side: **do not touch `botnav/` while a scenario suite is running.** Every map
+   change now re-reads, so an edit mid-suite changes what is being measured.
 
 ---
 
@@ -357,6 +484,8 @@ engine. When something looks refused-but-makeable, suspect these first.
 
 | body box a cell taller than any character | 370 floor cells walled off; 84px of floor priced at 187 cells |
 | arc costed as a constant velocity, flown by an accelerating character | koth_gallery pit: 4.10px/tick over 23.4 ticks is 96px of plan and 75px of Heavy |
+| ...and the run-up that would repay it is a fact about the MAP | ctf_oldfort n41 is a one-column perch: nowhere to back up to, so every arc off it leaves at zero |
+| a quota that ranks on cost, over a cost charged in flight ticks | dkoth_atalia: a climb hangs 17 ticks to gain 54px and a step down is over in 8, so cheapness selects against the only direction a jump is FOR |
 | one graph handed to ten classes with a 75% speed spread | the same leg: Scout 101 ticks, Heavy and Soldier never arrive |
 | ...and then six rows used for arcs too | a landing lead bought by headroom that is not there |
 
