@@ -41,9 +41,8 @@
 const fs = require('fs');
 
 const lib = require('./lib');
-const img = require('./image');
 const nav = require('./navgraph');
-const walkmask = require('./walkmask');
+const mapimage = require('./mapimage');
 
 const USAGE = `
 navimage.js - the nav graph drawn over the map's collision mask
@@ -89,55 +88,29 @@ function render(key, outPath, opts = {}) {
 
   const seen = g.reach(start, ctx);
 
-  const base = opts.base || 'mask';
-  if (!['mask', 'art', 'both'].includes(base)) throw new Error(`--base wants mask, art or both, not "${base}"`);
+  // The base layer is the mask here and the art in gg2_map_image, because the
+  // CLI is reached for to answer a nav question and the tool is reached for to
+  // answer both. Everything past this point is the same picture, drawn once.
+  let picture = mapimage.basePicture(g.map, repo, opts.base || 'mask');
+  mapimage.overlayNodes(
+    picture,
+    Array.from({ length: g.nodeCount }, (_, i) => ({
+      row: g.node[i].row + c.NAV_BOX_H,
+      x0: g.node[i].x0,
+      x1: g.node[i].x1,
+      reached: seen.has(i),
+    })),
+    { repo },
+  );
 
-  const art = img.decodePng(fs.readFileSync(
-    require('path').join(require('path').resolve(repo), 'Source', 'gg2', 'Included Files', `${g.map}.png`),
-  ));
-  const src =
-    base === 'art' ? art
-      : base === 'both' ? walkmask.tint(art, walkmask.decode(g.map, repo))
-        : walkmask.toRgba(walkmask.decode(g.map, repo));
-  const { width: W, height: H } = src;
-  const rgba = Buffer.from(src.rgba);
-  const put = (x, y, r, gr, b) => {
-    if (x < 0 || y < 0 || x >= W || y >= H) return;
-    const i = (y * W + x) * 4;
-    rgba[i] = r; rgba[i + 1] = gr; rgba[i + 2] = b; rgba[i + 3] = 255;
-  };
-
-  // One bar per node, along the row its feet are on. The span is drawn out to
-  // x1 + NAV_BOX_W - 1 because a node's span is in anchor columns (the left edge
-  // of the body) and the body is NAV_BOX_W wide - drawing only to x1 makes every
-  // surface look three cells shorter than a character can actually stand on.
-  for (let i = 0; i < g.nodeCount; i++) {
-    const n = g.node[i];
-    const row = n.row + c.NAV_BOX_H;
-    const ok = seen.has(i);
-    for (let col = n.x0; col <= n.x1 + c.NAV_BOX_W - 1; col++) {
-      put(col, row, ok ? 0 : 255, ok ? 255 : 0, 0);
-    }
-  }
-
-  let out = { width: W, height: H, rgba };
   if (opts.crop) {
     const [x0, y0, x1, y1] = opts.crop.split(',').map(Number);
-    const cw = x1 - x0;
-    const ch = y1 - y0;
-    if (cw <= 0 || ch <= 0) throw new Error('--crop wants x0,y0,x1,y1 with x1>x0 and y1>y0');
-    const buf = Buffer.alloc(cw * ch * 4);
-    for (let y = 0; y < ch; y++) {
-      rgba.copy(buf, y * cw * 4, ((y0 + y) * W + x0) * 4, ((y0 + y) * W + x1) * 4);
-    }
-    out = { width: cw, height: ch, rgba: buf };
+    picture = mapimage.crop(picture, x0, y0, x1, y1);
   }
+  picture = mapimage.scaled(picture, Number(opts.scale || 3));
 
-  const scale = Number(opts.scale || 3);
-  if (scale > 1) out = img.scaleNearest(out.width, out.height, out.rgba, scale);
-
-  fs.writeFileSync(outPath, img.encodePngRgba(out.width, out.height, out.rgba));
-  return { key: g.key, start, reached: seen.size, nodes: g.nodeCount, width: out.width, height: out.height };
+  fs.writeFileSync(outPath, mapimage.toPng(picture));
+  return { key: g.key, start, reached: seen.size, nodes: g.nodeCount, width: picture.width, height: picture.height };
 }
 
 async function main() {

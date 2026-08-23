@@ -78,7 +78,67 @@ function makeScratch() {
   for (const dir of ['Scripts', 'Objects']) {
     fs.cpSync(path.join(realTree(), dir), path.join(TREE, dir), { recursive: true });
   }
+  // navgraph reads NAV_* out of the game's own Constants.xml rather than
+  // carrying a copy, so the scratch tree needs the real one.
+  fs.cpSync(path.join(realTree(), 'Constants.xml'), path.join(TREE, 'Constants.xml'));
 }
+
+//---------------------------------------------------------------------------
+// A synthetic nav graph
+//
+// The cache format is not the obvious one: ds_grid_write is column-major, with
+// sixteen-byte cells and the double four bytes into each. Encoding it here from
+// the field layout the game declares is the only way to check the reader
+// against a graph whose answers are known - a real map's cache can only ever be
+// checked against the reader that produced the expectation.
+//---------------------------------------------------------------------------
+
+function encodeGrid(w, h, cell) {
+  const b = Buffer.alloc(12 + w * h * 16);
+  b.writeUInt32LE(811, 0); // ds_grid_write's own version word; the reader ignores it
+  b.writeUInt32LE(w, 4);
+  b.writeUInt32LE(h, 8);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      b.writeDoubleLE(cell(x, y), 12 + 16 * (x * h + y) + 4);
+    }
+  }
+  return b.toString('hex');
+}
+
+// nodes: [{ row, x0, x1, gate }], edges: [{ from, to, gate, ticks, cost }]
+function writeFakeGraph(key, repo, nodes, edges, maskW = 64, maskH = 32) {
+  const c = require('./navgraph.js').constants(repo);
+  const nodeField = (f, i) => {
+    const n = nodes[i];
+    if (f === c.NAV_NODE_Y) return n.row;
+    if (f === c.NAV_NODE_X0) return n.x0;
+    if (f === c.NAV_NODE_X1) return n.x1;
+    if (f === c.NAV_NODE_GATE) return n.gate ?? c.NAV_GATE_NONE;
+    return 0;
+  };
+  const edgeField = (f, e) => {
+    const r = edges[e];
+    if (f === c.NAV_EDGE_FROM) return r.from;
+    if (f === c.NAV_EDGE_TO) return r.to;
+    if (f === c.NAV_EDGE_TYPE) return r.type ?? c.NAV_EDGE_WALK;
+    if (f === c.NAV_EDGE_TICKS) return r.ticks ?? 10;
+    if (f === c.NAV_EDGE_COST) return r.cost ?? 10;
+    if (f === c.NAV_EDGE_GATE) return r.gate ?? c.NAV_GATE_NONE;
+    return 0;
+  };
+  const text = [
+    `navgraph ${c.NAV_CACHE_VERSION}`,
+    `${maskW} ${maskH} ${nodes.length} ${edges.length}`,
+    encodeGrid(c.NAV_NODE_FIELDS, nodes.length, nodeField),
+    encodeGrid(c.NAV_EDGE_FIELDS, edges.length, edgeField),
+    '',
+  ].join('\n');
+  const dir = path.join(repo, 'Source', 'build', 'botnav');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${key}.txt`), text);
+}
+
 
 //---------------------------------------------------------------------------
 // The fake bridge
@@ -240,7 +300,7 @@ function startFakeBridge(port) {
           } else if (rest.includes('sameErrorEveryFrame')) {
             // The stuck-in-a-loop case: an identical dialog raised several
             // times in a row within one call, the way CTFHUD's Step throws
-            // every frame once global.winners is unbound (see HANDOFF.md).
+            // every frame once global.winners is unbound.
             for (let i = 0; i < 4; i++) {
               appendDialog(port, 'E', [
                 'ERROR in',
@@ -427,7 +487,7 @@ async function main() {
     fs.rmSync(manifestDir, { recursive: true, force: true });
   }
 
-  // HANDOFF.md issue 3: events.js passes [payload, tree] (the payload is
+  // events.js passes [payload, tree] (the payload is
   // checked first, since a bridge file the injected copy would shadow); the
   // MCP server passes [tree, payload]. Two callers in the same process asking
   // about the same project in a different order must land on one cache
@@ -464,7 +524,7 @@ async function main() {
     fs.rmSync(fakePayload, { recursive: true, force: true });
   }
 
-  // HANDOFF.md's lint-gate item: gg2_lint used to pass GML that does not
+  // The lint gate: gg2_lint used to pass GML that does not
   // compile, because it never parsed expression grammar at all. These two
   // checks are narrow on purpose - "what comes right after this operator" and
   // "no bare ; inside a non-for-loop paren" - so this locks both the catch and
@@ -485,7 +545,7 @@ async function main() {
     bad('x = * 5;', 'dangling-operator');
     bad('z = 5 or or 6;', 'dangling-operator');
     bad('return (1 ; 2);', 'semicolon-in-expression');
-    // HANDOFF.md's leftover comma-in-grouping-paren gap: "(" opened right
+    // The comma-in-grouping-paren gap: "(" opened right
     // after an identifier or "]"/")" is a call, and a call's own comma is
     // fine; any other "(" is a bare grouping, where GM8 has no comma operator
     // at all.
@@ -608,7 +668,7 @@ async function main() {
     contains('and message boxes are reported here too', message, 'Assertion 7 failed');
     contains('and it still says how long it waited', message, '300ms');
 
-    // HANDOFF.md: a bridge whose every outstanding call has been given up on is
+    // A bridge whose every outstanding call has been given up on is
     // reconnected before the next one goes out, rather than left for the caller
     // to work out. Dropping the connection is the only thing that reaches a
     // game that has stopped reading - a deferred STEP or WAIT that outlived its
@@ -683,7 +743,7 @@ async function main() {
   contains('waiting returns when the condition holds', await mcp.callTool('gg2_wait', { expr: 'fps > 0', frames: 60 }), 'true after');
   check('and with no setup the wire still carries a (zero) length prefix', seen.includes('WAIT 60 0:fps > 0'), seen.filter((s) => s.startsWith('WAIT')).join(' | '));
 
-  // HANDOFF.md: setup runs once, synchronously, before the first evaluation of
+  // setup runs once, synchronously, before the first evaluation of
   // expr, so a trial's placement and its wait arm on the same call instead of
   // leaving an unknown amount of real game time between two separate ones.
   // The fake bridge does not parse WAIT's rest, so this checks what the JS
@@ -770,6 +830,128 @@ async function main() {
     check('gg2_map_image can draw the mask', Array.isArray(drawn) && drawn[0].type === 'image', JSON.stringify(drawn).slice(0, 80));
     contains('and says which base it used', drawn[1].text, 'base mask');
     contains('and art is still available', (await mcp.callTool('gg2_map_image', { scale: 1 }))[1].text, 'base art');
+  }
+
+  // The nav graph: the cache reader, the gate rules and the overlay geometry.
+  //
+  // All three are pure offline logic - no game, no bridge - and all three were
+  // untested while carrying the trickiest decoding in the repo. A graph built
+  // here has known answers, which a real map's cache never does: checking the
+  // reader against a real map only ever checks it against itself.
+  process.stdout.write('\nnav graph\n');
+  {
+    const nav = require('./navgraph.js');
+    const mapimage = require('./mapimage.js');
+    const c = nav.constants(SCRATCH);
+
+    // Four ledges in a line. 0 <-> 1 <-> 2 both ways, 2 -> 3 one way only: a
+    // component you can enter and not leave, which is the shape of every
+    // asymmetric-edge bug this project has had.
+    const nodes = [
+      { row: 20, x0: 0, x1: 3 },
+      { row: 20, x0: 8, x1: 11 },
+      { row: 20, x0: 16, x1: 19 },
+      { row: 20, x0: 24, x1: 27 },
+    ];
+    const edges = [
+      { from: 0, to: 1 }, { from: 1, to: 0 },
+      { from: 1, to: 2 }, { from: 2, to: 1 },
+      { from: 2, to: 3 },
+    ];
+    writeFakeGraph('faketest_a1', SCRATCH, nodes, edges);
+
+    const g = nav.load('faketest_a1', SCRATCH);
+    check('a cached graph reads back its node and edge counts', g.nodeCount === 4 && g.edgeCount === 5,
+      `${g.nodeCount}/${g.edgeCount}`);
+    check('and every node field lands in the right column',
+      g.node[2].row === 20 && g.node[2].x0 === 16 && g.node[2].x1 === 19,
+      JSON.stringify(g.node[2]));
+    check('and the edge lists are built both ways',
+      g.out[1].length === 2 && g.in[1].length === 2 && g.out[3].length === 0,
+      `out1=${g.out[1].length} in1=${g.in[1].length} out3=${g.out[3].length}`);
+    check('the cache version is checked against the game', g.stale === false, String(g.version));
+
+    check('reach follows edges forwards', g.reach(0).size === 4, String(g.reach(0).size));
+    check('and a one-way edge stays one-way', g.reach(3).size === 1, String(g.reach(3).size));
+    check('and reachBackward finds who can get in', g.reachBackward(3).size === 4, String(g.reachBackward(3).size));
+
+    // Gates are a per-query cost, not baked into the graph: the same graph
+    // answers differently for red, for blue, and for a bot carrying intel.
+    // A gate-blind traversal passed a ctf_conflict that blue cannot cross.
+    check('a team gate opens for its own team',
+      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_RED, false) === true);
+    check('and closes for the other one',
+      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_BLUE, false) === false);
+    check('carrying intel closes your own team gate - the CTF return leg',
+      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_RED, true) === false);
+    check('an intel gate lets its own team through either way',
+      g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_RED, true) === true);
+    check('and blocks the other team only while carrying',
+      g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_BLUE, true) === false
+      && g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_BLUE, false) === true);
+    check('an unknown gate code refuses passage rather than guessing',
+      g.gatePassable(-99, c.TEAM_RED, false) === false);
+
+    // The same rules through reach(): a gated node is unreachable for the team
+    // the gate is against, which is what localises a break to one chokepoint.
+    writeFakeGraph('fakegate_a1', SCRATCH,
+      [{ row: 20, x0: 0, x1: 3 }, { row: 20, x0: 8, x1: 11, gate: c.NAV_GATE_TEAM_RED }],
+      [{ from: 0, to: 1 }]);
+    const gated = nav.load('fakegate_a1', SCRATCH);
+    check('reach honours a gate on the node it arrives at',
+      gated.reach(0, { team: c.TEAM_RED, hasIntel: false }).size === 2
+      && gated.reach(0, { team: c.TEAM_BLUE, hasIntel: false }).size === 1);
+    check('and a gate-blind reach walks straight through it',
+      gated.reach(0, null).size === 2);
+
+    // The overlay geometry, which had drifted into two answers: a node's span
+    // is in ANCHOR columns - the left edge of the NAV_BOX_W-wide body - so a
+    // bar has to run to x1 + NAV_BOX_W - 1 or every surface reads three cells
+    // shorter than a character can stand on. navimage.js and gg2_map_image draw
+    // through this one function now; before 2026-08-22 they disagreed here.
+    const W = 40;
+    const H = 24;
+    const picture = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
+    mapimage.overlayNodes(picture, [
+      { row: 20, x0: 4, x1: 7, reached: true },
+      { row: 12, x0: 20, x1: 21, reached: false },
+      { row: 4, x0: 30, x1: 30, reached: null },
+    ], { repo: SCRATCH, thickness: 1 });
+    const px = (x, y) => Array.from(picture.rgba.slice((y * W + x) * 4, (y * W + x) * 4 + 3));
+    const same = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+    check('a node bar starts at x0', same(px(4, 20), mapimage.REACHED), String(px(4, 20)));
+    check('and runs to x1 + NAV_BOX_W - 1, not x1',
+      same(px(7 + c.NAV_BOX_W - 1, 20), mapimage.REACHED), String(px(7 + c.NAV_BOX_W - 1, 20)));
+    check('and stops there', !same(px(7 + c.NAV_BOX_W, 20), mapimage.REACHED));
+    check('an unreached node is drawn red', same(px(20, 12), mapimage.UNREACHED), String(px(20, 12)));
+    check('and one nothing has asked about is neither',
+      same(px(30, 4), mapimage.UNKNOWN), String(px(30, 4)));
+    check('the bar sits on the feet row and not above it', !same(px(4, 19), mapimage.REACHED));
+
+    // Thickness grows upward, into the body box, which is air - so a thicker
+    // bar can never cover geometry the picture was taken to show.
+    const thick = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
+    mapimage.overlayNodes(thick, [{ row: 20, x0: 4, x1: 7, reached: true }], { repo: SCRATCH });
+    const tpx = (x, y) => Array.from(thick.rgba.slice((y * W + x) * 4, (y * W + x) * 4 + 3));
+    check('the default bar is two rows, drawn upward',
+      same(tpx(4, 20), mapimage.REACHED) && same(tpx(4, 19), mapimage.REACHED)
+      && !same(tpx(4, 21), mapimage.REACHED));
+  }
+
+  // The tool table is data in one file and behaviour in another, so nothing but
+  // a check keeps them in step.
+  process.stdout.write('\nMCP tool table\n');
+  {
+    const src = fs.readFileSync(path.join(__dirname, 'gg2-mcp-server.js'), 'utf8');
+    const missing = mcp.TOOLS.filter((t) => !src.includes(`case '${t.name}':`)).map((t) => t.name);
+    check('every advertised tool has a case in callTool', missing.length === 0, missing.join(', '));
+
+    const cased = [...src.matchAll(/case '(gg2_[a-z_]+)':/g)].map((m) => m[1]);
+    const unlisted = cased.filter((n) => !mcp.TOOLS.some((t) => t.name === n));
+    check('and every implemented tool is advertised', unlisted.length === 0, unlisted.join(', '));
+
+    check('every tool declares a schema and a description',
+      mcp.TOOLS.every((t) => t.description && t.inputSchema && t.inputSchema.type === 'object'));
   }
 
   contains('find sees code inside events', await mcp.callTool('gg2_find', { pattern: 'closestDist' }), '.events/');

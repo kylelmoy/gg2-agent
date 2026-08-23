@@ -186,6 +186,30 @@ const SCENARIOS = [
     budget: 6000,
   },
   {
+    name: 'truefort-blue-spawn-exit-west',
+    map: 'ctf_truefort',
+    about:
+      'The first move of every blue life: out of the spawn shelf (n178) and west over the ' +
+      'hole. It exists because the search used to route this leg wrong for every bot in the ' +
+      'game and nothing noticed for a whole milestone. n178 -> n177 is one direct jump at ' +
+      'cost 33.67; the alternative is three hops across two SINGLE-COLUMN ledges (n196, n195, ' +
+      'six pixels wide each) at 54.67. With the per-bot cost jitter on, every non-zero seed ' +
+      'took the three-hop route - and a bot that misses a six-pixel ledge lands in n310, a pit ' +
+      'whose only exit is walk->n311 behind a BLUE TEAM GATE. navGatePassable closes a team ' +
+      'gate to a carrier, so a red bot or a blue flag carrier that falls in is stuck there ' +
+      'until something kills it. Measured before the fix: 1484 stuck fires and 724 off-route ' +
+      'events, never arriving. After: 58 ticks, nothing flagged. ' +
+      'The jitter is gone (see docs/ROUTEVARIETY.md); this is the regression test that would have ' +
+      'caught it, and it is the one to run first if route variety comes back in any form.',
+    class: 'CLASS_SOLDIER',
+    team: 'blue',
+    from: [3630, 456],
+    to: [3480, 456],
+    budget: 600,
+    allow: { stuck: 0, blacklisted: 0 },
+    expect: { ticks: { max: 300 } },
+  },
+  {
     name: 'avanti-ramp-pocket-to-intel',
     map: 'ctf_avanti',
     about:
@@ -215,7 +239,7 @@ const SCENARIOS = [
     //
     // Measured 352, 354, 438 ticks against a route the graph prices at 205 cells and
     // that is 208 cells to actually walk - a ticks/travel of 1.7, which is mid-band for
-    // this project (see the table in gg2-agent/HANDOFF.md). The budget is set at roughly
+    // this project (see the measured band in gg2-agent/docs/NAVLOG.md). The budget is set at roughly
     // twice the measurement rather than at the old 1635: anything near that figure means
     // the climb out of the pocket is gone again and the bot is walking the long way
     // round, which is precisely what a passing 1635 hid for four runs.

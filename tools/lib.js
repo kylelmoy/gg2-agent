@@ -86,6 +86,27 @@ function defaultRepo() {
   return path.resolve(__dirname, '..', '..', 'Gang-Garrison-2');
 }
 
+// Where the built game, its logs and the instance register live.
+//
+// Every process that talks to a running game has to agree about this or the
+// register resolves to nothing and a call goes to the wrong game (or no game).
+// There were two copies of this with different candidate lists before it moved
+// here; an explicit `repo` wins, then the environment, then the search.
+function findBuildDir(repo) {
+  if (repo) return path.join(path.resolve(repo), 'Source', 'build');
+  if (process.env.GG2_BUILD_DIR) return process.env.GG2_BUILD_DIR;
+  const candidates = [
+    // tools/ -> gg2-agent/ -> a sibling Gang-Garrison-2 checkout
+    path.resolve(__dirname, '..', '..', 'Gang-Garrison-2', 'Source', 'build'),
+    path.resolve(process.cwd(), 'Source', 'build'),
+    path.resolve(__dirname, 'build'),
+  ];
+  return candidates.find((c) => fs.existsSync(c)) || candidates[0];
+}
+
+// The checkout a build directory belongs to - <repo>/Source/build -> <repo>.
+const repoOfBuildDir = (buildDir) => path.resolve(buildDir, '..', '..');
+
 function resolveGg2Tree(repo) {
   if (!fs.existsSync(repo)) throw new Error(`repo not found: ${repo}`);
   const tree = path.join(path.resolve(repo), 'Source', 'gg2');
@@ -321,7 +342,7 @@ function cli(main) {
 module.exports = {
   step, ok, skip, warn, fail, detail, setSink,
   parseArgs, helpAndExit, cli,
-  defaultRepo, resolveGg2Tree,
+  defaultRepo, resolveGg2Tree, findBuildDir, repoOfBuildDir,
   readText, writeText, addBeforeLine, addAfterLine, removeLine,
   insertLineText, removeLineText,
   findTool, run, capture, gitStatus,

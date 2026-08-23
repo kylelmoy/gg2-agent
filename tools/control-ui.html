@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GG2 Control</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel2: #23262f;
+    --line: #313641;
+    --ink: #e6e9ef;
+    --dim: #8b93a3;
+    --accent: #6ea8fe;
+    --red: #d9534f;
+    --blue: #4a8fd4;
+    --warn: #e0a33e;
+    --good: #5cb85c;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* ---- top bar ---- */
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel);
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 14px; margin: 0; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  .spacer { flex: 1; }
+  .pill {
+    font-family: var(--mono); font-size: 12px; padding: 3px 9px;
+    border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
+  }
+  .pill.live   { color: var(--good); border-color: #2d5a2d; }
+  .pill.frozen { color: var(--warn); border-color: #5a4a1e; }
+  .pill.down   { color: var(--red);  border-color: #5a2b2b; }
+
+  /* ---- layout ---- */
+  main { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  section > h2 {
+    margin: 0; padding: 9px 12px; font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line);
+  }
+  .body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* ---- controls ---- */
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row.wrap { flex-wrap: wrap; }
+  label { color: var(--dim); font-size: 12px; }
+  label.w { width: 74px; flex: none; }
+
+  button, select, input {
+    font: inherit; color: var(--ink); background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px;
+  }
+  input[type=number], input[type=text] { font-family: var(--mono); }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: #2a4a7f; border-color: #38609e; }
+  button.wide { flex: 1; }
+  button.big { padding: 10px; font-size: 14px; font-weight: 600; }
+  button.freeze { background: #5a4413; border-color: #7d5f1c; }
+  button.go     { background: #1f4a2a; border-color: #2c6b3c; }
+  input[type=range] { flex: 1; accent-color: var(--accent); padding: 0; background: none; border: none; }
+  .val { font-family: var(--mono); width: 46px; text-align: right; color: var(--accent); flex: none; }
+  .hint { color: var(--dim); font-size: 11px; line-height: 1.45; }
+
+  /* ---- map ---- */
+  #mapwrap { position: relative; line-height: 0; background: #0d0f12; border-radius: 6px; overflow: hidden; cursor: crosshair; }
+  #mapimg { width: 100%; display: block; image-rendering: pixelated; }
+  .dot {
+    position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px;
+    border-radius: 50%; border: 1px solid rgba(0,0,0,.85); pointer-events: none;
+  }
+  .dot.t0 { background: var(--red); }
+  .dot.t1 { background: var(--blue); }
+  .dot.human { width: 13px; height: 13px; margin: -7px 0 0 -7px; box-shadow: 0 0 0 2px #fff; }
+  .dot.sel   { box-shadow: 0 0 0 2px var(--warn); }
+
+  /* ---- roster ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  tr.pick { cursor: pointer; }
+  tr.pick:hover td { background: var(--panel2); }
+  tr.on td { background: #2a2f3d; }
+  td.mono { font-family: var(--mono); color: var(--dim); }
+  .tag { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+  .tag.t0 { background: var(--red); } .tag.t1 { background: var(--blue); } .tag.t2 { background: #666; }
+
+  /* ---- log ---- */
+  #log { font-family: var(--mono); font-size: 11px; max-height: 190px; overflow-y: auto; padding: 10px 12px; margin: 0; white-space: pre-wrap; }
+  #log div { padding: 1px 0; border-bottom: 1px solid #22252c; }
+  #log .err { color: #ff8f8f; }
+  #log .ok  { color: var(--good); }
+  #log time { color: #5c6373; margin-right: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>GG2 Control</h1>
+  <select id="instance" title="Which running game to drive"></select>
+  <span class="pill" id="status">connecting…</span>
+  <span class="pill" id="mapPill">–</span>
+  <span class="pill" id="popPill">–</span>
+  <span class="pill" id="slotPill">–</span>
+  <span class="spacer"></span>
+  <button id="release" title="Drop this panel's connection so an agent can take the game. The next action here reconnects.">Release bridge</button>
+</header>
+
+<main>
+  <div class="col">
+
+    <section>
+      <h2>Clock</h2>
+      <div class="body">
+        <button id="toggle" class="big freeze">Freeze</button>
+        <div class="row">
+          <label class="w">Step</label>
+          <button class="wide" data-step="1">+1</button>
+          <button class="wide" data-step="5">+5</button>
+          <button class="wide" data-step="30">+1s</button>
+        </div>
+        <div class="row">
+          <label class="w">Speed</label>
+          <input type="range" id="speed" min="0" max="20" step="1" value="1">
+          <span class="val" id="speedVal">1×</span>
+        </div>
+        <div class="row"><button id="speedReset" class="wide">Reset speed to normal</button></div>
+        <p class="hint">Space freezes and resumes, <b>.</b> steps a frame. Freezing stops the object
+        that services the network too, so a long freeze on the server makes its clients fall behind
+        and possibly drop — fine for a look, not for a coffee break.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Map</h2>
+      <div class="body">
+        <div class="row">
+          <select id="map" style="flex:1"></select>
+          <button id="mapGo" class="go">Go</button>
+        </div>
+        <p class="hint">Switches the server and every client on it, then waits for the bot nav graph
+        to finish rebuilding — a few seconds on the big maps.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Bots</h2>
+      <div class="body">
+        <div class="row">
+          <label class="w">Count</label>
+          <input type="range" id="bots" min="0" max="24" step="1" value="12">
+          <span class="val" id="botsVal">12</span>
+        </div>
+        <div class="row">
+          <label class="w">Difficulty</label>
+          <input type="range" id="diff" min="1" max="5" step="1" value="3">
+          <span class="val" id="diffVal">3</span>
+        </div>
+        <button id="botsGo" class="primary">Apply</button>
+        <p class="hint" id="botNote" style="display:none;color:var(--warn)"></p>
+        <p class="hint">Raising the count lets the population manager fill in on its next step;
+        lowering it removes the newest bots immediately rather than waiting for them to die.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Teleport</h2>
+      <div class="body">
+        <div class="row">
+          <label class="w">Who</label>
+          <select id="who" style="flex:1"></select>
+        </div>
+        <div class="row">
+          <label class="w">x, y</label>
+          <input type="number" id="tx" style="width:80px" placeholder="x">
+          <input type="number" id="ty" style="width:80px" placeholder="y">
+          <button id="tpGo" class="go wide">Go</button>
+        </div>
+        <p class="hint">Or click anywhere on the map to send the selected player there. World
+        coordinates — the same numbers the F11 labels show in game.</p>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="col">
+
+    <section>
+      <h2>Map view <span id="mapNote" class="hint" style="text-transform:none;letter-spacing:0"></span></h2>
+      <div class="body">
+        <div id="mapwrap"><img id="mapimg" alt=""><div id="dots"></div></div>
+        <div class="row wrap">
+          <label>Base</label>
+          <select id="base">
+            <option value="art">art</option>
+            <option value="mask">collision mask</option>
+            <option value="both">both</option>
+          </select>
+          <button id="refreshMap">Reload map art</button>
+          <span class="spacer"></span>
+          <label><input type="checkbox" id="auto" checked style="accent-color:var(--accent)"> live</label>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Players</h2>
+      <div class="body" style="padding-top:4px">
+        <table>
+          <thead><tr><th>Name</th><th>Class</th><th>HP</th><th>x</th><th>y</th></tr></thead>
+          <tbody id="roster"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <div id="log"></div>
+    </section>
+
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// How many world units one pixel of the map picture is worth. The server works
+// it out (NAV_CELL_SIZE from the live game, divided by the upscale it asked
+// gg2_map_image for) and sends it on the image response, because the picture is
+// NOT at map-pixel resolution - it is upscaled, and assuming otherwise puts
+// every marker and every click at a multiple of its true position.
+//
+// Only ever set from the X-World-Per-Pixel header. The 2 is what the current
+// server settings produce and exists so a first paint before the image lands is
+// not NaN; a wrong value here is corrected within one image load.
+var worldPerPixel = 2;
+
+var el = function (id) { return document.getElementById(id); };
+var state = null;      // last good snapshot
+var selected = null;   // player index chosen for teleport
+var busy = false;
+var mapShown = null;   // which map the <img> is currently showing
+
+//---------------------------------------------------------------------------
+// Log
+//---------------------------------------------------------------------------
+
+function log(msg, kind) {
+  var d = document.createElement('div');
+  if (kind) d.className = kind;
+  var t = document.createElement('time');
+  t.textContent = new Date().toLocaleTimeString();
+  d.appendChild(t);
+  d.appendChild(document.createTextNode(msg));
+  var box = el('log');
+  box.appendChild(d);
+  while (box.childElementCount > 200) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+//---------------------------------------------------------------------------
+// Talking to the panel's own server
+//
+// Actions are serialised behind `busy`: the bridge answers one request at a
+// time, and firing a teleport while a map change is still building its nav
+// graph just queues a call that will time out. The poll skips itself for the
+// same reason rather than piling up behind a slow action.
+//---------------------------------------------------------------------------
+
+function post(op, body) {
+  if (busy) { log('busy - ' + op + ' ignored'); return Promise.resolve(null); }
+  busy = true;
+  paint();
+  body = body || {};
+  body.instance = el('instance').value;
+  return fetch('/api/' + op, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j && j.ok) log(op + ': ' + j.result, 'ok');
+      else log(op + ': ' + ((j && j.error) || 'failed'), 'err');
+      return j;
+    })
+    .catch(function (e) { log(op + ': ' + e.message, 'err'); return null; })
+    .then(function (j) { busy = false; return poll().then(function () { return j; }); });
+}
+
+function poll() {
+  if (busy) return Promise.resolve();
+  return fetch('/api/state?instance=' + encodeURIComponent(el('instance').value))
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j.ok) { state = j.state; paint(); return; }
+      state = null;
+      el('status').textContent = 'no game';
+      el('status').className = 'pill down';
+      // A game that was restarted - or closed and started again - gets new
+      // instance entries, and the dropdown was filled once at page load. Refill
+      // it whenever the state call fails, so the panel comes back on its own
+      // instead of needing a reload nobody would think to do.
+      return refreshInstances();
+    })
+    .catch(function () {
+      state = null;
+      el('status').textContent = 'panel offline';
+      el('status').className = 'pill down';
+    });
+}
+
+// Repopulate the instance dropdown, keeping the current selection if it still
+// exists. Returns nothing useful; it is called for its effect on the <select>.
+function refreshInstances() {
+  return fetch('/api/instances')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var live = j.instances || [];
+      var names = live.map(function (i) { return i.name; }).join(',');
+      if (names === (el('instance').dataset.names || '')) return;
+      el('instance').dataset.names = names;
+
+      var keep = el('instance').value;
+      el('instance').innerHTML = '';
+      live.forEach(function (i) {
+        var o = document.createElement('option');
+        o.value = i.name;
+        o.textContent = i.name + ' (' + i.role + ', :' + i.port + ')';
+        el('instance').appendChild(o);
+      });
+      if (!live.length) return;
+
+      var srv = live.filter(function (i) { return i.role === 'server'; })[0];
+      var want = live.some(function (i) { return i.name === keep; }) ? keep : (srv ? srv.name : live[0].name);
+      el('instance').value = want;
+      mapShown = null; // force the map art to reload for whatever this game is on
+      log('found ' + live.length + ' game' + (live.length === 1 ? '' : 's') + ': ' + names, 'ok');
+    })
+    .catch(function () {});
+}
+
+//---------------------------------------------------------------------------
+// Painting
+//---------------------------------------------------------------------------
+
+function paint() {
+  var s = state;
+  var st = el('status');
+
+  if (!s || !s.inGame) {
+    st.textContent = s ? 'menu' : 'no game';
+    st.className = 'pill down';
+    el('mapPill').textContent = '–';
+    el('popPill').textContent = '–';
+    el('roster').innerHTML = '';
+    el('dots').innerHTML = '';
+    return;
+  }
+
+  st.textContent = s.frozen ? 'FROZEN' : (s.fps != null ? s.fps + ' fps' : 'running');
+  st.className = 'pill ' + (s.frozen ? 'frozen' : 'live');
+
+  var t = el('toggle');
+  t.textContent = s.frozen ? 'Resume' : 'Freeze';
+  t.className = 'big ' + (s.frozen ? 'go' : 'freeze');
+
+  el('mapPill').textContent = s.map || '?';
+  if (s.navReady === false) el('mapPill').textContent += ' · nav building';
+
+  var bots = s.players.filter(function (p) { return p.isBot; }).length;
+  el('popPill').textContent = bots + ' bots · ' + s.humans + ' human' + (s.humans === 1 ? '' : 's');
+  // Slot accounting, because "the server is full" is decided by these two
+  // numbers and nothing else shows them.
+  el('slotPill').textContent = 'slots ' + s.humans + '/' + s.playerLimit;
+  el('slotPill').className = 'pill' + (s.humans >= s.playerLimit ? ' down' : '');
+
+  // These sliders are an input as well as a display, so the poll must not
+  // overwrite a value the user has dialled in but not yet applied. Checking
+  // "is it focused" is NOT enough and was a real bug: clicking Apply moves
+  // focus to the button, so the next poll reset the slider to the live count
+  // and Apply then submitted that instead of what was set. Once touched, a
+  // control is the user's until Apply succeeds.
+  if (!el('bots').dataset.dirty && s.botMaxBots != null) setRange('bots', bots);
+  if (!el('diff').dataset.dirty && s.botDifficulty != null) setRange('diff', s.botDifficulty);
+
+  // Say so when the game is about to overrule the number that was asked for.
+  // botPopulationUpdate removes every bot while humans < botMinHumans, which
+  // with nobody connected is the difference between "12 bots" and no bots at
+  // all - and it is silent, so it looks like the panel did nothing.
+  var warn = '';
+  if (s.botsEnabled && s.botMinHumans > s.humans) {
+    warn = 'the server needs ' + s.botMinHumans + ' human' + (s.botMinHumans === 1 ? '' : 's') +
+           ' before it will keep bots, and ' + s.humans + ' are connected';
+  } else if (s.botsEnabled && bots < s.botMaxBots) {
+    warn = 'filling: ' + bots + ' of ' + s.botMaxBots;
+  }
+  el('botNote').textContent = warn;
+  el('botNote').style.display = warn ? '' : 'none';
+
+  if (s.map && s.map !== mapShown) loadMapImage();
+  syncMapSelect(s.map);
+  paintRoster(s);
+  paintDots(s);
+  el('release').disabled = busy;
+}
+
+function setRange(id, v) { el(id).value = v; el(id + 'Val').textContent = id === 'bots' ? v : v; }
+
+function syncMapSelect(map) {
+  var sel = el('map');
+  if (map && sel.value !== map && !sel.dataset.touched) {
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === map) { sel.selectedIndex = i; break; }
+    }
+  }
+}
+
+function paintRoster(s) {
+  var body = el('roster');
+  body.innerHTML = '';
+  var who = el('who');
+  var keep = who.value;
+  who.innerHTML = '';
+
+  s.players.forEach(function (p) {
+    var tr = document.createElement('tr');
+    tr.className = 'pick' + (String(p.index) === String(selected) ? ' on' : '');
+    tr.onclick = function () { selected = p.index; who.value = String(p.index); paint(); };
+
+    var name = document.createElement('td');
+    var tag = document.createElement('span');
+    tag.className = 'tag t' + p.team;
+    name.appendChild(tag);
+    name.appendChild(document.createTextNode(p.name + (p.isBot ? '' : ' ★')));
+    tr.appendChild(name);
+
+    [p.className, p.hp == null ? '–' : p.hp, p.x == null ? '–' : p.x, p.y == null ? '–' : p.y]
+      .forEach(function (v, i) {
+        var td = document.createElement('td');
+        if (i > 0) td.className = 'mono';
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+
+    body.appendChild(tr);
+
+    var o = document.createElement('option');
+    o.value = String(p.index);
+    o.textContent = p.name + '  (' + p.teamName + ' ' + p.className + ')' + (p.isBot ? '' : '  ★ human');
+    who.appendChild(o);
+  });
+
+  if (keep && who.querySelector('option[value="' + keep + '"]')) who.value = keep;
+  else if (selected != null && who.querySelector('option[value="' + selected + '"]')) who.value = String(selected);
+  else if (who.options.length) {
+    // Default to the first human - on a server full of bots that is almost
+    // always the person holding this panel.
+    var human = s.players.filter(function (p) { return !p.isBot && p.team !== 2; })[0];
+    who.value = String(human ? human.index : s.players[0].index);
+  }
+  selected = who.value === '' ? null : Number(who.value);
+}
+
+function paintDots(s) {
+  var box = el('dots');
+  box.innerHTML = '';
+  var img = el('mapimg');
+  if (!img.naturalWidth) return;
+  var scale = img.clientWidth / img.naturalWidth;
+
+  s.players.forEach(function (p) {
+    if (p.x == null || p.team === 2) return;
+    var d = document.createElement('div');
+    d.className = 'dot t' + p.team + (p.isBot ? '' : ' human') +
+                  (String(p.index) === String(selected) ? ' sel' : '');
+    d.style.left = (p.x / worldPerPixel) * scale + 'px';
+    d.style.top = (p.y / worldPerPixel) * scale + 'px';
+    box.appendChild(d);
+  });
+}
+
+// Fetched rather than assigned to img.src because the scale factor arrives as a
+// response header, and an <img> cannot see its own headers.
+function loadMapImage() {
+  var s = state;
+  if (!s || !s.map) return;
+  var want = s.map;
+  mapShown = want;
+  var img = el('mapimg');
+
+  fetch('/api/mapimage?instance=' + encodeURIComponent(el('instance').value) +
+        '&base=' + encodeURIComponent(el('base').value))
+    .then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      var wpp = Number(r.headers.get('X-World-Per-Pixel'));
+      if (wpp > 0) worldPerPixel = wpp;
+      return r.blob();
+    })
+    .then(function (blob) {
+      // A JSON error body comes back with a 200, so check what actually arrived
+      // rather than trusting the status.
+      if (blob.type.indexOf('image') !== 0) {
+        return blob.text().then(function (t) { throw new Error(JSON.parse(t).error || t); });
+      }
+      if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+      var url = URL.createObjectURL(blob);
+      img.dataset.url = url;
+      img.onload = function () {
+        el('mapNote').textContent =
+          want + ' · ' + Math.round(img.naturalWidth * worldPerPixel) + '×' +
+          Math.round(img.naturalHeight * worldPerPixel) + ' world · ' +
+          worldPerPixel + ' world/px';
+        paintDots(state);
+      };
+      img.src = url;
+    })
+    .catch(function (e) {
+      mapShown = null; // let it try again on the next poll
+      el('mapNote').textContent = '(no map picture: ' + e.message.split('\n')[0] + ')';
+    });
+}
+
+//---------------------------------------------------------------------------
+// Wiring
+//---------------------------------------------------------------------------
+
+el('toggle').onclick = function () { post(state && state.frozen ? 'resume' : 'freeze'); };
+
+Array.prototype.forEach.call(document.querySelectorAll('[data-step]'), function (b) {
+  b.onclick = function () { post('step', { frames: Number(b.dataset.step) }); };
+});
+
+el('speed').oninput = function () { el('speedVal').textContent = (Number(this.value) || 1) + '×'; };
+el('speed').onchange = function () { post('speed', { factor: Number(this.value) || 1 }); };
+el('speedReset').onclick = function () { el('speed').value = 1; el('speedVal').textContent = '1×'; post('speed', { factor: 0 }); };
+
+el('map').onchange = function () { this.dataset.touched = '1'; };
+el('mapGo').onclick = function () {
+  var m = el('map').value;
+  if (!m) return;
+  log('changing map to ' + m + ' - this waits for the nav graph, give it a few seconds');
+  post('map', { name: m, wait: true }).then(function () {
+    el('map').dataset.touched = '';
+    mapShown = null;
+  });
+};
+
+// Mark dirty on ANY user input, so the once-a-second poll stops overwriting the
+// value until it has been applied. Without this, clicking Apply blurs the
+// slider, the next poll resets it to the live count, and Apply submits that.
+el('bots').oninput = function () { this.dataset.dirty = '1'; el('botsVal').textContent = this.value; };
+el('diff').oninput = function () { this.dataset.dirty = '1'; el('diffVal').textContent = this.value; };
+
+el('botsGo').onclick = function () {
+  var count = Number(el('bots').value);
+  var difficulty = Number(el('diff').value);
+  post('bots', { count: count, difficulty: difficulty }).then(function (j) {
+    // Only hand the sliders back to the poll once the game has actually taken
+    // the value - a failed Apply must not silently lose what was dialled in.
+    if (j && j.ok) {
+      delete el('bots').dataset.dirty;
+      delete el('diff').dataset.dirty;
+    }
+  });
+};
+
+el('who').onchange = function () { selected = Number(this.value); paintDots(state); };
+
+el('tpGo').onclick = function () {
+  var x = Number(el('tx').value), y = Number(el('ty').value);
+  if (selected == null || el('tx').value === '' || el('ty').value === '') { log('pick a player and an x, y', 'err'); return; }
+  post('teleport', { index: selected, x: x, y: y });
+};
+
+el('mapwrap').onclick = function (ev) {
+  var img = el('mapimg');
+  if (!img.naturalWidth || selected == null) { log('pick a player first', 'err'); return; }
+  var r = img.getBoundingClientRect();
+  var scale = img.naturalWidth / r.width; // CSS px -> image px
+  var x = Math.round((ev.clientX - r.left) * scale * worldPerPixel);
+  var y = Math.round((ev.clientY - r.top) * scale * worldPerPixel);
+  el('tx').value = x;
+  el('ty').value = y;
+  post('teleport', { index: selected, x: x, y: y });
+};
+
+el('base').onchange = function () { mapShown = null; loadMapImage(); };
+el('refreshMap').onclick = function () { mapShown = null; loadMapImage(); };
+
+el('release').onclick = function () {
+  fetch('/api/release', { method: 'POST' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { log(j.result || 'released', 'ok'); });
+};
+
+el('instance').onchange = function () { mapShown = null; selected = null; poll(); };
+
+// Space and . are what you actually reach for while watching something happen.
+document.onkeydown = function (ev) {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName)) return;
+  if (ev.code === 'Space') { ev.preventDefault(); el('toggle').click(); }
+  if (ev.key === '.') { ev.preventDefault(); post('step', { frames: 1 }); }
+};
+
+window.onresize = function () { paintDots(state); };
+
+//---------------------------------------------------------------------------
+// Start
+//---------------------------------------------------------------------------
+
+Promise.all([
+  refreshInstances(),
+  fetch('/api/maps').then(function (r) { return r.json(); })
+]).then(function (res) {
+  var maps = res[1];
+
+  if (!el('instance').options.length) {
+    log('no game is running - start one with gg2_session or run-agent.js. This panel will pick it up on its own.', 'err');
+  }
+
+  var groups = {};
+  (maps.maps || []).forEach(function (m) { (groups[m.mode] = groups[m.mode] || []).push(m.name); });
+  Object.keys(groups).sort().forEach(function (mode) {
+    var g = document.createElement('optgroup');
+    g.label = mode;
+    groups[mode].forEach(function (n) {
+      var o = document.createElement('option');
+      o.value = n; o.textContent = n;
+      g.appendChild(o);
+    });
+    el('map').appendChild(g);
+  });
+
+  log('panel ready');
+  poll();
+  setInterval(function () { if (el('auto').checked) poll(); }, 1000);
+});
+</script>
+</body>
+</html>
