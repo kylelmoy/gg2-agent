@@ -15,6 +15,41 @@ See `CLAUDE.md`'s *Where documentation goes* for what belongs here and what does
 
 ## Still open
 
+### Endpoint tracking, now that it is reachable
+
+The in-flight tracker enforces `needVx * airTicks` - a constant-velocity schedule a real
+character cannot produce - so a bot that is *ahead* of it early gets braked. Measured
+non-monotonic on the koth_gallery n56 -> n44 arc: v0 3.50 clears it, 3.75 and 4.00 do not,
+4.25 does. Tracking the endpoint instead of the ramp fixes that band.
+
+This was measured as **worth nothing on its own** (3310 -> 3310 unflyable edges) and
+correctly left alone: most failing edges had no run-up at all, so the bot was never ahead
+of the schedule and both trackers behaved identically. **That reasoning stopped holding on
+2026-08-23**, when the takeoff gate and the run-up were fixed and bots started arriving at
+takeoffs carrying speed. It is now the next thing in this area, and it is the explanation
+for whatever is left of the 253.
+
+The residual itself: `node tools/navfollow.js` reports **253 of 62069 jump edges** unflyable
+by a Heavy, down from 3310, and **1.7% of reachable nodes** with a cheapest route across one,
+down from 28.6%. Nobody has looked at what the 253 have in common. Do that before writing
+any code - the last two passes here were both decided by a Node model in under a minute.
+
+⚠️ Model it in `navfollow` first. `flyJump` is the tracker; a candidate is about twenty
+lines beside it, and that is how the *previous* endpoint-tracking idea was killed in two
+minutes without a build. `botJumpReach` in the game and `flyJump` here are the same law
+written twice - change one and the takeoff gate starts answering about a flight the
+follower does not make.
+
+### Bots wedge in their own spawn room, and it is not an edge problem
+
+`navcensus` on koth_gallery puts n11 and n16 near the top by `stk` bursts - four to six
+exits blacklisted in a few dozen ticks, by several bots. Both are spawn rooms whose every
+exit but one is gated to the owning team. `navfollow` says every one of those edges is
+fine, and the `stk` tag says the bot never left the ground, so this is a wedge (a door, a
+player wall, or twelve bots colliding in one doorway) rather than a bad arc. Nobody has
+looked at which.
+
+
 ### The bridge reads nothing while a reply is deferred
 
 Reconnecting now clears a `STEP`/`WAIT` that outlived its caller, and does it in 70ms, but

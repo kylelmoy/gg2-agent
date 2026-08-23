@@ -122,6 +122,11 @@ function writeFakeGraph(key, repo, nodes, edges, maskW = 64, maskH = 32) {
     if (f === c.NAV_EDGE_FROM) return r.from;
     if (f === c.NAV_EDGE_TO) return r.to;
     if (f === c.NAV_EDGE_TYPE) return r.type ?? c.NAV_EDGE_WALK;
+    // The arc a jump edge records: its horizontal speed, its airtime, and the
+    // column it was proven to leave from. navfollow replays the follower
+    // against exactly these three, so a fake graph has to be able to carry them.
+    if (f === c.NAV_EDGE_BUCKET) return r.bucket ?? 0;
+    if (f === c.NAV_EDGE_TAKEOFF) return r.takeoff ?? -1;
     if (f === c.NAV_EDGE_TICKS) return r.ticks ?? 10;
     if (f === c.NAV_EDGE_COST) return r.cost ?? 10;
     if (f === c.NAV_EDGE_GATE) return r.gate ?? c.NAV_GATE_NONE;
@@ -936,6 +941,76 @@ async function main() {
     check('the default bar is two rows, drawn upward',
       same(tpx(4, 20), mapimage.REACHED) && same(tpx(4, 19), mapimage.REACHED)
       && !same(tpx(4, 21), mapimage.REACHED));
+  }
+
+  // The follower model. The graph records an arc as a constant velocity; a
+  // character accelerates. Everything navfollow reports comes out of that one
+  // disagreement, so what is pinned here is the disagreement itself - against
+  // the game's own numbers, not against navfollow's own output.
+  process.stdout.write('\nfollower model\n');
+  {
+    const nav = require('./navgraph.js');
+    const nf = require('./navfollow.js');
+    const c = nav.constants(SCRATCH);
+
+    // basemaxspeed = abs(baseRunPower * baseControl / (baseFriction - 1)),
+    // Character.Create. Heavy's 4.53 is where NAV_JUMP_VX came from, which is
+    // why an arc at 4.5 is flyable by exactly one class and not really by that one.
+    const heavy = nf.profile('heavy');
+    const scout = nf.profile('scout');
+    check('heavy tops out at the speed NAV_JUMP_VX was taken from',
+      Math.abs(heavy.maxSpeed - c.NAV_JUMP_VX) < 0.01, heavy.maxSpeed.toFixed(3));
+    check('and scout is 75% faster over the same graph',
+      Math.abs(scout.maxSpeed - 7.933) < 0.01, scout.maxSpeed.toFixed(3));
+
+    // The acceleration ramp, which is the whole finding: a character asked for
+    // 4.10 px/tick from rest averages well under it for the first twenty ticks
+    // and the plan never waits.
+    check('a standstill is a standstill', nf.runupSpeed(0, heavy) === 0);
+    // BOT_RUNUP_CELLS is as far back as the follower ever walks, and for a Heavy
+    // it is not far enough: 36px of run-up buys 86% of the cap, not the cap. So
+    // even the best case this tool models is short of the arc's own assumption.
+    const full = nf.runupSpeed(c.BOT_RUNUP_CELLS * c.NAV_CELL_SIZE, heavy);
+    check('and the longest run-up the follower takes still falls short of the cap',
+      full > 0.8 * heavy.maxSpeed && full < 0.95 * heavy.maxSpeed, full.toFixed(3));
+
+    // koth_gallery n56 -> n44, the edge a human reported and the live blacklist
+    // log then named: 4.10 px/tick for 23.4 ticks is 96px of plan, and a Heavy
+    // leaving from a one-column node covers about 75 of them.
+    const flown = nf.flyJump(4.10, 23.4, 0, heavy);
+    check('a heavy flying a 96px arc from rest lands short',
+      flown > 70 && flown < 80, flown.toFixed(1));
+    check('and a scout flying the same arc does not',
+      nf.flyJump(4.10, 23.4, 0, scout) > 96, nf.flyJump(4.10, 23.4, 0, scout).toFixed(1));
+
+    // Two ledges 96px apart, the source one column wide so there is no run-up
+    // to be had, plus a climb the bot could otherwise take.
+    writeFakeGraph('fakefly_a1', SCRATCH,
+      [{ row: 30, x0: 10, x1: 10 }, { row: 28, x0: 26, x1: 26 }],
+      [{ from: 0, to: 1, type: c.NAV_EDGE_JUMP, bucket: 4.10, ticks: 23.4, takeoff: 10 }]);
+    const fg = nav.load('fakefly_a1', SCRATCH);
+    const asHeavy = nf.analyse(fg, heavy, { tol: 6 });
+    const asScout = nf.analyse(fg, scout, { tol: 6 });
+    check('a one-column source offers no run-up', asHeavy[0].runupCols === 0);
+    check('and the arc off it is unflyable for a heavy', asHeavy[0].failBest === true,
+      Math.round(asHeavy[0].shortBest) + 'px short');
+    check('and flyable for a scout', asScout[0].failBest === false);
+    // An arc asking for more than the class's top speed cannot be rescued by any
+    // run-up or any tolerance, so it is reported as its own kind rather than as
+    // a large shortfall - no follower change can fix one.
+    writeFakeGraph('fakefast_a1', SCRATCH,
+      [{ row: 30, x0: 10, x1: 30 }, { row: 28, x0: 46, x1: 46 }],
+      [{ from: 0, to: 1, type: c.NAV_EDGE_JUMP, bucket: 5.0, ticks: 20, takeoff: 30 }]);
+    const fast = nf.analyse(nav.load('fakefast_a1', SCRATCH), heavy, { tol: 9999 });
+    check('an arc faster than the class can run is impossible, not merely short',
+      fast[0].impossible === true && fast[0].failBest === true);
+    check('and the same arc is ordinary for a class that can run it',
+      nf.analyse(nav.load('fakefast_a1', SCRATCH), scout, { tol: 6 })[0].impossible === false);
+
+    check('a node whose only climb is unflyable is reported as a trap',
+      nf.traps(fg, asHeavy).some((t) => t.node === 0), JSON.stringify(nf.traps(fg, asHeavy)));
+    check('and is not a trap for the class that can fly it',
+      !nf.traps(fg, asScout).some((t) => t.node === 0));
   }
 
   // The tool table is data in one file and behaviour in another, so nothing but

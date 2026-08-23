@@ -10,6 +10,140 @@ than in a commit message.
 
 ---
 
+## navfollow.js / navcensus.js: searching for a broken FOLLOWER (2026-08-23)
+
+Everything before this entry searches the graph. By 2026-08-23 the graph was mostly right
+and the bots still could not walk it, so the two tools added here search the other side of
+the gap: `tools/navfollow.js` models what `botPathKeys` can actually make a character do,
+and `tools/navcensus.js` reads what the bots on a running server have already failed at.
+
+### The disagreement navfollow measures
+
+`navJumpTakeoff` proves an arc as a **constant** horizontal velocity, applied from the
+takeoff column at tick 0, and stores it as `NAV_EDGE_BUCKET`. A GG2 character accelerates:
+
+    hspeed = (hspeed + baseRunPower * baseControl) / baseFriction
+
+which converges geometrically on `basemaxspeed = baseRunPower * 0.85 / 0.15` and starts at
+zero. The in-flight tracker catches up out of the surplus between the arc's vx and the
+class's ceiling, so an arc asking for most of that ceiling never catches up at all.
+
+**`NAV_JUMP_VX` (4.53) is exactly Heavy's `basemaxspeed`** - `0.8 * 0.85 / 0.15` - and the
+generator uses it only to budget wall contact while sweeping, never to reject an arc. So
+arcs at 4.0-4.5 px/tick are generated freely and exactly one class could ever fly one, and
+only from a full run-up it is rarely given.
+
+Two more numbers that decide it, both from the follower rather than the generator:
+
+- **The run-up is the source node.** `targetCol = takeoff - dir * BOT_RUNUP_CELLS` is
+  clamped into `[x0, x1]`, so a one-column node offers none: every arc off it starts from
+  a standstill.
+- **`BOT_RUNUP_CELLS` is 36px, and 36px buys a Heavy 3.89 px/tick - 86% of its 4.53 cap.**
+  Even the best case the model allows is short of what the arc assumed.
+
+### Measured, 2026-08-23
+
+| map | class | unflyable jump edges | nodes whose cheapest route crosses one |
+|---|---|---|---|
+| ctf_truefort | heavy | 216 / 3769 | 250/641 (**39%**) |
+| ctf_truefort | scout | 2 / 3769 | 0 |
+| koth_gallery | heavy | 105 / 1618 | 62/266 (23%) |
+| koth_gallery | soldier | 62 / 1618 | 0 |
+| koth_gallery | scout | 0 / 1618 | 0 |
+
+Confirmed live on the leg a human reported by hand (`koth_gallery`, 1102,906 ->
+1228,738 - the V-shaped pit below the gallery floor):
+
+| class | result |
+|---|---|
+| scout | 101 ticks, 0 blacklisted, arrives |
+| soldier | never arrives in 1200, blacklists 58>44 three times |
+| heavy | never arrives in 1200, 177px short, blacklists 58>44, 56>44, 54>44 twice each |
+
+Every edge named in those logs is one `navfollow` flags offline. The pit's six crossings
+(n46/n48/n51/n54/n56/n58 -> n44) all ask 4.04-4.46 px/tick off one-column nodes, and they
+are the only way out toward the right-hand side.
+
+### Reachability is the wrong metric for this class of bug
+
+Tried first, and it reports nothing: deleting all 105 unflyable edges from koth_gallery
+leaves red's reachable count unchanged, because the graph is redundant enough that every
+node keeps another way in. The bot still never gets there - A* hands back the CHEAPEST
+route, which crosses the unflyable arc, the bot flies it, lands elsewhere, blacklists it,
+and `BOT_BLACKLIST_TICKS` later is handed the identical route again. So what `navfollow`
+reports is the fraction of nodes whose *cheapest* route crosses a lie. That is the same
+lesson `navsuspects` was built on: a bug can leave the graph perfectly connected and still
+make it unwalkable.
+
+### What the census found that the model does not explain
+
+A 5100-frame koth_gallery window, 12 bots, nobody aiming: six of the top edges were ones
+`navfollow` calls unflyable, including the two from the hand report. Underneath them sat a
+second family the model says nothing about - `stk` bursts at n11 and n16, four to six exits
+each, which are the two spawn rooms, and every exit but one is gated to the team that owns
+it. That is a wedge, not a lying edge, and the `why` tag is what separates them: **every
+edge navfollow flagged was logged `off` and never `stk`.**
+
+Numbers worth keeping for the next pass: an untouched 52k-frame ctf_truefort server had 12
+bots carrying 749 blacklists, 5546 stuck fires and 8307 off-route fires between them, of
+which 12 of the 123 distinct edges logged were independently flagged unflyable, and 14 of
+the 49 `off` events landed on one.
+
+### What fixing it measured (2026-08-23, same day)
+
+The fix is in `botPathKeys`, not the generator, so no graph changed and
+`NAV_CACHE_VERSION` stayed at 13. Two halves, and neither works alone:
+
+- the takeoff gate stopped accepting a standstill and started asking `botJumpReach`
+  whether *this* arc reaches from the speed the bot has;
+- the run-up stopped being clamped into the source node and started following walk edges
+  (`botRunupCol`).
+
+Modelled in `navfollow` first, over all 23 cached graphs as Heavy:
+
+| | unflyable jump edges | nodes whose cheapest route crosses one |
+|---|---|---|
+| before | 3310 of 62069 | 4546 / 15887 = **28.6%** |
+| after | **253** | 264 / 15887 = **1.7%** |
+
+koth_gallery went 105 -> **0** and its thrash figure 96% -> 0%; koth_corinth 146 -> 2 and
+96% -> 1%.
+
+**⚠️ The run-up distance is not what mattered.** Capping it at 6, 10, 14, 20, 30 or an
+unbounded number of cells all give exactly 253, because the gate refuses to leave faster
+than `needVx + BOT_JUMP_VTOL` and six cells already reaches that cap on almost every arc.
+Being allowed to leave the node at all is the entire fix, and `BOT_RUNUP_CELLS` is
+unchanged. Anyone tempted to tune that constant for a residual should read this line first.
+
+**Why demanding the arc's full speed lost, and asking what it needs did not.** The earlier
+experiment (647 -> 868 and 674 -> 997 ticks on the valley scenarios, no more arrivals) is
+explained by a number worth keeping: **91.9% of all 62069 jump edges need no takeoff speed
+at all** - the tracker flies them from rest with room to spare. Only 8.5% need any, and
+`vNeeded/needVx` over those has a median of 0.35 and a maximum of 0.85. Demanding full
+speed therefore forces a run-up on every jump in the game to fix one in twelve.
+
+**The part no model would have caught.** The first live build refused *every* jump, silently
+- nothing blacklisted, nothing off route, because the bot was doing exactly what it was
+told. `jumpNeed` was being measured from `char.x` rather than from the takeoff column, and
+the tracker clamps at `needVx * flightTicks`, so on an arc costed with no margin
+(koth_gallery n86 -> n58 is exactly 12px of arc for exactly a 12px gap) a gate standing one
+cell out asks for 22px that the arc can never deliver. The gate's question is about the arc
+and the gap; where the bot is standing this tick is not part of it.
+
+Live, `gallery-pit-climb`, now promoted into `tools/bot-scenarios.js`: heavy never arrived
+-> **271 ticks**, soldier never arrived -> 135, scout 101 -> 125 (the run-ups cost a
+little, as expected). Full suite 11/11, with `valley-spawn-to-point` 606 -> 549 and
+`valley-shaft-floor-to-point` 184 -> 154.
+
+**What is left.** The 253 residual, and endpoint tracking - which measured worth nothing on
+its own (3310 -> 3310) because most failing edges had no run-up, so the bot was never ahead
+of the ramp and both trackers behaved identically. That reasoning no longer holds now that
+bots do arrive carrying speed, so it is reachable for the first time. The non-monotonic
+band it explains is still there: on the gallery arc v0 3.50 clears, 3.75 and 4.00 fail,
+4.25 clears.
+
+---
+
 ## navsuspects.js: finding tricky routes without watching a bot (2026-08-22)
 
 `tools/navsuspects.js` is new. It exists because the `koth_valley` shaft bug was found

@@ -28,14 +28,113 @@ geometry you have not looked at.
 | can a bot reach the objective at all | `navaudit.js` | no |
 | which routes are far longer than they should be | `navsuspects.js` | no |
 | *why* is this route long - where does it go | `navsuspects.js --route <n>` | no |
+| **which promised arcs can the follower not fly** | **`navfollow.js`** | **no** |
+| **why can it not fly this one** | **`navfollow.js --edge a,b`** | **no** |
 | what is the terrain actually like here | `navaudit.js --mask x0,y0,x1,y1` | no |
 | what edges does this node have | `navaudit.js --node <n>` | no |
+| **where are bots failing on maps nobody aimed at** | **`navcensus.js`** | yes, any server |
 | can the bot actually walk it | `gg2_scenario` | yes |
 | which edge did it fail on | the scenario's `blacklistLog` | yes |
 | can a *human* make this move | a server and your own hands | yes |
 
 ⚠️ **A graph only exists on disk once a server has loaded that map.** Warm the cache
 before trusting a sweep to be complete - see *Warming the cache* at the bottom.
+
+---
+
+## 0b. If the complaint is "the bot cannot do that jump", start at navfollow
+
+Steps 1-3 below all ask questions about the GRAPH, and by 2026-08-23 the graph was mostly
+right. The failures left over are the other half: the graph describes an arc and the
+follower cannot fly it. Nothing in the offline sweep sees that, because the edge is right
+there in the graph with a perfectly ordinary cost.
+
+    node tools/navfollow.js koth_gallery_a1              # every jump edge, worst first
+    node tools/navfollow.js koth_gallery_a1 --edge 56,44 # tick by tick
+
+**The disagreement it measures is one line of arithmetic.** `navJumpTakeoff` proves an arc
+as a *constant* horizontal velocity `vx` applied from the takeoff column at tick 0, and
+records it on the edge as `NAV_EDGE_BUCKET`. A GG2 character has no constant velocity -
+`hspeed = (hspeed + runPower * controlFactor) / baseFriction` - so it accelerates
+geometrically toward `basemaxspeed` and starts at zero. `botPathKeys`' in-air tracker
+catches up out of the surplus between the arc's `vx` and the class's ceiling, and an arc
+that asks for most of that ceiling has no surplus at all.
+
+Two things follow, and both are worth knowing before reading any output:
+
+- **The run-up is the source node.** Backing up is clamped into that node's own columns,
+  so a ONE-COLUMN node offers none and every arc off it starts from a standstill. That is
+  why the tool prints `best` (full run-up) and `worst` (standstill) - an edge that fails at
+  `best` is a lie for everyone; one that only fails at `worst` is the intermittent kind,
+  flown by a bot with room to run and missed by a bot that has just landed there. And even
+  `best` is short: `BOT_RUNUP_CELLS` is 36px, which buys a Heavy 86% of its cap, not its cap.
+- **The graph is class-blind and the classes are not the same bot.**
+  `basemaxspeed = baseRunPower * baseControl / (baseFriction - 1)`, so Heavy tops out at
+  4.53 px/tick and Scout at 7.93. `NAV_JUMP_VX` is 4.53 - it *is* Heavy's ceiling - and the
+  generator uses it to budget wall contact, never to reject an arc. Model the slowest class
+  that will be asked to fly it.
+
+⚠️ **Reachability is the wrong metric here, and it was tried first.** Deleting all 105
+unflyable edges from `koth_gallery` changes red's reachable count by exactly nothing: the
+graph is redundant enough that every node keeps some other way in. What actually happens is
+worse and invisible to a BFS - A* hands back the CHEAPEST route, which crosses the unflyable
+arc; the bot flies it, lands elsewhere, blacklists it, and `BOT_BLACKLIST_TICKS` later gets
+handed the identical route again. So the number `navfollow` prints is *how many nodes have a
+cheapest route across an arc this class cannot fly*, which is the population that will thrash.
+
+Measured 2026-08-23:
+
+| map | class | unflyable jump edges | routes crossing one |
+|---|---|---|---|
+| ctf_truefort | heavy | 216 / 3769 | **39%** |
+| ctf_truefort | scout | 2 / 3769 | 0% |
+| koth_gallery | heavy | 105 / 1618 | 23% |
+| koth_gallery | soldier | 62 / 1618 | 0% |
+| koth_gallery | scout | 0 / 1618 | 0% |
+
+The live check on the same leg (`koth_gallery`, 1102,906 -> 1228,738): Scout 101 ticks and
+nothing blacklisted; Heavy and Soldier never arrive inside 1200, blacklisting exactly the
+edges the model named.
+
+## 0c. Let the server that is already running do the searching
+
+`botscenario.js` walks the three legs somebody thought of. A twelve-bot dedicated server
+walks the whole map thousands of times an hour and has been recording every failure the
+entire time - `botBlacklistFires`, `botStuckFires`, `botOffRouteFires` and the endpoints in
+`botBlacklistLog`. Nobody was reading them.
+
+    node tools/navcensus.js --reset      # zero every bot's counters, note the frame
+    ... let it play, or gg2_speed it ...
+    node tools/navcensus.js --since <frame>
+
+It aggregates by edge and by node and joins the result against `navfollow`'s offline
+verdict, so a row that says `UNFLYABLE, lands 21px short` has been confirmed twice by two
+methods that share no code. On a 5100-frame `koth_gallery` window it put six such edges at
+the top, including the two a human had reported by hand the day before, with nobody aiming
+at that part of the map.
+
+**Read the `why` tag - it names which half of the code to look in:**
+
+- `off` - a finished move ended off the route. **A lying edge.** Every edge `navfollow`
+  flagged on truefort was reported this way and never as `stk`.
+- `stk` - pressed a key and did not move. **A wedge, and it is about the node, not the
+  edge**: the log shows one `from` with four or five different `to` values twelve ticks
+  apart, which is a bot working through every exit it has because it never left the ground.
+  Collapse those into one finding; `navcensus`' node view does it for you.
+- `thr` - re-planned twice without covering ground.
+
+⚠️ **Three ways the census lies, all seen in its first two runs:**
+
+1. `botBlacklistLog` is capped at 240 characters, so a bot with 92 fires reports its first
+   ~14. The counters are exact; the log is a biased early sample. Places, not rates.
+2. Immobility that has nothing to do with navigation still reads as `stk`. Six of twelve
+   bots fired at frame 3512 exactly, on unrelated nodes across the whole map - a round
+   transition, where nothing can move. A cluster of unrelated nodes at one frame is the
+   signature; `--since` past it.
+3. **The log is not cleared on a map change**, and node numbers from the previous map
+   resolve perfectly well against the current graph - to the wrong surfaces. Events naming a
+   pair that is not an edge in the loaded graph are held out and counted, but `--reset` then
+   `--since` is the way to be sure.
 
 ---
 
@@ -253,6 +352,8 @@ engine. When something looks refused-but-makeable, suspect these first.
 | ...and then wall-slide catch-up made free | invented two edges the follower could not fly |
 
 | body box a cell taller than any character | 370 floor cells walled off; 84px of floor priced at 187 cells |
+| arc costed as a constant velocity, flown by an accelerating character | koth_gallery pit: 4.10px/tick over 23.4 ticks is 96px of plan and 75px of Heavy |
+| one graph handed to ten classes with a 75% speed spread | the same leg: Scout 101 ticks, Heavy and Soldier never arrive |
 | ...and then six rows used for arcs too | a landing lead bought by headroom that is not there |
 
 **The pattern is the whole checklist.** Every one of them is a model that disagreed with

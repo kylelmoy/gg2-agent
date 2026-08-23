@@ -247,6 +247,37 @@ const SCENARIOS = [
     allow: { stuck: 0, blacklisted: 0 },
   },
   {
+    name: 'gallery-pit-climb',
+    map: 'koth_gallery',
+    about:
+      'The takeoff-speed case, and it reproduces as a HEAVY while arriving instantly as a Scout - ' +
+      'which is the whole shape of the bug. navJumpTakeoff proves an arc as a constant horizontal ' +
+      'velocity from tick 0 and NAV_JUMP_VX (4.53) is literally the ceiling of a Heavy, so an arc near ' +
+      'that speed leaves the in-flight tracker no surplus to make back the acceleration ramp. This ' +
+      'leg climbs out of a V-shaped pit whose walls are one-column staircases, so the bot arrives at ' +
+      'each takeoff moving the wrong way with nowhere to run up: botPathKeys clamped the run-up into ' +
+      'the node it was standing on, which for a one-column node is a no-op. 75px of a 96px gap, into ' +
+      'the riser, back into the pit, blacklist, re-plan, forever. Before the fix: heavy and soldier ' +
+      'never arrived in 1200 ticks (heavy 177px short, blacklisting 58>44, 56>44 and 54>44 twice ' +
+      'each) while a scout arrived in 101. After: 271 and 135, scout 125. Modelled across all 23 ' +
+      'cached graphs the same change takes unflyable jump edges 3310 -> 253 and the 105 of koth_gallery ' +
+      '-> 0 (tools/navfollow.js). A regression in the takeoff gate, botJumpReach or botRunupCol ' +
+      'shows up here first, and it will show up as the heavy alone.',
+    class: 'CLASS_HEAVY',
+    team: 'red',
+    from: [1102, 906],
+    to: [1228, 738],
+    // Measured 271 ticks. The budget is deliberately far above that rather than snug:
+    // the failure this guards against is "never arrives", not "arrives slowly", and a
+    // run-up legitimately costs tens of ticks per jump.
+    budget: 1200,
+    allow: { stuck: 0 },
+    // No `blacklisted: 0`. One thr: on 46>44 was measured on a passing run - the route
+    // crosses several marginal arcs and blacklisting one, re-planning and arriving is a
+    // healthy outcome. It is never arriving that this scenario is about.
+    expect: { ticks: { max: 800 } },
+  },
+  {
     name: 'soldier-shells-generator',
     map: 'gen_destroy',
     about:

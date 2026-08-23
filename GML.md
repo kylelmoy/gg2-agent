@@ -253,6 +253,26 @@ error stays invisible until something lands in the wrong place.
   freed leaks once per map change.
 - **`ds_grid_set_grid_region` exists** and copies a region natively — much cheaper
   than a cell loop when moving rows between grids.
+- **`ds_map_replace` does NOT insert a missing key.** It replaces the value of a key
+  that is already there and silently does nothing otherwise - unlike the GameMaker
+  Studio function of the same name, which adds. A counter keyed by anything therefore
+  needs `ds_map_exists` first, then `ds_map_add` or `ds_map_replace`:
+
+  ```gml
+  had = ds_map_exists(m, key);
+  if(had) ds_map_replace(m, key, n); else ds_map_add(m, key, n);
+  ```
+
+  Every count starts absent, so a bare `ds_map_replace` leaves the map permanently
+  **empty** while raising no error at all. Cost a live debugging round on the bot
+  edge-occupancy counts (2026-08-22): every bot reported its route as counted, the
+  per-bot flag was set outside the branch that failed, and `ds_map_size` sat at 0 for
+  1200 frames with twelve bots running.
+- **`ds_map_find_next` does not return a sentinel you can test with `>= 0`.** Walking a
+  numeric-keyed map with `while(k >= 0)` never terminates and hangs the game with no
+  dialog - the bridge simply stops answering. Iterate with `ds_map_size` and
+  `ds_map_find_first`/`find_next` bounded by a counter, or keep a companion `ds_list`
+  of keys the way the bot blacklist does.
 - **No `ds_set`.** Use a `ds_map` with dummy values, or a `ds_grid` as a bitmap.
 - `ds_priority` has no handle per queued item, so there is no real decrease-key
   available for A\*. Push duplicates and skip already-closed entries when popping;

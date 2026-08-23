@@ -22,6 +22,8 @@ node run-agent.js       # launch the game, wait for the bridge
 node build-agent.js     # full build - drives GM8 headlessly            (~1min)
 node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
+node tools/navfollow.js # which promised arcs can the FOLLOWER not fly?   (~1s)
+node tools/navcensus.js # what have the bots on this server already failed at?
 node tools/botscenario.js # do bots still WALK those routes?              (~1min)
 node tools/control.js   # a browser control panel, for playtesting by hand
 ```
@@ -277,6 +279,25 @@ the route, read the mask, then run it live and let `ticks / travel` say whether 
 is long or the bot is broken. It also carries the two rules that have saved the most
 damage - model a generator change in Node before building it, and A/B it against rebuilt
 graphs on every map rather than against the scenario suite, which only covers three.
+
+**That loop finds a bad GRAPH. Two newer tools find a bad FOLLOWER**, which is where the
+remaining failures live - the graph is right, the arc is a fiction, and every check above
+is green:
+
+- **`tools/navfollow.js`** replays the follower's own acceleration law against every jump
+  edge in a cached graph and reports how far short of the landing it comes down. The
+  generator proves an arc as a *constant* velocity from tick 0; a character accelerates
+  from what it has, and `basemaxspeed` is 4.53 for a Heavy against 7.93 for a Scout over
+  one class-blind graph. Offline, a whole map in under a second. **Model the slowest class
+  that will fly it** - `--class heavy` is the default for that reason.
+- **`tools/navcensus.js`** reads the failures every bot on a running server has *already*
+  recorded (`botBlacklistLog` and the three counters), aggregates them by edge and by
+  node, and says which ones `navfollow` predicted. An ordinary twelve-bot server walks the
+  whole map thousands of times an hour; `botscenario.js` only ever walks the three legs
+  somebody thought of. `--reset`, let it play, harvest.
+
+Between them: `navcensus` says *where* bots are failing on maps nobody aimed at, and
+`navfollow` says *why*, with a number, before the game is even running.
 
 ### Auditing the bot nav graph without a running game
 
