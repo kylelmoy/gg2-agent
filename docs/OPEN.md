@@ -6,8 +6,8 @@ enough that breaking it would be a regression.
 **This file is rewritten, not appended to.** An item leaves when it is fixed; the record
 of how it was fixed is the commit that fixed it. Earlier editions of this file carried
 every fixed issue forward as a dated writeup and reached 830 lines, at which point the
-two genuinely open items were the hardest things in it to find. `git log --follow
-docs/OPEN.md` reaches all of it if the history is ever wanted.
+two genuinely open items were the hardest things in it to find. That archive is in git as
+`HANDOFF.md`, removed in 6b21eb0: `git show 6b21eb0^:HANDOFF.md` if it is ever wanted.
 
 See `CLAUDE.md`'s *Where documentation goes* for what belongs here and what does not.
 
