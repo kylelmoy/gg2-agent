@@ -291,6 +291,18 @@ is green:
   from what it has, and `basemaxspeed` is 4.53 for a Heavy against 7.93 for a Scout over
   one class-blind graph. Offline, a whole map in under a second. **Model the slowest class
   that will fly it** - `--class heavy` is the default for that reason.
+
+  ⚠️ **`--class` does NOT apply to every edge, and assuming it did cost this tool its
+  credibility for months.** The ordinary jump graph is class-blind, but type 5 and type 6
+  are not: `navFindPath` hands `NAV_EDGE_DOUBLEJUMP` only to a Scout and
+  `NAV_EDGE_ROCKETJUMP` only to a healthy Soldier, so scoring either as a Heavy is
+  scoring a flight nobody makes. It did exactly that until 2026-08-24 and reported 32
+  perfectly good double-jump edges as unflyable, which meant its whole reason to exist -
+  **"expect 0, a non-zero count is a regression"** - had quietly stopped being true and
+  stayed that way because nothing re-ran it after the double jump landed. Type 5 is scored
+  as a Scout now and type 6 as a rocket-jumping Soldier, under `moveStatus 1`'s own tick
+  law (controlFactor 0.65, frictionFactor **1** - no speed bleed at all, so that arc is a
+  different control problem, not a faster one). It reads 0 again over all 24 graphs.
 - **`tools/navcensus.js`** reads the failures every bot on a running server has *already*
   recorded (`botBlacklistLog` and the three counters), aggregates them by edge and by
   node, and says which ones `navfollow` predicted. An ordinary twelve-bot server walks the

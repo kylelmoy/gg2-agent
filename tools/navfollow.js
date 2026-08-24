@@ -123,6 +123,53 @@ function tick(hspeed, press, p) {
   return hspeed;
 }
 
+// The rocket-jump row of Begin Step's moveStatus switch: controlFactor 0.65 and
+// frictionFactor 1, against the default 0.85 / 1.15. A friction of 1 means
+// horizontal speed does not bleed at all for the whole flight, so an arc flown
+// under moveStatus 1 is a different problem from one flown under moveStatus 0 -
+// easier to catch up on, far harder to shed speed on. Scoring a
+// NAV_EDGE_ROCKETJUMP with `tick` above would be wrong in both directions.
+//
+// Keep in step with gg2-nav-gen/src/follow.js (rocketProfile/tickRocket, the
+// filter) and the game's botRocketReach.gml (the follower's own copy). All
+// three are the same law; this is the one that REPORTS on it.
+const RJ_CONTROL = 0.65;
+const RJ_FRICTION = 1;
+
+// maxSpeed is deliberately not re-derived from RJ_CONTROL: Character.Create
+// computes basemaxspeed once from baseControl/baseFriction and Begin Step's cap
+// test reads that stored value, never a live recomputation.
+function rocketProfile(name) {
+  const p = profile(name);
+  return { name: p.name, runPower: p.runPower, accel: p.runPower * RJ_CONTROL, maxSpeed: p.maxSpeed };
+}
+
+function tickRocket(hspeed, press, p) {
+  if (press > 0 && hspeed <= p.maxSpeed) hspeed += p.accel;
+  else if (press < 0 && hspeed >= -p.maxSpeed) hspeed -= p.accel;
+  hspeed /= RJ_FRICTION;
+  if (Math.abs(hspeed) < REST_SPEED && press === 0) hspeed = 0;
+  return hspeed;
+}
+
+function flyRocket(needVx, ticks, v0, p) {
+  const total = needVx * ticks;
+  let v = v0;
+  let x = 0;
+  const n = Math.max(1, Math.round(ticks));
+  for (let air = 1; air <= n; air++) {
+    const want = Math.min(total, needVx * air);
+    // Speed-gated, like the generator's flyDistanceRocket and the game's
+    // botRocketReach: without friction the bare position law limit-cycles.
+    let press = 0;
+    if (x < want - 1) { if (v < needVx) press = 1; }
+    else if (x > want + 1) { if (v > needVx) press = -1; }
+    v = tickRocket(v, press, p);
+    x += v;
+  }
+  return x;
+}
+
 // The speed a character has after covering `dist` px of run-up from rest. The
 // follower walks to the takeoff column and jumps from it, so what matters is
 // what it is carrying when it arrives, not how long it took.
@@ -203,8 +250,32 @@ function analyse(g, p, opts) {
   const cell = c.NAV_CELL_SIZE;
   const rows = [];
 
+  // WHICH CHARACTER FLIES WHICH ARC
+  //
+  // The ordinary jump graph is written for Heavy, because one edge set serves
+  // every class and Heavy is the slowest - that is what `p` is, and what the
+  // --class option overrides. The other two arc kinds are NOT shared, and
+  // scoring them as Heavy is scoring a flight nobody ever makes:
+  //
+  //   type 5  navFindPath hands NAV_EDGE_DOUBLEJUMP only to a character with
+  //           canDoublejump, which is the Scout and nothing else, and
+  //           gg2-nav-gen's doubleJumpEdges vetoes them with profile('scout').
+  //   type 6  NAV_EDGE_ROCKETJUMP goes only to a Soldier with the health to
+  //           survive the blast, flying under moveStatus 1.
+  //
+  // WARNING: This tool scored BOTH as Heavy until 2026-08-24 and reported 32
+  // double-jump edges across the shipped graphs as unflyable on that basis. They
+  // are not - a Scout tops out at 7.93 px/tick against Heavy's 4.53 - so the
+  // "expect 0" this tool exists to provide had quietly stopped being true, and
+  // stayed that way because nothing re-ran it after the double jump landed.
+  // Confirmed against the pre-change caches: the same 32, from the same cause.
+  const pScout = profile('scout');
+  const pRocket = rocketProfile('soldier');
+  const pRocketRun = profile('soldier');
+
   for (const e of g.edge) {
-    if (e.type !== c.NAV_EDGE_JUMP && e.type !== c.NAV_EDGE_DOUBLEJUMP) continue;
+    const isRocket = e.type === c.NAV_EDGE_ROCKETJUMP;
+    if (e.type !== c.NAV_EDGE_JUMP && e.type !== c.NAV_EDGE_DOUBLEJUMP && !isRocket) continue;
     const needVx = e.bucket;
     const ticks = e.ticks;
     if (!(needVx > 0) || !(ticks > 0)) continue;
@@ -243,14 +314,22 @@ function analyse(g, p, opts) {
     // not spend it. This is deliberately the pessimistic reading: it asks whether
     // the arc works for a bot that jumps the moment it reaches the takeoff
     // column, which is the bot BOT_TAKEOFF_PATIENCE eventually produces.
-    const vBest = Math.min(runupSpeed(runupCols * cell, p), cap, p.maxSpeed);
+    // The run-up itself always happens on the GROUND, under moveStatus 0, so it
+    // is scored with the ordinary law even for a rocket jump - the rocket that
+    // changes the law does not exist until the bot leaves.
+    let pFly = p;
+    let pRun = p;
+    if (isRocket) { pFly = pRocket; pRun = pRocketRun; }
+    else if (e.type === c.NAV_EDGE_DOUBLEJUMP) { pFly = pScout; pRun = pScout; }
+    const vBest = Math.min(runupSpeed(runupCols * cell, pRun), cap, pFly.maxSpeed);
 
-    const best = flyJump(needVx, ticks, vBest, p);
-    const worst = flyJump(needVx, ticks, 0, p);
-    const impossible = needVx > p.maxSpeed;
+    const fly = isRocket ? flyRocket : flyJump;
+    const best = fly(needVx, ticks, vBest, pFly);
+    const worst = fly(needVx, ticks, 0, pFly);
+    const impossible = needVx > pFly.maxSpeed;
 
     rows.push({
-      from: e.from, to: e.to, needVx, ticks, takeoff, takeoffX, dir,
+      from: e.from, to: e.to, type: e.type, needVx, ticks, takeoff, takeoffX, dir,
       need, width, runupCols, vBest, best, worst,
       shortBest: need - best,
       shortWorst: need - worst,
@@ -275,7 +354,8 @@ function traps(g, rows) {
     if (!exits.length) continue;
     const flyable = exits.filter((e) => {
       // Walks, falls, drop-throughs and move-boxes are not arcs the tracker flies.
-      if (e.type !== c.NAV_EDGE_JUMP && e.type !== c.NAV_EDGE_DOUBLEJUMP) return true;
+      if (e.type !== c.NAV_EDGE_JUMP && e.type !== c.NAV_EDGE_DOUBLEJUMP
+          && e.type !== c.NAV_EDGE_ROCKETJUMP) return true;
       return !bad.has(`${e.from}>${e.to}`);
     });
     const climbs = (list) => list.filter((e) => g.node[e.to].row < n.row);
