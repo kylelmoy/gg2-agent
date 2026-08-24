@@ -149,7 +149,7 @@ wall, or twelve bots in one doorway it is. Pick n11 - most bursts, six exits, an
 reproduces in a 1200-frame window.
 
 
-### One-column nodes: bots oscillate between them, and wedge on them
+### Twin nodes: 163 pairs A* cannot tell apart (and the thrash detector is FINE)
 
 ⚠️ **An earlier edition of this file claimed the stuck-detector fix had pushed the problem
 into the thrash detector. That was wrong twice over, and the correction is the useful part.**
@@ -188,9 +188,32 @@ staircases of one-column nodes, every step sharing the same nine jump exits:
     n124 <-> n128 <-> n133 <-> n140 <-> n147     x 1842, 1836, 1830, 1824, 1818
     n125 <-> n129 <-> n134 <-> n141 <-> n148     x 1998, 2004, 2010, 2016, 2022
 
-Along a run like that A* is indifferent about which step it launches from, so the bot walks
-up and down it re-planning. **Every thrash edge measured over seven runs lands on those two
-staircases** - n129<->n134, n133<->n128, n148->n155, n125->n120.
+Along a run like that A* is indifferent about which step it launches from, and **every
+thrash edge measured over seven runs lands on those two staircases** - n129<->n134,
+n133<->n128, n148->n155, n125->n120.
+
+⚠️ **But the thrash detector is not the bug, and a third framing had to be thrown away to
+establish that.** Traced live over 3600 frames, re-plan-to-re-plan displacement is normally
+100-300px; the small ones cluster at exactly these x-ranges, and `botReplanNear` reaches 1
+there repeatedly - but it **never reached 2**, so no `thr` fired. What fires it is the bot
+standing near-stationary across three re-plans, which is approximately the right answer.
+
+The margin is much thinner than it looks, and this is the number worth keeping:
+
+    twin-pair step: 117 of 163 pairs are 8.49px apart   (a diagonal cell, sqrt(6^2+6^2))
+    BOT_THRASH_DIST                                  =  8
+    pairs whose single step is UNDER the threshold    =  0 of 163
+
+**One staircase step clears the thrash test by 0.49px.** It is diagonal that saves it - a
+purely horizontal twin pair would be `NAV_CELL_SIZE` = 6px apart and *under* the threshold,
+and ordinary one-step progress would read as thrashing. None exist in the 24 shipped graphs
+today, which is a property of the generator rather than a guarantee. Anything that changes
+`NAV_CELL_SIZE`, `BOT_THRASH_DIST`, or lets the generator emit a flat twin run walks into it.
+
+Also latent, and the same shape as the regroup-hold bug: **`BOT_TAKEOFF_PATIENCE` (60) is
+longer than `BOT_REPLAN_TICKS` (45)**, so a bot waiting out a full jump window always spans
+a re-plan and always contributes one `near`. Two such waits in one place fire `thr` on the
+edge the bot was correctly waiting to fly.
 
 **The residual `stk` is a different member of the same family.** One run in seven produced a
 real wedge burst - `n99`, eight exits banned - and n99 is `world x 2100-2106`, a one-column
