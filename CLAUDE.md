@@ -24,6 +24,7 @@ node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
 node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
 node tools/navfollow.js # which promised arcs can the FOLLOWER not fly?   (~1s)
 node tools/navcensus.js # what have the bots on this server already failed at?
+node tools/navsoak.js   # ...that, driven over every map in turn, unattended
 node tools/botscenario.js # do bots still WALK those routes?              (~1min)
 node tools/control.js   # a browser control panel, for playtesting by hand
 ```
@@ -295,9 +296,19 @@ is green:
   node, and says which ones `navfollow` predicted. An ordinary twelve-bot server walks the
   whole map thousands of times an hour; `botscenario.js` only ever walks the three legs
   somebody thought of. `--reset`, let it play, harvest.
+- **`tools/navsoak.js`** is `navcensus` with the driving done for it: every cached graph in
+  turn, 20x, counters zeroed, twelve bots, harvest, next. Two things make that more than a
+  loop. It **drains the log** every `--chunk` frames rather than reading it once, because
+  `botBlacklistLog` stops at 240 characters and a long window otherwise returns a biased
+  early sample - and the read and the clear are one `gg2_eval`, since as two calls the game
+  runs in the gap. And it **prints a capture rate**: `botBlacklistFires` is exact and is not
+  cleared by a drain, so its delta says what a chunk should have yielded, measured against
+  what the log actually gave. Under 100% means the map is under-reported and the chunk was
+  too long. Exits 1 when an edge fails live *and* `navfollow` refuses it offline.
 
-Between them: `navcensus` says *where* bots are failing on maps nobody aimed at, and
-`navfollow` says *why*, with a number, before the game is even running.
+Between them: `navcensus` says *where* bots are failing on maps nobody aimed at, `navsoak`
+says that for all 24 maps without anyone watching, and `navfollow` says *why*, with a
+number, before the game is even running.
 
 ### Auditing the bot nav graph without a running game
 

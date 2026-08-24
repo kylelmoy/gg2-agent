@@ -938,4 +938,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runOne, runAll, clearBots, ensureMap, select, render, report, SCENARIOS };
+module.exports = { runOne, runAll, clearBots, ensureMap, pastSetup, select, render, report, SCENARIOS };

@@ -33,6 +33,7 @@ geometry you have not looked at.
 | what is the terrain actually like here | `navaudit.js --mask x0,y0,x1,y1` | no |
 | what edges does this node have | `navaudit.js --node <n>` | no |
 | **where are bots failing on maps nobody aimed at** | **`navcensus.js`** | yes, any server |
+| **...on every map in the rotation, unattended** | **`navsoak.js`** | **yes, one it drives itself** |
 | can the bot actually walk it | `gg2_scenario` | yes |
 | which edge did it fail on | the scenario's `blacklistLog` | yes |
 | can a *human* make this move | a server and your own hands | yes |
@@ -203,6 +204,70 @@ at that part of the map.
    resolve perfectly well against the current graph - to the wrong surfaces. Events naming a
    pair that is not an edge in the loaded graph are held out and counted, but `--reset` then
    `--since` is the way to be sure.
+
+---
+
+## 0c-bis. Do all of that on all 24 maps, without being there
+
+`navcensus` is hand-driven: reset, wait, harvest, one map. `navsoak.js` is that loop with
+the driving done for it - it walks every cached graph, puts the server on it, boosts to
+20x, zeroes the counters, lets twelve bots play, and harvests.
+
+    node tools/navsoak.js                                 # the whole rotation
+    node tools/navsoak.js koth_gallery --frames 6000      # one map
+    node tools/navsoak.js --bots 12 --json out.json       # fill the roster, keep the raw
+
+It reuses `navcensus`' aggregation, burst collapsing and offline join wholesale, so a
+finding here means exactly what a finding there means. What it adds is coverage and two
+pieces of self-instrumentation.
+
+**The drain loop is the reason it can run for more than two minutes.** Caveat 1 above -
+the 240-character cap - is not a nuisance at rotation scale, it is fatal: a bot records
+its first ~13 failures per round and drops the rest, so a long window returns a *biased*
+sample of whatever happens early. So `navsoak` reads the log and clears it every `--chunk`
+frames and accumulates out here, where there is no cap.
+
+⚠️ **The read and the clear are one `gg2_eval`.** They have to be: as two calls the game
+runs in the gap and every failure fired in it is lost - which is caveat 1 again, rebuilt
+inside the thing that was meant to fix it.
+
+**And it measures whether that worked, rather than assuming it.** `botBlacklistFires` is
+exact and a drain does not clear it, so the events a chunk *should* have yielded is its
+delta. Against the events actually parsed that gives a capture rate, printed per map. 100%
+means the chunk was short enough. Anything less is named, with the remedy (`--chunk`
+halved). **Do not read a map's counts as rates unless its capture says 100%.**
+
+**Caveat 3 is handled by dropping, not by filtering.** `GameServerBeginStep` changes map on
+a win - 300 ticks after `global.winners` is set - so at 20x a 6000-frame window straddles
+one regularly. Node numbers resolve perfectly against the wrong graph, so every drain
+reports the key it was taken under; a chunk that disagrees is dropped whole and counted,
+the server is put back, and the counters are re-zeroed. Losing a chunk in ten costs
+nothing. Keeping one costs the run.
+
+⚠️ **`areSetupGatesClosed()` is not a question about the geometry, and waiting on it cost
+two maps.** The first full rotation lost `arena_lumberyard` and `arena_montane` entirely to
+`still false after 3600 frame(s)`. On arena that predicate reads `ArenaHUD.cpUnlock > 0` -
+the control point's 60-second lock, reset to 1800 on every round restart and again after
+`roundStart`, so it is *never* reliably false. And the wait could not have changed a thing:
+**both arena graphs have zero gated edges between them**, against ctf_avanti's 59. So count
+the gates in the cached graph and wait only if there are any; if a genuinely gated map's
+gates outlast the budget, soak it anyway and say so, because a flagged window beats no
+window. The general rule: **before waiting on a game-state predicate, check the graph
+whether the thing it gates exists on this map.**
+
+**Cost, measured 2026-08-23:** the full 24-map rotation at `--frames 6000 --chunk 600
+--bots 12 --speed 20` takes roughly 35-40 minutes of wall clock, not the ~6 minutes the
+sim time alone suggests. Most of the difference is map loads and straddle recovery - a
+dropped chunk costs a fresh `serverGotoMap` and another setup wait. If you only want the
+top of the list, `--frames 3000` is most of the findings in half the time.
+
+Exit status is 1 if any edge failed live *and* `navfollow` refuses it offline - the pair
+that shares no code, and the only thing here worth a build failing on.
+
+⚠️ **It finds what the bots meet, not what they avoid.** Ordinary play is objective-biased:
+bots walk the route between their spawn and the intel, and much of an 11,500-node rotation
+never gets stepped on however long this runs. Coverage-directed roaming is a different
+tool.
 
 ---
 
