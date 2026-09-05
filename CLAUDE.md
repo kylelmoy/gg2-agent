@@ -501,22 +501,26 @@ exactly what broke.
   leave a thread on that hidden desktop: while switched to it, `win32.js` can
   see no window on the machine at all, and `CloseDesktop` refuses with
   `ERROR_BUSY`. `build-fast.js` needs none of this, which is the point of it.
-- **A GM8 *startup* dialog stalls the headless build for 180s and says nothing
-  useful.** `gm8directbuild.js` waits for `TMainForm` to have a menu and gives up
-  with `timed out waiting for the project to finish loading`; `build-agent.js`
-  then falls back to opening the project for a person, which on an unattended
-  machine burns another `--wait` (default 15) minutes. Both times the real cause
-  is a modal in front of the IDE that nobody can see, and the dialog handling
-  there only watches `#32770` - a Delphi `TMessageForm` is invisible to it.
-  Hit for real on 2026-09-05, and the culprit is this tooling's own exhaust:
-  **"Game Maker detected 190 old temp folders left over from earlier runs... Do
-  you want me to remove these?"** — every launched game leaves a `gm_ttt_*`
-  folder in `%TEMP%` (671 of them by then). Turned off permanently by setting
-  `RemoveTemp` to 0 under `HKCU:\Software\Game Maker\Version 8\Preferences`
-  (the same switch as Preferences > General). If a build ever stalls like this
-  again, do not guess: enumerate Game_Maker.exe's top-level windows, and
-  `PrintWindow` any `TMessageForm` into a PNG and read it - its caption has no
-  handle, so `WM_GETTEXT` on the children returns only `&Yes`/`&No`.
+- **A GM8 dialog now fails the build in about a second, and says what it said.**
+  `gm8directbuild.js` watches `TMessageForm` and `TErrorForm` as well as `#32770`
+  - GM8's own modals are Delphi's, so watching only the Win32 class saw nothing -
+  and gives up as soon as the same dialog has been there three polls, rather than
+  at the timeout. `build-agent.js` re-throws that one failure instead of falling
+  back to a person, since opening the IDE puts them in front of the same dialog.
+  Measured 2026-09-05, before and after: **18 minutes of silence, then 1.5s with
+  the dialog named.**
+  A Delphi `TMessageForm` paints its message with no window handle, so
+  `WM_GETTEXT` on the children yields only `&Yes`/`&No`. The error therefore
+  reports the title and the buttons, **and saves a `PrintWindow` screenshot next
+  to the output exe** - that picture is the only place the actual question
+  survives, and it is perfectly readable. Same trick, same reason, as
+  `launcher.js` uses on the game's dialogs.
+  The one that caused this was **"Game Maker detected N old temp folders left
+  over from earlier runs... remove these?"** - this tooling's own exhaust, one
+  `gm_ttt_*` in `%TEMP%` per game launched, 671 of them by then. Disarmed
+  permanently with `RemoveTemp=0` under
+  `HKCU:\Software\Game Maker\Version 8\Preferences`; the detection is there for
+  the next one.
 - **`gg2_input aim` hangs** rather than erroring: `window_views_mouse_set` never
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher

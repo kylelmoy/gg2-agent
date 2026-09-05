@@ -32,21 +32,18 @@ which a game this tooling launched normally is not. Forcing focus from the launc
 invalid-parameter errors; `git show efedf8b:HANDOFF.md` has the detail before anyone tries
 it again. `press`/`click` do not depend on focus and are unaffected.
 
-### A GM8 startup dialog can still stall an unattended build
+### A full build has no `gmksplit.exe`
 
-`gm8directbuild.js` watches for `#32770` dialogs, which is the wrong class for the ones
-that actually appear: GM8's own are Delphi `TMessageForm`, invisible to that check. It
-therefore times out after 180s with `timed out waiting for the project to finish loading`
-and says nothing about what was on screen, and `build-agent.js` then falls back to opening
-the IDE for a person and waits another `--wait` (default 15) minutes.
+`gmksplit.exe` and `gm8x_fix.exe` lived in the old fork's `Source/` and went with it when
+`Gang-Garrison-2` was replaced by the upstream checkout on 2026-09-05; upstream ships
+`Source/GitToGmk.bat`, which calls `gmksplit.exe`, but not the binary. `build-agent.js`
+therefore stops at *"gmksplit.exe not found. Looked in: gg2-agent/tools; Source and PATH"*
+before it reaches Game Maker at all, and `Source/build/` is gone with the same checkout -
+so there is no exe, no fast-rebuild template and no instance register either.
 
-Hit for real on 2026-09-05 by GM8's *"detected N old temp folders... remove these?"* prompt,
-which this tooling's own game launches create (one `gm_ttt_*` per launch; 671 had
-accumulated). That specific one is disarmed by `RemoveTemp=0` under
-`HKCU:\Software\Game Maker\Version 8\Preferences`, but the class of failure is not: any
-other `TMessageForm` at startup produces the same 18-minute silence. Watching for
-`TMessageForm` too, and `PrintWindow`-ing it into the log the way `launcher.js` already
-does for the game's dialogs, would turn it into a named error.
+The sources are on this machine: `D:/code/Gmk-Splitter` (Java, `build-release.sh` plus
+launch4j) and `D:/code/gm8x_fix` (C). Building either, or restoring the binaries from a
+backup, unblocks every build path; nothing else about the tooling needs it.
 
 ### Nothing uses the walkmask except pictures
 

@@ -161,6 +161,13 @@ async function buildAgent({
         });
         done = true;
       } catch (e) {
+        // A modal in front of the IDE is the one failure the fallback cannot
+        // help with: opening the project for a person puts them in front of the
+        // same dialog, and the wait below then burns another --wait minutes
+        // before saying so. Measured 2026-09-05, before gm8directbuild watched
+        // for TMessageForm: 3 minutes of headless timeout and 15 of "still
+        // waiting for the executable", for a Yes/No prompt about temp folders.
+        if (e instanceof gm8directbuild.BlockedByDialog) throw e;
         lib.warn(`could not build headlessly: ${e.message}`);
       }
     }

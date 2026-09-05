@@ -383,6 +383,50 @@ async function main() {
   })());
   check('captureWindow on a bogus handle returns null rather than throwing', win32.captureWindow(0) === null);
 
+  process.stdout.write('\nblocked build detection\n');
+  {
+    // A modal in front of the IDE is a dead end - the desktop it is on is never
+    // displayed, so nobody can answer it - and the build has to say so rather
+    // than wait out its timeout. That cost 18 minutes of silence on 2026-09-05,
+    // because the only class watched for was #32770 and GM8's own prompt is a
+    // Delphi TMessageForm.
+    const gm8 = require('./gm8directbuild.js');
+    check('TMessageForm is watched for, not just #32770', gm8.DIALOG_CLASSES.includes('TMessageForm'));
+    check('and so is the Delphi error form', gm8.DIALOG_CLASSES.includes('TErrorForm'));
+
+    const dlg = { cls: 'TMessageForm', title: 'Confirm', hwnd: 1 };
+    const seen = {};
+    const poll = (found) => gm8.settle(found, seen);
+
+    check('one sighting is not enough to fail a build', poll([dlg]) === null);
+    let settled = null;
+    for (let i = 1; i < gm8.DIALOG_SETTLE_POLLS; i++) settled = poll([dlg]);
+    check('the same dialog held for DIALOG_SETTLE_POLLS is', settled === dlg);
+
+    // GM8 flashes windows of its own while loading a project, so a title that
+    // keeps changing must never trip this - that would fail every build.
+    const flap = { title: null, count: 0 };
+    let tripped = false;
+    for (let i = 0; i < 20; i++) {
+      if (gm8.settle([{ cls: 'TMessageForm', title: `Loading ${i}`, hwnd: 1 }], flap)) tripped = true;
+    }
+    check('a dialog whose title keeps changing never settles', !tripped);
+
+    const gone = { title: null, count: 0 };
+    gm8.settle([dlg], gone);
+    gm8.settle([], gone);
+    check('a dialog that goes away resets the count', gone.count === 0 && gm8.settle([dlg], gone) === null);
+
+    // build-agent.js has to be able to tell this apart from an ordinary
+    // timeout: its fallback opens the IDE for a person, who would meet the
+    // very same dialog and then wait out another --wait minutes.
+    check('the failure has its own type for build-agent to re-throw',
+      typeof gm8.BlockedByDialog === 'function' && new gm8.BlockedByDialog('x') instanceof Error);
+    contains('and build-agent re-throws it rather than falling back',
+      fs.readFileSync(path.join(__dirname, '..', 'build-agent.js'), 'utf8'),
+      'instanceof gm8directbuild.BlockedByDialog');
+  }
+
   process.stdout.write('\ngg2.ini\n');
   fs.writeFileSync(path.join(BUILD, 'gg2.ini'), '[Settings]\r\nUseLobby=1\r\nHostingPort=8190\r\n\r\n[Server]\r\nDedicated=0\r\n');
   check('a value is read out of a section', session.iniValue(fs.readFileSync(path.join(BUILD, 'gg2.ini'), 'latin1'), 'Settings', 'HostingPort') === '8190');

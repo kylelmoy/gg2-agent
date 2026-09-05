@@ -74,9 +74,26 @@ usage: node tools/gm8directbuild.js <project.gmk> <output.exe> [options]
 
 const IDE_IMAGE = 'Game_Maker.exe';
 const MAIN_CLASS = 'TMainForm';
-const DIALOG_CLASS = '#32770';
+
+// Every window class a blocking modal can arrive as. `#32770` is the Win32
+// standard dialog; the other two are Delphi's, and are what Game Maker itself
+// actually uses - the same two launcher.js watches for on the game.
+//
+// ⚠️ `TMessageForm` was missing here until 2026-09-05, and the cost was a build
+// that hung for eighteen minutes saying nothing useful. GM8 asked *"detected 190
+// old temp folders left over from earlier runs - remove these?"* before it would
+// load anything; the readiness check timed out after 180s with a bare "timed out
+// waiting for the project to finish loading", describeDialogs found no `#32770`
+// and so added nothing, and build-agent.js then fell back to opening the IDE for
+// a person and waited out another --wait. Nothing anywhere named the dialog.
+const DIALOG_CLASSES = ['#32770', 'TMessageForm', 'TErrorForm'];
 
 const POLL_MS = 400;
+
+// How long a dialog must stay up before the build gives up on it. GM8 flashes
+// windows of its own while loading, so one sighting is not enough; three polls
+// of the same title is a modal that is waiting for somebody.
+const DIALOG_SETTLE_POLLS = 3;
 
 // Game_Maker.exe 8.0.0.0 as installed by this repo's setup - the only build
 // the addresses in gm8directbuild/build.c were reverse-engineered against.
@@ -183,37 +200,110 @@ async function until(test, timeoutMs, what) {
 
 const mainWindow = (pid) => win32.windows({ cls: MAIN_CLASS, pid })[0] || null;
 
-// Everything any dialog of this process is saying. Nothing here answers a
+const dialogWindows = (pid) => DIALOG_CLASSES.flatMap((cls) => win32.windows({ cls, pid }));
+
+// Everything one dialog of this process is saying. Nothing here answers a
 // dialog - on a desktop nobody can see, one that appears is a dead end by
-// definition, so the only useful thing to do with it is put its text in the
-// error. This is how a wrong-looking install reports itself as, say,
-// "Application Error / Exception EReadError in module Game_Maker.exe..."
-// rather than a bare timeout.
-function describeDialogs(pid) {
-  return win32
-    .windows({ cls: DIALOG_CLASS, pid })
-    .map((d) => {
-      const body = win32
-        .descendants(d.hwnd)
-        .filter((k) => !/button/i.test(k.cls))
-        .map((k) => (win32.controlText(k.hwnd) || k.text || '').trim())
-        .filter(Boolean)
-        .join(' / ');
-      return [d.title, body].filter(Boolean).join(': ');
-    })
+// definition, so the only useful thing to do with it is say what it was. This
+// is how a wrong-looking install reports itself as, say, "Application Error /
+// Exception EReadError in module Game_Maker.exe..." rather than a bare timeout.
+//
+// ⚠️ A Delphi TMessageForm paints its message with no window handle, so
+// controlText finds nothing but the buttons - the 2026-09-05 temp-folder prompt
+// came back as exactly `&Yes`/`&No` and not one word of the question. The
+// buttons are therefore reported rather than filtered out, since on that class
+// they are the only structured thing there is, and `shotDir` asks for a
+// screenshot as well: PrintWindow captures what was painted, which is the only
+// way the text is recoverable at all. Same trick, same reason, as launcher.js.
+function describeDialog(d, shotDir) {
+  const parts = win32.descendants(d.hwnd);
+  const body = parts
+    .filter((k) => !/button/i.test(k.cls))
+    .map((k) => (win32.controlText(k.hwnd) || k.text || '').trim())
+    .filter(Boolean)
+    .join(' / ');
+  const buttons = parts
+    .filter((k) => /button/i.test(k.cls))
+    .map((k) => (win32.controlText(k.hwnd) || k.text || '').trim().replace(/&/g, ''))
+    .filter(Boolean);
+
+  let said = [`[${d.cls}] ${d.title || '(no title)'}`, body].filter(Boolean).join(': ');
+  if (!body && buttons.length) said += ` (buttons: ${buttons.join(', ')} - the message itself is painted, not a control)`;
+
+  if (shotDir) {
+    try {
+      const bmp = win32.captureWindow(d.hwnd);
+      if (bmp) {
+        const shot = path.join(shotDir, `gm8-dialog-${Date.now()}.bmp`);
+        fs.writeFileSync(shot, bmp);
+        said += ` (screenshot: ${shot})`;
+      }
+    } catch (e) {
+      said += ` (could not screenshot it: ${e.message})`;
+    }
+  }
+  return said;
+}
+
+function describeDialogs(pid, shotDir) {
+  return dialogWindows(pid)
+    .map((d) => describeDialog(d, shotDir))
     .filter(Boolean)
     .join(' | ');
+}
+
+// Thrown when a modal is sitting in front of the IDE. Its own class, because
+// the caller has to tell "Game Maker is waiting for an answer nobody can give"
+// (retrying is pointless, and so is the manual fallback - the same dialog will
+// be there) from "this took too long".
+class BlockedByDialog extends Error {}
+
+// Give up the moment a modal has settled, rather than at the timeout.
+//
+// This is the difference between an 18-minute silence and a named failure. A
+// dialog on a desktop nobody displays can never be answered, so every second
+// spent waiting for it is wasted, and the timeout that eventually arrives says
+// only that time passed. Checked on the same poll as the readiness test, so it
+// costs nothing extra.
+// The settling rule on its own, with no Win32 in it, so it can be checked
+// without a Game Maker to put a dialog up. `seen` is the caller's carry between
+// polls. Returns the window once the same one has been there long enough to be
+// a modal rather than something GM8 flashed while loading.
+function settle(found, seen) {
+  if (found.length === 0) {
+    seen.title = null;
+    seen.count = 0;
+    return null;
+  }
+  const d = found[0];
+  const key = `${d.cls} ${d.title}`;
+  seen.count = key === seen.title ? seen.count + 1 : 1;
+  seen.title = key;
+  return seen.count >= DIALOG_SETTLE_POLLS ? d : null;
+}
+
+function blockingDialog(pid, seen, shotDir) {
+  const d = settle(dialogWindows(pid), seen);
+  if (!d) return null;
+  return new BlockedByDialog(
+    `Game Maker is waiting on a dialog and cannot be answered - it is on a desktop nothing displays. ` +
+      `It says: ${describeDialog(d, shotDir)}`
+  );
 }
 
 // A Delphi main form exists long before it is usable. It is loaded once it
 // has a menu bar and its title - which carries the project name - has stopped
 // changing.
-async function waitForProjectLoaded(pid, timeoutMs) {
+async function waitForProjectLoaded(pid, timeoutMs, shotDir) {
   let lastTitle = null;
   let stable = 0;
+  const seen = { title: null, count: 0 };
   try {
     return await until(
       () => {
+        const blocked = blockingDialog(pid, seen, shotDir);
+        if (blocked) throw blocked;
+
         const w = mainWindow(pid);
         if (!w || !win32.hasMenu(w.hwnd)) {
           stable = 0;
@@ -227,7 +317,8 @@ async function waitForProjectLoaded(pid, timeoutMs) {
       'the project to finish loading'
     );
   } catch (e) {
-    const said = describeDialogs(pid);
+    if (e instanceof BlockedByDialog) throw e;
+    const said = describeDialogs(pid, shotDir);
     if (said) e.message += ` - Game Maker is showing: ${said}`;
     throw e;
   }
@@ -237,7 +328,7 @@ async function waitForProjectLoaded(pid, timeoutMs) {
 // The build
 //---------------------------------------------------------------------------
 
-async function buildExe({ gmk, exe, gm8 = null, timeoutMinutes = 5, log = lib.detail }) {
+async function buildExe({ gmk, exe, gm8 = null, timeoutMinutes = 5, log = lib.detail, shotDir = null }) {
   const ide = find(gm8);
   if (!ide) throw new Error('Game Maker 8 not found - pass --gm8 <dir> or set GM8_DIR');
   verifyKnownBuild(ide);
@@ -249,6 +340,10 @@ async function buildExe({ gmk, exe, gm8 = null, timeoutMinutes = 5, log = lib.de
   // "The file appeared" is the completion signal, so there must not be one to
   // begin with.
   if (fs.existsSync(exe)) fs.rmSync(exe, { force: true });
+
+  // Where a screenshot of a blocking dialog goes. Beside the output by default,
+  // so it is next to the build it explains rather than in a temp directory.
+  const shots = shotDir || path.dirname(path.resolve(exe));
 
   const budget = timeoutMinutes * 60 * 1000;
   const started = Date.now();
@@ -281,7 +376,7 @@ async function buildExe({ gmk, exe, gm8 = null, timeoutMinutes = 5, log = lib.de
     if (!SetThreadDesktop(hDesktop)) throw new Error('SetThreadDesktop failed');
     switched = true;
 
-    const main = await waitForProjectLoaded(pi.dwProcessId, Math.min(left(), 180000));
+    const main = await waitForProjectLoaded(pi.dwProcessId, Math.min(left(), 180000), shots);
     log(`loaded: ${main.title}`);
 
     const logPath = path.join(os.tmpdir(), `gm8directbuild_${pi.dwProcessId}.log`);
@@ -295,7 +390,7 @@ async function buildExe({ gmk, exe, gm8 = null, timeoutMinutes = 5, log = lib.de
     if (fs.existsSync(logPath)) fs.rmSync(logPath, { force: true });
 
     if (!fs.existsSync(exe)) {
-      const said = describeDialogs(pi.dwProcessId);
+      const said = describeDialogs(pi.dwProcessId, shots);
       throw new Error(
         `no executable appeared at ${exe} after injection` +
           (buildLog ? ` (log: ${buildLog})` : '') +
@@ -343,4 +438,8 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildExe, find, verifyKnownBuild, IDE_IMAGE, KNOWN_GM8_SHA256 };
+module.exports = {
+  buildExe, find, verifyKnownBuild,
+  BlockedByDialog, settle, DIALOG_CLASSES, DIALOG_SETTLE_POLLS,
+  IDE_IMAGE, KNOWN_GM8_SHA256,
+};
