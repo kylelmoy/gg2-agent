@@ -78,72 +78,10 @@ function makeScratch() {
   for (const dir of ['Scripts', 'Objects']) {
     fs.cpSync(path.join(realTree(), dir), path.join(TREE, dir), { recursive: true });
   }
-  // navgraph reads NAV_* out of the game's own Constants.xml rather than
-  // carrying a copy, so the scratch tree needs the real one.
+  // gml-lint resolves the game's own constants out of Constants.xml, so the
+  // scratch tree needs the real one for the lint sections below.
   fs.cpSync(path.join(realTree(), 'Constants.xml'), path.join(TREE, 'Constants.xml'));
 }
-
-//---------------------------------------------------------------------------
-// A synthetic nav graph
-//
-// The cache format is not the obvious one: ds_grid_write is column-major, with
-// sixteen-byte cells and the double four bytes into each. Encoding it here from
-// the field layout the game declares is the only way to check the reader
-// against a graph whose answers are known - a real map's cache can only ever be
-// checked against the reader that produced the expectation.
-//---------------------------------------------------------------------------
-
-function encodeGrid(w, h, cell) {
-  const b = Buffer.alloc(12 + w * h * 16);
-  b.writeUInt32LE(811, 0); // ds_grid_write's own version word; the reader ignores it
-  b.writeUInt32LE(w, 4);
-  b.writeUInt32LE(h, 8);
-  for (let x = 0; x < w; x++) {
-    for (let y = 0; y < h; y++) {
-      b.writeDoubleLE(cell(x, y), 12 + 16 * (x * h + y) + 4);
-    }
-  }
-  return b.toString('hex');
-}
-
-// nodes: [{ row, x0, x1, gate }], edges: [{ from, to, gate, ticks, cost }]
-function writeFakeGraph(key, repo, nodes, edges, maskW = 64, maskH = 32) {
-  const c = require('./navgraph.js').constants(repo);
-  const nodeField = (f, i) => {
-    const n = nodes[i];
-    if (f === c.NAV_NODE_Y) return n.row;
-    if (f === c.NAV_NODE_X0) return n.x0;
-    if (f === c.NAV_NODE_X1) return n.x1;
-    if (f === c.NAV_NODE_GATE) return n.gate ?? c.NAV_GATE_NONE;
-    return 0;
-  };
-  const edgeField = (f, e) => {
-    const r = edges[e];
-    if (f === c.NAV_EDGE_FROM) return r.from;
-    if (f === c.NAV_EDGE_TO) return r.to;
-    if (f === c.NAV_EDGE_TYPE) return r.type ?? c.NAV_EDGE_WALK;
-    // The arc a jump edge records: its horizontal speed, its airtime, and the
-    // column it was proven to leave from. navfollow replays the follower
-    // against exactly these three, so a fake graph has to be able to carry them.
-    if (f === c.NAV_EDGE_BUCKET) return r.bucket ?? 0;
-    if (f === c.NAV_EDGE_TAKEOFF) return r.takeoff ?? -1;
-    if (f === c.NAV_EDGE_TICKS) return r.ticks ?? 10;
-    if (f === c.NAV_EDGE_COST) return r.cost ?? 10;
-    if (f === c.NAV_EDGE_GATE) return r.gate ?? c.NAV_GATE_NONE;
-    return 0;
-  };
-  const text = [
-    `navgraph ${c.NAV_CACHE_VERSION}`,
-    `${maskW} ${maskH} ${nodes.length} ${edges.length}`,
-    encodeGrid(c.NAV_NODE_FIELDS, nodes.length, nodeField),
-    encodeGrid(c.NAV_EDGE_FIELDS, edges.length, edgeField),
-    '',
-  ].join('\n');
-  const dir = path.join(repo, 'Source', 'build', 'botnav');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${key}.txt`), text);
-}
-
 
 //---------------------------------------------------------------------------
 // The fake bridge
@@ -611,6 +549,49 @@ async function main() {
     fs.rmSync(manifestPath, { force: true });
   }
 
+  process.stdout.write('\npayload call-site patches\n');
+  {
+    // CODE_PATCHES holds the only edits this tooling makes *to* a line of the
+    // game's own logic rather than beside one, and both sites are the braceless
+    // body of an `if` - so getting a line wrong here does not fail, it silently
+    // changes what the game does. Checked against the real tree's own text,
+    // because an anchor is worth nothing unless it is still exactly one line of
+    // the file it names.
+    const payloadSpec = require('./payload.js');
+    const lib = require('./lib.js');
+    const group = lib.readText(path.join(__dirname, '..', 'payload', 'Scripts', payloadSpec.SCRIPT_GROUP, '_resources.list.xml'));
+
+    const originals = new Map();
+    for (const patch of payloadSpec.CODE_PATCHES) {
+      const file = path.join(TREE, ...patch.file);
+      const name = patch.file.join('/');
+      if (!originals.has(file)) originals.set(file, lib.readText(file));
+      const lines = lib.readText(file).split(/\r?\n/).map((l) => l.trim());
+      check(`${name}: the anchor is exactly one line`, lines.filter((l) => l === patch.from.trim()).length === 1, patch.from);
+
+      // Every agent* name a replacement calls has to be a registered payload
+      // script, or the patched tree is one build away from an unknown-function
+      // error - and a new script is exactly what build-fast cannot splice, so
+      // that failure would land a full minute later.
+      for (const called of patch.to.match(/\bagent[A-Za-z0-9_]*(?=\()/g) || []) {
+        check(`${called} is a registered payload script`, group.includes(`name="${called}"`));
+      }
+    }
+
+    for (const patch of payloadSpec.CODE_PATCHES) {
+      check(`applies: ${patch.to}`, lib.replaceLine(path.join(TREE, ...patch.file), patch.from, patch.to) === true);
+    }
+    check('applying twice is a no-op', payloadSpec.CODE_PATCHES.every(
+      (patch) => lib.replaceLine(path.join(TREE, ...patch.file), patch.from, patch.to) === false));
+
+    for (const patch of payloadSpec.CODE_PATCHES) {
+      lib.replaceLine(path.join(TREE, ...patch.file), patch.to, patch.from);
+    }
+    for (const [file, text] of originals) {
+      check(`${path.basename(file)} comes back byte for byte`, lib.readText(file) === text);
+    }
+  }
+
   process.stdout.write('\nimages\n');
   const png = image.toPng(tinyBmp());
   check('a bitmap becomes a PNG', png.converted && png.width === 2 && png.height === 2);
@@ -791,17 +772,7 @@ async function main() {
       [...mask.bits].join(''),
     );
 
-    // navgraph reads the same chunk for its entity list and exposes the mask to
-    // navaudit's --mask. There must be one decoder behind both names, or the
-    // two grow apart in exactly the way that makes a picture and a text dump
-    // disagree about the same map.
-    const viaNav = require('./navgraph.js').walkmask('fakemap', SCRATCH);
-    check(
-      'navgraph.walkmask is the same decoder',
-      viaNav.width === mask.width && viaNav.height === mask.height && viaNav.bits.equals(mask.bits),
-      `${viaNav.width}x${viaNav.height}`,
-    );
-    check('and answers cell queries the same way', viaNav.solid(4, 1) === 1 && viaNav.solid(0, 0) === 0);
+    check('and answers cell queries the same way', mask.solid(4, 1) === 1 && mask.solid(0, 0) === 0);
 
     const art = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
     const solidOnly = walkmask.tint(art, mask, { strength: 1, only: 'solid' });
@@ -835,182 +806,6 @@ async function main() {
     check('gg2_map_image can draw the mask', Array.isArray(drawn) && drawn[0].type === 'image', JSON.stringify(drawn).slice(0, 80));
     contains('and says which base it used', drawn[1].text, 'base mask');
     contains('and art is still available', (await mcp.callTool('gg2_map_image', { scale: 1 }))[1].text, 'base art');
-  }
-
-  // The nav graph: the cache reader, the gate rules and the overlay geometry.
-  //
-  // All three are pure offline logic - no game, no bridge - and all three were
-  // untested while carrying the trickiest decoding in the repo. A graph built
-  // here has known answers, which a real map's cache never does: checking the
-  // reader against a real map only ever checks it against itself.
-  process.stdout.write('\nnav graph\n');
-  {
-    const nav = require('./navgraph.js');
-    const mapimage = require('./mapimage.js');
-    const c = nav.constants(SCRATCH);
-
-    // Four ledges in a line. 0 <-> 1 <-> 2 both ways, 2 -> 3 one way only: a
-    // component you can enter and not leave, which is the shape of every
-    // asymmetric-edge bug this project has had.
-    const nodes = [
-      { row: 20, x0: 0, x1: 3 },
-      { row: 20, x0: 8, x1: 11 },
-      { row: 20, x0: 16, x1: 19 },
-      { row: 20, x0: 24, x1: 27 },
-    ];
-    const edges = [
-      { from: 0, to: 1 }, { from: 1, to: 0 },
-      { from: 1, to: 2 }, { from: 2, to: 1 },
-      { from: 2, to: 3 },
-    ];
-    writeFakeGraph('faketest_a1', SCRATCH, nodes, edges);
-
-    const g = nav.load('faketest_a1', SCRATCH);
-    check('a cached graph reads back its node and edge counts', g.nodeCount === 4 && g.edgeCount === 5,
-      `${g.nodeCount}/${g.edgeCount}`);
-    check('and every node field lands in the right column',
-      g.node[2].row === 20 && g.node[2].x0 === 16 && g.node[2].x1 === 19,
-      JSON.stringify(g.node[2]));
-    check('and the edge lists are built both ways',
-      g.out[1].length === 2 && g.in[1].length === 2 && g.out[3].length === 0,
-      `out1=${g.out[1].length} in1=${g.in[1].length} out3=${g.out[3].length}`);
-    check('the cache version is checked against the game', g.stale === false, String(g.version));
-
-    check('reach follows edges forwards', g.reach(0).size === 4, String(g.reach(0).size));
-    check('and a one-way edge stays one-way', g.reach(3).size === 1, String(g.reach(3).size));
-    check('and reachBackward finds who can get in', g.reachBackward(3).size === 4, String(g.reachBackward(3).size));
-
-    // Gates are a per-query cost, not baked into the graph: the same graph
-    // answers differently for red, for blue, and for a bot carrying intel.
-    // A gate-blind traversal passed a ctf_conflict that blue cannot cross.
-    check('a team gate opens for its own team',
-      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_RED, false) === true);
-    check('and closes for the other one',
-      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_BLUE, false) === false);
-    check('carrying intel closes your own team gate - the CTF return leg',
-      g.gatePassable(c.NAV_GATE_TEAM_RED, c.TEAM_RED, true) === false);
-    check('an intel gate lets its own team through either way',
-      g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_RED, true) === true);
-    check('and blocks the other team only while carrying',
-      g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_BLUE, true) === false
-      && g.gatePassable(c.NAV_GATE_INTEL_RED, c.TEAM_BLUE, false) === true);
-    check('an unknown gate code refuses passage rather than guessing',
-      g.gatePassable(-99, c.TEAM_RED, false) === false);
-
-    // The same rules through reach(): a gated node is unreachable for the team
-    // the gate is against, which is what localises a break to one chokepoint.
-    writeFakeGraph('fakegate_a1', SCRATCH,
-      [{ row: 20, x0: 0, x1: 3 }, { row: 20, x0: 8, x1: 11, gate: c.NAV_GATE_TEAM_RED }],
-      [{ from: 0, to: 1 }]);
-    const gated = nav.load('fakegate_a1', SCRATCH);
-    check('reach honours a gate on the node it arrives at',
-      gated.reach(0, { team: c.TEAM_RED, hasIntel: false }).size === 2
-      && gated.reach(0, { team: c.TEAM_BLUE, hasIntel: false }).size === 1);
-    check('and a gate-blind reach walks straight through it',
-      gated.reach(0, null).size === 2);
-
-    // The overlay geometry, which had drifted into two answers: a node's span
-    // is in ANCHOR columns - the left edge of the NAV_BOX_W-wide body - so a
-    // bar has to run to x1 + NAV_BOX_W - 1 or every surface reads three cells
-    // shorter than a character can stand on. navimage.js and gg2_map_image draw
-    // through this one function now; before 2026-08-22 they disagreed here.
-    const W = 40;
-    const H = 24;
-    const picture = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
-    mapimage.overlayNodes(picture, [
-      { row: 20, x0: 4, x1: 7, reached: true },
-      { row: 12, x0: 20, x1: 21, reached: false },
-      { row: 4, x0: 30, x1: 30, reached: null },
-    ], { repo: SCRATCH, thickness: 1 });
-    const px = (x, y) => Array.from(picture.rgba.slice((y * W + x) * 4, (y * W + x) * 4 + 3));
-    const same = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
-    check('a node bar starts at x0', same(px(4, 20), mapimage.REACHED), String(px(4, 20)));
-    check('and runs to x1 + NAV_BOX_W - 1, not x1',
-      same(px(7 + c.NAV_BOX_W - 1, 20), mapimage.REACHED), String(px(7 + c.NAV_BOX_W - 1, 20)));
-    check('and stops there', !same(px(7 + c.NAV_BOX_W, 20), mapimage.REACHED));
-    check('an unreached node is drawn red', same(px(20, 12), mapimage.UNREACHED), String(px(20, 12)));
-    check('and one nothing has asked about is neither',
-      same(px(30, 4), mapimage.UNKNOWN), String(px(30, 4)));
-    check('the bar sits on the feet row and not above it', !same(px(4, 19), mapimage.REACHED));
-
-    // Thickness grows upward, into the body box, which is air - so a thicker
-    // bar can never cover geometry the picture was taken to show.
-    const thick = { width: W, height: H, rgba: Buffer.alloc(W * H * 4, 0) };
-    mapimage.overlayNodes(thick, [{ row: 20, x0: 4, x1: 7, reached: true }], { repo: SCRATCH });
-    const tpx = (x, y) => Array.from(thick.rgba.slice((y * W + x) * 4, (y * W + x) * 4 + 3));
-    check('the default bar is two rows, drawn upward',
-      same(tpx(4, 20), mapimage.REACHED) && same(tpx(4, 19), mapimage.REACHED)
-      && !same(tpx(4, 21), mapimage.REACHED));
-  }
-
-  // The follower model. The graph records an arc as a constant velocity; a
-  // character accelerates. Everything navfollow reports comes out of that one
-  // disagreement, so what is pinned here is the disagreement itself - against
-  // the game's own numbers, not against navfollow's own output.
-  process.stdout.write('\nfollower model\n');
-  {
-    const nav = require('./navgraph.js');
-    const nf = require('./navfollow.js');
-    const c = nav.constants(SCRATCH);
-
-    // basemaxspeed = abs(baseRunPower * baseControl / (baseFriction - 1)),
-    // Character.Create. Heavy's 4.53 is where NAV_JUMP_VX came from, which is
-    // why an arc at 4.5 is flyable by exactly one class and not really by that one.
-    const heavy = nf.profile('heavy');
-    const scout = nf.profile('scout');
-    check('heavy tops out at the speed NAV_JUMP_VX was taken from',
-      Math.abs(heavy.maxSpeed - c.NAV_JUMP_VX) < 0.01, heavy.maxSpeed.toFixed(3));
-    check('and scout is 75% faster over the same graph',
-      Math.abs(scout.maxSpeed - 7.933) < 0.01, scout.maxSpeed.toFixed(3));
-
-    // The acceleration ramp, which is the whole finding: a character asked for
-    // 4.10 px/tick from rest averages well under it for the first twenty ticks
-    // and the plan never waits.
-    check('a standstill is a standstill', nf.runupSpeed(0, heavy) === 0);
-    // BOT_RUNUP_CELLS is as far back as the follower ever walks, and for a Heavy
-    // it is not far enough: 36px of run-up buys 86% of the cap, not the cap. So
-    // even the best case this tool models is short of the arc's own assumption.
-    const full = nf.runupSpeed(c.BOT_RUNUP_CELLS * c.NAV_CELL_SIZE, heavy);
-    check('and the longest run-up the follower takes still falls short of the cap',
-      full > 0.8 * heavy.maxSpeed && full < 0.95 * heavy.maxSpeed, full.toFixed(3));
-
-    // koth_gallery n56 -> n44, the edge a human reported and the live blacklist
-    // log then named: 4.10 px/tick for 23.4 ticks is 96px of plan, and a Heavy
-    // leaving from a one-column node covers about 75 of them.
-    const flown = nf.flyJump(4.10, 23.4, 0, heavy);
-    check('a heavy flying a 96px arc from rest lands short',
-      flown > 70 && flown < 80, flown.toFixed(1));
-    check('and a scout flying the same arc does not',
-      nf.flyJump(4.10, 23.4, 0, scout) > 96, nf.flyJump(4.10, 23.4, 0, scout).toFixed(1));
-
-    // Two ledges 96px apart, the source one column wide so there is no run-up
-    // to be had, plus a climb the bot could otherwise take.
-    writeFakeGraph('fakefly_a1', SCRATCH,
-      [{ row: 30, x0: 10, x1: 10 }, { row: 28, x0: 26, x1: 26 }],
-      [{ from: 0, to: 1, type: c.NAV_EDGE_JUMP, bucket: 4.10, ticks: 23.4, takeoff: 10 }]);
-    const fg = nav.load('fakefly_a1', SCRATCH);
-    const asHeavy = nf.analyse(fg, heavy, { tol: 6 });
-    const asScout = nf.analyse(fg, scout, { tol: 6 });
-    check('a one-column source offers no run-up', asHeavy[0].runupCols === 0);
-    check('and the arc off it is unflyable for a heavy', asHeavy[0].failBest === true,
-      Math.round(asHeavy[0].shortBest) + 'px short');
-    check('and flyable for a scout', asScout[0].failBest === false);
-    // An arc asking for more than the class's top speed cannot be rescued by any
-    // run-up or any tolerance, so it is reported as its own kind rather than as
-    // a large shortfall - no follower change can fix one.
-    writeFakeGraph('fakefast_a1', SCRATCH,
-      [{ row: 30, x0: 10, x1: 30 }, { row: 28, x0: 46, x1: 46 }],
-      [{ from: 0, to: 1, type: c.NAV_EDGE_JUMP, bucket: 5.0, ticks: 20, takeoff: 30 }]);
-    const fast = nf.analyse(nav.load('fakefast_a1', SCRATCH), heavy, { tol: 9999 });
-    check('an arc faster than the class can run is impossible, not merely short',
-      fast[0].impossible === true && fast[0].failBest === true);
-    check('and the same arc is ordinary for a class that can run it',
-      nf.analyse(nav.load('fakefast_a1', SCRATCH), scout, { tol: 6 })[0].impossible === false);
-
-    check('a node whose only climb is unflyable is reported as a trap',
-      nf.traps(fg, asHeavy).some((t) => t.node === 0), JSON.stringify(nf.traps(fg, asHeavy)));
-    check('and is not a trap for the class that can fly it',
-      !nf.traps(fg, asScout).some((t) => t.node === 0));
   }
 
   // The tool table is data in one file and behaviour in another, so nothing but

@@ -170,6 +170,42 @@ function insertLineText(text, anchor, insert, where) {
   return result.join(nl);
 }
 
+// Replace the first line whose trimmed text equals `from` with `to`, keeping
+// that line's own indentation. Returns false if `to` is already there.
+//
+// This is what a call-site patch needs and insertLine cannot give it: the two
+// sites the debug payload rewrites are both the braceless body of an `if`, so
+// inserting a line beside one of them silently moves the original out of the
+// branch it belongs to - the show_message would fire on every state update, and
+// the show_error on every sprite lookup. Swapping the whole line for a call is
+// the only edit that keeps the control flow it sits in.
+function replaceLine(file, from, to) {
+  const text = readText(file);
+  const next = replaceLineText(text, from, to);
+  if (next === null) return false;
+  writeText(file, next);
+  return true;
+}
+
+// Same as replaceLine, but on a string. Returns null rather than a copy if `to`
+// is already present; throws if `from` is not found, same as insertLineText.
+// Trims both ends of the match, so replaceLineText(t, a, b) and
+// replaceLineText(t, b, a) are exact inverses whatever the indentation was.
+function replaceLineText(text, from, to) {
+  const nl = newlineOf(text);
+  const lines = text.split(/\r?\n/);
+  if (lines.some((l) => l.trim() === to.trim())) return null;
+
+  let done = false;
+  const out = lines.map((line) => {
+    if (done || line.trim() !== from.trim()) return line;
+    done = true;
+    return line.slice(0, line.length - line.trimStart().length) + to.trim();
+  });
+  if (!done) throw new Error(`line '${from}' not found`);
+  return out.join(nl);
+}
+
 // Remove every line whose trimmed text equals `line`. Returns false if none did.
 function removeLine(file, line) {
   if (!fs.existsSync(file)) return false;
@@ -344,7 +380,7 @@ module.exports = {
   parseArgs, helpAndExit, cli,
   defaultRepo, resolveGg2Tree, findBuildDir, repoOfBuildDir,
   readText, writeText, addBeforeLine, addAfterLine, removeLine,
-  insertLineText, removeLineText,
+  insertLineText, removeLineText, replaceLine, replaceLineText,
   findTool, run, capture, gitStatus,
   sleep, isRunning, stopProcess, launchDetached, waitForPort,
   openInShell, waitForStableFile,

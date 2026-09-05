@@ -95,33 +95,25 @@ const TOOLS = [
       'Full-resolution image of the map itself, straight from the game\'s own Included Files PNG - not a ' +
       'screenshot, so there is no camera, no window-resolution cap and nothing to stitch. Every built-in map ' +
       'ships as exactly this art at its native size (checked against all 22: e.g. koth_valley is 804x180 - ' +
-      'the map-pixel size, 1/6th of world coordinates, F10). Pass overlay: true to additionally plot the bot ' +
-      'nav graph on top, green/red by reachability from a start point (default: the first Character in the ' +
-      'room) via the same BFS gg2_nav_map used to have, plus a marker at the start - a nav cell is exactly one ' +
-      'map pixel, so this needs no unit conversion either. Built for "what does the map actually look like" ' +
-      'and "why is the nav graph disconnected here" without touching the live game beyond reading its current ' +
-      'map name and, if overlay is on, the nav graph. Custom (player-uploaded) maps are not resolvable from ' +
-      'disk yet and return a clear error rather than a wrong image - only the maps shipped in this repo work.\n' +
-      'base picks what the graph is drawn over: "mask" is the map\'s own collision walkmask (dark = solid, ' +
-      'light = open), read out of the same PNG\'s embedded level data; "art" is the painted map; "both" blends ' +
-      'them. It defaults to mask whenever overlay is on and art otherwise, because those are different ' +
-      'questions: the nav graph is built against the mask and nothing else, so the art agrees with the overlay ' +
-      'only by coincidence - it paints scenery nothing collides with and draws solid geometry as background. ' +
-      'On koth_valley the art is a dark night scene in which the two vertical shafts that cost this project a ' +
-      'bug are invisible; the mask shows them at a glance.',
+      'the map-pixel size, 1/6th of world coordinates, F10). Built for "what does this map actually look like" ' +
+      'and "what can a body stand on here" without touching the live game beyond reading its current map name. ' +
+      'Custom (player-uploaded) maps are not resolvable from disk yet and return a clear error rather than a ' +
+      'wrong image - only the maps shipped in this repo work.\n' +
+      'base picks what is drawn: "mask" is the map\'s own collision walkmask (dark = solid, light = open), read ' +
+      'out of the same PNG\'s embedded level data; "art" is the painted map; "both" blends them. They are ' +
+      'different questions and the art answers the second one badly - it paints scenery nothing collides with ' +
+      'and draws solid geometry as background. On koth_valley the art is a dark night scene in which two ' +
+      'vertical shafts are invisible; the mask shows them at a glance.',
     inputSchema: {
       type: 'object',
       properties: {
-        overlay: { type: 'boolean', description: 'Plot the nav graph on top, coloured by reachability. Default: false (the map alone).' },
         base: {
           type: 'string',
           enum: ['art', 'mask', 'both'],
           description:
             'What to draw: "mask" the collision walkmask (dark = solid), "art" the painted map, "both" blended. ' +
-            'Default: mask when overlay is on, art when it is not.',
+            'Default: art.',
         },
-        x: { type: 'number', description: 'World x to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
-        y: { type: 'number', description: 'World y to start the reachability BFS from, if overlay is on. Default: the first Character in the room.' },
         scale: { type: 'integer', description: 'Nearest-neighbour upscale factor - the native map-pixel art is often small. Default: 3.' },
         save_to: { type: 'string', description: 'Also write the PNG here, for keeping.' },
         ...INSTANCE_ARG,
@@ -486,186 +478,6 @@ const TOOLS = [
         ...INSTANCE_ARG,
       },
       additionalProperties: false,
-    },
-  },
-  {
-    name: 'gg2_scenario',
-    description:
-      'Run live bot behaviour scenarios against the running game and report what each one measured. This is the ' +
-      'third tier of bot testing: gg2_test covers tables and arithmetic, navaudit.js covers whether a route ' +
-      'exists in the nav graph, and this covers whether the bot can actually WALK it - the gap where every one ' +
-      'of this project\'s jump-edge bugs lived, since the graph describes an arc the follower cannot fly and ' +
-      'navaudit passes it happily. ' +
-      'Three ways to choose what runs. `scenario` runs an inline definition you write in the call itself and ' +
-      'nothing else - use this while working on a behaviour, so a throwaway probe never lands in the committed ' +
-      'suite and nudging a coordinate is not a file edit. `names` runs a subset of the saved scenarios. Omit ' +
-      'both to run all of them, and `list: true` returns the saved names without running anything. ' +
-      'Saved scenarios live in tools/bot-scenarios.js; promote an inline one into that file once it is worth ' +
-      'keeping, which is an edit to that file alone - no GML and no rebuild. ' +
-      'Two kinds. A NAVIGATION scenario has `to`: the bot is placed at `from`, its goal is locked to `to` ' +
-      '(botGoalLocked, or the objective layer would overwrite it within 30 ticks), and the run reports arrival ' +
-      'ticks plus the four navigation diagnostics counters. It asserts on those counters rather than final ' +
-      'position, because a bot that arrives clears its goal and is then free to walk away. ' +
-      'A COMBAT scenario has `hold` instead: the bot is placed and given no goal at all, so it stands and ' +
-      'fights, and the run reports damage dealt, how far it drifted, and whether it ever acquired a target. Add ' +
-      '`enemies` to put inert training dummies in front of it; a Generator needs no enemies, it is already ' +
-      'counted. Assertions go in `expect`. Example: "a Soldier on high ground shells the enemy generator ' +
-      'without moving" is from + hold + expect:{acquired:true, damage:{min:50}, moved:{max:60}}. ' +
-      'A scenario reads PASS, FAIL, KNOWN (reproduces a bug nobody has fixed - does not fail the run), FIXED ' +
-      '(a KNOWN one started passing - delete its entry) or VOID (could not be set up, or the bot died mid-run, ' +
-      'so the numbers mean nothing). ' +
-      'Takes roughly a minute for the full set; each scenario that changes map pays a map load. Prefer this ' +
-      'over the botscenario.js CLI from an editor session: AgentBridge serves one client at a time, so the CLI ' +
-      'would queue forever behind this server\'s own connection.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        names: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Saved scenario names to run. Omit to run every saved scenario. Ignored if `scenario` is given.',
-        },
-        scenario: {
-          description:
-            'An inline scenario to run instead of the saved ones - one object, or an array of them. This is the ' +
-            'iterate-on-a-behaviour path: nothing is written to disk, so it costs nothing to try a coordinate ' +
-            'and try again.',
-          oneOf: [{ $ref: '#/$defs/scenario' }, { type: 'array', items: { $ref: '#/$defs/scenario' } }],
-        },
-        list: { type: 'boolean', description: 'Return the saved scenario names and maps without running anything.' },
-        speed: {
-          type: 'integer',
-          description:
-            'Fast-forward factor while a scenario runs, 1-20 (default 20). Lower it only to watch one happen; ' +
-            'it does not change what a tick does, just how many happen per real second.',
-        },
-        keep: {
-          type: 'boolean',
-          description:
-            'Leave the test bot in the game afterwards, to inspect where it ended up. Off by default, because ' +
-            'a leftover bot shifts the next scenario\'s role assignment (botRoleAssign counts roster position).',
-        },
-        ...INSTANCE_ARG,
-      },
-      additionalProperties: false,
-      $defs: {
-        scenario: {
-          type: 'object',
-          required: ['map', 'from'],
-          properties: {
-            name: { type: 'string', description: 'Label for the report. Defaults to "ad-hoc".' },
-            map: { type: 'string', description: 'Internal map name, e.g. "koth_valley".' },
-            from: {
-              type: 'array',
-              items: { type: 'number' },
-              minItems: 2,
-              maxItems: 2,
-              description:
-                'World [x, y] to place the bot at. Snapped to the nearest nav node BELOW it, so height is ' +
-                'forgiving but a point with no floor under it is not: that is reported VOID, not FAIL.',
-            },
-            to: {
-              type: 'array',
-              items: { type: 'number' },
-              minItems: 2,
-              maxItems: 2,
-              description:
-                'World [x, y] to send the bot to, snapped the same way - this makes it a NAVIGATION scenario, ' +
-                'run until it arrives or the budget expires. Careful with objective coordinates: a CaptureZone ' +
-                'marker can float ~60px above the floor it belongs to. Give either `to` or `hold`, never both.',
-            },
-            hold: {
-              type: 'integer',
-              description:
-                'Ticks to stand where placed with no goal at all - this makes it a COMBAT scenario. The ' +
-                'objective layer is suspended, so the bot does not walk anywhere and the run measures what it ' +
-                'shoots and whether it stayed put. Give either `to` or `hold`, never both.',
-            },
-            enemies: {
-              type: 'array',
-              description:
-                'Bots on the opposing team, placed at given points. Inert by default - they never aim, fire or ' +
-                'move - so all measured damage is unambiguously this scenario\'s bot. Not needed when the ' +
-                'target is a Generator, which is already counted.',
-              items: {
-                type: 'object',
-                required: ['at'],
-                properties: {
-                  at: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
-                  class: { type: 'string', description: 'Default CLASS_HEAVY - most hp, so it survives the window.' },
-                  dummy: {
-                    type: 'boolean',
-                    description:
-                      'Default true (inert). Set false for a real two-sided fight, and expect to need repeats ' +
-                      'rather than one verdict - aim error and evasion are live.',
-                  },
-                },
-                additionalProperties: false,
-              },
-            },
-            expect: {
-              type: 'object',
-              description:
-                'Assertions over what was measured. Everything here is measured for every scenario and asserted ' +
-                'only where stated, so a nav scenario can also say "and it took no damage getting there".',
-              properties: {
-                damage: {
-                  type: 'object',
-                  description:
-                    'hp removed from the enemy team - live enemy Characters plus any enemy Generator. Prefer a ' +
-                    'loose {min} that asserts "it shoots the thing at all" over a tight range that moves with ' +
-                    'weapon tuning.',
-                  properties: { min: { type: 'number' }, max: { type: 'number' } },
-                  additionalProperties: false,
-                },
-                moved: {
-                  type: 'object',
-                  description: 'Pixels from where the bot was placed. {max: 60} is a reasonable "stayed put".',
-                  properties: { min: { type: 'number' }, max: { type: 'number' } },
-                  additionalProperties: false,
-                },
-                ticks: {
-                  type: 'object',
-                  properties: { min: { type: 'number' }, max: { type: 'number' } },
-                  additionalProperties: false,
-                },
-                acquired: {
-                  type: 'boolean',
-                  description:
-                    'Whether it ever picked a target. Latched while it happens - botTarget clears when a target ' +
-                    'dies, so at the end a bot that fought and won is indistinguishable from one that never saw ' +
-                    'anything. Separates "aimed at the wrong thing" from "never saw anything".',
-                },
-              },
-              additionalProperties: false,
-            },
-            class: {
-              type: 'string',
-              description:
-                'CLASS_SOLDIER (default), CLASS_SCOUT, CLASS_HEAVY, ... Movement is class-independent today ' +
-                '(botPathKeys has no class references), so vary this only when the test is about the class.',
-            },
-            team: { type: 'string', enum: ['red', 'blue'], description: 'Decides which gates the route may use. Default red.' },
-            budget: { type: 'integer', description: 'Ticks allowed before the leg counts as failed. Default 1200 (40s).' },
-            about: { type: 'string', description: 'What a failure here would mean. Printed when it fails.' },
-            allow: {
-              type: 'object',
-              description:
-                'Caps on the diagnostics counters. Omit one and it is reported but not asserted, which is the ' +
-                'right state until you have measured it - a guessed cap fails for reasons unrelated to the bot. ' +
-                '`replans` is rejected on purpose: it measures how long the leg took, not whether anything went ' +
-                'wrong, because planning is on a 45-90 tick timer.',
-              properties: {
-                stuck: { type: 'integer' },
-                blacklisted: { type: 'integer' },
-                offRoute: { type: 'integer' },
-              },
-              additionalProperties: false,
-            },
-          },
-          additionalProperties: false,
-        },
-      },
     },
   },
 ];

@@ -18,8 +18,9 @@ Four things live here:
   command-line for — driven automatically where possible, manually otherwise.
 
 Everything is kept out of the game's own repository. The bridge is injected into
-its source tree at build time and removed afterwards, so the fork can never ship
-it, and nothing about this workflow appears in its history.
+its source tree at build time and removed afterwards, so a build can never ship
+it, and nothing about this workflow appears in that repo's history. The checkout
+it targets is upstream `Gang-Garrison-2` and is treated as read-only.
 
 > Agents: read [`CLAUDE.md`](CLAUDE.md) instead — it is the operating guide.
 
@@ -35,13 +36,11 @@ cleanup.js          remove it, and verify with git status
 
 payload/            copied verbatim into the game's Source/gg2/
   Objects/          AgentBridge and the four AgentSpare objects, with their events
-  Scripts/          the GML implementing the bridge
+  Scripts/          the GML implementing the bridge, and the debug logging it patches in
 
 docs/               durable reference; see CLAUDE.md, "Where documentation goes"
   OPEN.md           what is known to be wrong right now (rewritten, not appended)
-  NAVMETHOD.md      how to investigate bad bot navigation, offline first
-  NAVLOG.md         what each nav generator change measured
-  ROUTEVARIETY.md   route variety: why it went, what a replacement must do
+  CLIENTDEBUG.md    getting a client failure into a log instead of a screenshot
 
 tools/
   -- driving a running game --
@@ -64,21 +63,13 @@ tools/
   gmlerror.js       turns a GM8 error dialog back into file:line
   payload.js        what the payload consists of, so inject and cleanup agree
 
-  -- the bot nav graph, offline --
-  navgraph.js       the cache reader and the model: coordinates, gates, reachability
-  navaudit.js       can a bot path from spawn to the objective, on every map
-  navsuspects.js    which routes are long enough to be worth watching a bot on
-  navimage.js       the graph drawn over the map's collision mask
+  -- maps, offline --
   walkmask.js       the one decoder for what a map is made of
 
   -- pictures --
-  mapimage.js       one map picture, drawn one way: base layer, node bars, scale
+  mapimage.js       one map picture, drawn one way: base layer and scale
   areashot.js       a live screenshot bigger than one window, tiled and stitched
   image.js          turns what screen_save wrote into a PNG
-
-  -- behaviour --
-  botscenario.js    live bot scenarios: does a bot still WALK the route it planned
-  bot-scenarios.js  the scenarios themselves - edit this one, not the runner
 
   selftest.js       exercises all of the above against a fake game
   lib.js            shared helpers (file edits, tool discovery, processes, paths)
@@ -108,14 +99,14 @@ Register the MCP server once, at user scope, so nothing lands in the game repo:
 claude mcp add gg2 -s local -- node <path-to>\gg2-agent\tools\gg2-mcp-server.js
 ```
 
-It exposes eighteen tools, in four groups:
+It exposes twenty-two tools, in four groups:
 
 | | |
 |---|---|
-| **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_log` |
-| **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
+| **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_map_image`, `gg2_area_shot`, `gg2_log` |
+| **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_speed`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
 | **edit** | `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
-| **run** | `gg2_session`, `gg2_test` |
+| **run** | `gg2_session`, `gg2_test`, `gg2_profile` |
 
 Every tool that talks to a game takes an optional `instance`, so a server and its
 clients can be addressed by name; leave it out while only one game is running.
@@ -136,7 +127,7 @@ adding, removing or renaming a resource. Everything else goes through
 `build-fast.js`.
 
 While iterating on the bridge's own GML, `--keep-injected` leaves it in the tree;
-run `node cleanup.js` before committing to the fork.
+run `node cleanup.js` before leaving that checkout.
 
 ## The bridge, and why it is injected
 
@@ -154,6 +145,8 @@ places, one line each:
 | `Scripts/_resources.list.xml` | register the script group |
 | `Scripts/Game/game_init.gml` | `instance_create(0, 0, AgentBridge);` |
 | `Objects/InGameElements/PlayerControl.events/Begin Step.xml` | OR `AgentBridge.heldMask` into `keybyte`, so `gg2_input press left` etc. can hold a direction without a keyboard |
+| `Scripts/Serialization/deserializeState.gml` | route the player-count mismatch through a payload script, so it reaches the log as well as the screen |
+| `Scripts/Misc/getCharacterSpriteId.gml` | the same for its two `show_error` calls, which abort — see `docs/CLIENTDEBUG.md` |
 
 Everything else is new files. The object configures itself from the command line
 in its own Create event, so the game's startup needs one line and nothing more.
@@ -162,7 +155,9 @@ and restored through `tools/events.js`, the same escape-aware machinery behind
 `gg2_event`, rather than a plain-text line insert - it lives inside XML.
 
 The listener accepts one client at a time and drops anything that is not
-loopback.
+loopback. One client at a time is why the tools split the way they do: see
+*The loop* in `CLAUDE.md` for which of them may be run from a shell while an
+agent is holding a game, and which may not.
 
 ### Wire protocol
 

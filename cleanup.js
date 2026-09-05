@@ -2,9 +2,10 @@
 //=============================================================================
 // cleanup.js - remove the agent bridge from a Gang Garrison 2 checkout.
 //
-// Exactly reverses inject.js: deletes the copied object and scripts, and
-// removes the three inserted lines. Edits are surgical rather than a git
-// checkout, so any unrelated work in progress in those files survives.
+// Exactly reverses inject.js: deletes the copied object and scripts, removes
+// the inserted lines, and swaps every rewritten call site back to the line it
+// replaced. Edits are surgical rather than a git checkout, so any unrelated work
+// in progress in those files survives.
 //
 // Verifies the result with git status and reports anything left behind. This
 // is what keeps the bridge - which is remote code execution by design - out of
@@ -47,6 +48,13 @@ function cleanup(repo, quiet) {
     lib.ok(`removed heldMask wiring from ${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT}`, quiet);
   }
 
+  let unpatched = 0;
+  for (const patch of payloadSpec.CODE_PATCHES) {
+    if (lib.replaceLine(path.join(tree, ...patch.file), patch.to, patch.from)) unpatched++;
+  }
+  if (unpatched) lib.ok(`restored ${unpatched} debug call site(s)`, quiet);
+  else lib.skip('debug call sites already restored', quiet);
+
   const objList = path.join(tree, 'Objects', '_resources.list.xml');
   let removed = 0;
   for (const name of payloadSpec.OBJECTS) {
@@ -76,6 +84,21 @@ function cleanup(repo, quiet) {
   }
 
   // --- 3. prove the checkout is clean ---------------------------------------
+  //
+  // git status alone cannot see a call site that failed to revert: STRAY matches
+  // paths, and a half-restored deserializeState.gml is just a modified path like
+  // any other. So check the rewritten lines themselves are gone before trusting
+  // the status output.
+  const leftover = payloadSpec.CODE_PATCHES.filter((patch) => {
+    const file = path.join(tree, ...patch.file);
+    return fs.existsSync(file) && lib.readText(file).includes(patch.to);
+  });
+  if (leftover.length > 0) {
+    lib.fail('debug call sites still patched - cleanup did not fully reverse');
+    for (const patch of leftover) lib.detail(`${path.join(...patch.file)}: ${patch.to}`);
+    return false;
+  }
+
   const status = lib.gitStatus(path.resolve(repo));
   if (status.length === 0) {
     lib.ok('git status clean', quiet);

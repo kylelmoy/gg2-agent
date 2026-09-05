@@ -9,6 +9,9 @@
 //   Scripts/_resources.list.xml   register the script group
 //   Scripts/Game/game_init.gml    create the instance at startup
 //
+// and rewrites the handful of call sites in payloadSpec.CODE_PATCHES, so a
+// failure the game only ever put on screen reaches the bridge log as well.
+//
 // What the payload consists of lives in tools/payload.js, so this and
 // cleanup.js can never disagree about it.
 //
@@ -82,6 +85,14 @@ function inject(repo, quiet) {
     events.writeEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, after, opts);
     lib.ok(`wired heldMask into ${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT}`, quiet);
   }
+
+  // --- 5. route the failures worth reading through the bridge log ------------
+  let patched = 0;
+  for (const patch of payloadSpec.CODE_PATCHES) {
+    if (lib.replaceLine(path.join(tree, ...patch.file), patch.from, patch.to)) patched++;
+  }
+  if (patched) lib.ok(`patched ${patched} debug call site(s)`, quiet);
+  else lib.skip('debug call sites already patched', quiet);
 }
 
 if (require.main === module) {

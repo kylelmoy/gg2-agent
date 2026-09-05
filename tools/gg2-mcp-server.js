@@ -852,55 +852,10 @@ async function callTool(name, args) {
 
       const mapName = await watched(where, () => command(where, 'EVALX global.currentMap'));
 
-      // The base layer follows the question: the nav graph is built against the
-      // walkmask and nothing else, so an overlay defaults to the mask, while
-      // "what does this map look like" defaults to the art.
-      const base = args.base || (args.overlay ? 'mask' : 'art');
-
-      let overlayText = '';
-      let nodes = null;
-      if (args.overlay) {
-        let sx = args.x;
-        let sy = args.y;
-        if (sx === undefined || sy === undefined) {
-          const has = await watched(where, () => command(where, 'EVALX instance_exists(Character)'));
-          if (has !== '1') {
-            throw new Error(
-              'no Character in the room to default a start point from - pass x and y explicitly, ' +
-                'or add one first (botAdd, or have a client join)'
-            );
-          }
-          const pos = await watched(where, () => command(where, 'EVALX string(Character.x) + "," + string(Character.y)'));
-          const [cx, cy] = pos.split(',').map(Number);
-          if (sx === undefined) sx = cx;
-          if (sy === undefined) sy = cy;
-        }
-
-        const reached = await watched(where, () => command(where, `EVALX agentNavReach(${sx}, ${sy})`));
-        if (reached === '-1') {
-          throw new Error(
-            'agentNavReach returned -1: either the nav graph is not built yet (wait on global.navReady) ' +
-              `or (${sx}, ${sy}) does not resolve to a node at all`
-          );
-        }
-
-        // "anchorY,X0,X1,R;" per node. anchorY is already the feet row (the
-        // node's Y plus NAV_BOX_H), which is the row mapimage draws on, and R
-        // is 1/0/2 for reached, not reached, and never asked.
-        const dump = await watched(where, () => command(where, 'EVALX agentNavDump()'));
-        nodes = dump
-          .split(';')
-          .filter(Boolean)
-          .map((entry) => {
-            const [row, x0, x1, r] = entry.split(',').map(Number);
-            return { row, x0, x1, reached: r === 2 ? null : r === 1 };
-          });
-        overlayText = `, ${reached} nodes reached from (${sx}, ${sy})`;
-      }
+      const base = args.base || 'art';
 
       let picture = mapimage.basePicture(mapName, REPO, base);
       const native = { width: picture.width, height: picture.height };
-      if (nodes) mapimage.overlayNodes(picture, nodes, { repo: REPO });
       picture = mapimage.scaled(picture, scale);
 
       const png = mapimage.toPng(picture);
@@ -913,7 +868,6 @@ async function callTool(name, args) {
           text:
             `${mapName}: ${picture.width}x${picture.height} (native ${native.width}x${native.height}, ${scale}x), ` +
             `base ${base}${base === 'mask' ? ' (dark = solid; pass base: "art" for the map art)' : ''}` +
-            `${overlayText}` +
             (args.save_to ? `, saved to ${args.save_to}` : ''),
         },
       ];
@@ -1292,33 +1246,6 @@ async function callTool(name, args) {
       );
     }
 
-    case 'gg2_scenario': {
-      // Required lazily: botscenario.js is a consumer of this module's callTool,
-      // so requiring it at the top would be a cycle and one of the two modules
-      // would see the other half-initialised.
-      const scen = require('./botscenario');
-
-      if (args.list) {
-        return scen.SCENARIOS.map((s) => `${s.name.padEnd(28)} ${s.map}${s.known ? '  [KNOWN-broken]' : ''}`).join('\n');
-      }
-
-      // Validate before anything is launched, so a bad name or a malformed
-      // inline scenario costs nothing rather than surfacing after a map load.
-      scen.select(args.names, args.scenario);
-
-      // callTool rather than a fresh client: this runs over the connection this
-      // server already holds, which is the whole reason the tool exists. The
-      // bridge accepts one client at a time, so the CLI cannot run while an
-      // editor session is attached.
-      const results = await scen.runAll(callTool, {
-        instance: args.instance,
-        names: args.names,
-        scenario: args.scenario,
-        speed: args.speed,
-        keep: args.keep,
-      });
-      return scen.render(results).text;
-    }
 
     default:
       throw new Error('unknown tool: ' + name);

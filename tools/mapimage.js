@@ -2,23 +2,22 @@
 //=============================================================================
 // mapimage.js - one picture of a map, built one way.
 //
-// A nav-graph overlay was being drawn twice: once in navimage.js against a
-// graph read off disk, once in gg2-mcp-server.js's gg2_map_image against a live
-// agentNavDump(). Same base art, same mask tinting, same node bars, same
-// nearest-neighbour scale - and, by 2026-08-22, no longer the same picture. The
-// offline one drew each node's span out to `x1 + NAV_BOX_W - 1`; the live one
-// stopped at `x1`, so every surface in the MCP overlay came out three cells
-// short of the same surface in the CLI overlay.
+// The map's own Included Files/<name>.png is the whole source: the art is the
+// image, and the collision mask is a zTXt chunk inside the same file (see
+// walkmask.js). Nothing here asks a running game anything, so there is no
+// camera, no window-resolution cap and nothing to stitch.
 //
-// The two questions really are different - "what does the cached graph reach"
-// and "what does the running game reach" - but the drawing is not, so the
-// drawing lives here and the callers bring their own nodes.
+// Coordinates are map pixels throughout. The mask is one bit per 6x6 world
+// pixels, which is what walkmask.js scales by, so a mask base layer lines up
+// with the art without conversion.
 //
-// Coordinates are map pixels throughout, which are also nav cells: NAV_CELL_SIZE
-// is the same 6 the game scales map pixels to world pixels by, so an overlay
-// needs no unit conversion at all.
+// This also drew a bot nav-graph overlay, shared between an offline CLI and the
+// live gg2_map_image so the two could not drift - they had, by 6 cells, and that
+// is what the sharing fixed. Both consumers went with the bot layer when the
+// fork was replaced by the upstream reference checkout; gg2-server owns bot
+// navigation now. `git show d346b8a^:tools/mapimage.js` has the overlay code.
 //
-// Usage: a module only - navimage.js is the CLI, gg2_map_image is the tool.
+// Usage: a module only - gg2_map_image is the tool.
 //=============================================================================
 
 const fs = require('fs');
@@ -26,16 +25,18 @@ const fs = require('fs');
 const lib = require('./lib');
 const img = require('./image');
 const walkmask = require('./walkmask');
-const nav = require('./navgraph');
 
 //---------------------------------------------------------------------------
 // The base layer
 //---------------------------------------------------------------------------
 
-// The nav graph is built against the walkmask and nothing else, so a picture
-// asking a nav question should be of the mask. A picture asking what the map
-// looks like should be of the art. Neither is a good default for the other
-// question, which is why the caller passes the question and not the answer.
+// A picture asking what the map looks like should be of the art; a picture
+// asking what a body can stand on should be of the mask, since the art paints
+// scenery nothing collides with and draws real geometry as though it were
+// background. `koth_valley` is the plain case - a night scene whose underground
+// is nearly black, in which two vertical shafts are invisible in the art and
+// obvious in the mask. Neither is a good default for the other question, which
+// is why the caller passes the question and not the answer.
 const BASES = ['art', 'mask', 'both'];
 
 function basePicture(map, repo, base = 'art') {
@@ -55,51 +56,6 @@ function basePicture(map, repo, base = 'art') {
   const mask = walkmask.decode(map, repo);
   const picture = base === 'both' ? walkmask.tint(art, mask) : walkmask.toRgba(mask);
   return { width: picture.width, height: picture.height, rgba: Buffer.from(picture.rgba) };
-}
-
-//---------------------------------------------------------------------------
-// The node bars
-//---------------------------------------------------------------------------
-
-const REACHED = [0, 255, 0, 255];
-const UNREACHED = [255, 0, 0, 255];
-const UNKNOWN = [80, 140, 255, 255];
-
-// One bar per node, on the row its feet are on.
-//
-// `row` is the floor row (the node's own Y plus NAV_BOX_H) - the same "where the
-// feet are" row botSetGoal's own callers use, and what agentNavDump already
-// sends, so neither caller has to know NAV_BOX_H.
-//
-// The span runs to `x1 + NAV_BOX_W - 1` because a node's span is in *anchor*
-// columns - the left edge of the body - and the body is NAV_BOX_W wide. Drawing
-// only to x1 makes every surface look three cells shorter than a character can
-// actually stand on, which is what the MCP copy of this used to do.
-//
-// `reached` is true, false, or null for "nothing has been asked yet", which is
-// drawn as a third colour rather than silently guessing green or red.
-function overlayNodes(picture, nodes, { repo, thickness = 2 } = {}) {
-  const boxW = nav.constants(repo || lib.defaultRepo()).NAV_BOX_W;
-  const { width, height, rgba } = picture;
-
-  const put = (x, y, colour) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const at = (y * width + x) * 4;
-    rgba[at] = colour[0];
-    rgba[at + 1] = colour[1];
-    rgba[at + 2] = colour[2];
-    rgba[at + 3] = colour[3];
-  };
-
-  for (const n of nodes) {
-    const colour = n.reached === true ? REACHED : n.reached === false ? UNREACHED : UNKNOWN;
-    for (let x = n.x0; x <= n.x1 + boxW - 1; x++) {
-      // Upward from the feet row: the extra rows are inside the body, which is
-      // air, so a thicker bar never covers geometry the picture was taken for.
-      for (let t = 0; t < thickness; t++) put(x, n.row - t, colour);
-    }
-  }
-  return picture;
 }
 
 //---------------------------------------------------------------------------
@@ -127,4 +83,4 @@ function toPng(picture) {
   return img.encodePngRgba(picture.width, picture.height, picture.rgba);
 }
 
-module.exports = { basePicture, overlayNodes, crop, scaled, toPng, BASES, REACHED, UNREACHED, UNKNOWN };
+module.exports = { basePicture, crop, scaled, toPng, BASES };

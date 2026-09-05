@@ -14,10 +14,11 @@
   <resource name="agentBridgeWatchTick" type="RESOURCE"/>
   <resource name="agentBridgeDestroy" type="RESOURCE"/>
   <resource name="agentBridgeDraw" type="RESOURCE"/>
-  <resource name="agentNavReach" type="RESOURCE"/>
-  <resource name="agentNavDump" type="RESOURCE"/>
   <resource name="agentBridgeHudVisible" type="RESOURCE"/>
   <resource name="agentBridgeSpeed" type="RESOURCE"/>
+  <resource name="agentDebugStateCount" type="RESOURCE"/>
+  <resource name="agentDebugDesync" type="RESOURCE"/>
+  <resource name="agentDebugSpriteError" type="RESOURCE"/>
   <resource name="agentScriptSpare0" type="RESOURCE"/>
   <resource name="agentScriptSpare1" type="RESOURCE"/>
   <resource name="agentScriptSpare2" type="RESOURCE"/>

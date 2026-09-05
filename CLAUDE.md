@@ -2,31 +2,64 @@
 
 Operating guide for an AI agent. Read this before touching either repo.
 
-## The two repositories
+## The repositories
 
 | Repo | Contains | Rule |
 |---|---|---|
 | `gg2-agent` (this one, private) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
-| `Gang-Garrison-2` (public fork) | the game itself | **feature code only** — never commit tooling, build scripts, or the bridge here |
+| `Gang-Garrison-2` | the game itself — **upstream `Gang-Garrison-2/Gang-Garrison-2`, the reference checkout** | treat as read-only; never commit tooling, build scripts, or the bridge here |
+| `gg2-server` | the C# port of the server, and everything to do with **bots** | not this repo's business, except that it owns nav now |
+
+⚠️ **`Gang-Garrison-2` is upstream now, not the old bot fork** (changed
+2026-09-05). That checkout has **no bot layer at all** — no `Scripts/Bots/`, no
+`Scripts/BotNav/`, no `NAV_*` in `Constants.xml` — so anything in an older
+transcript about nav graphs, bot scenarios, `botAdd`, `navBuildState` or
+`Source/build/botnav` refers to code that is not there. This repo's own bot-nav
+tooling (nine tools, three docs, two payload scripts and `gg2_scenario`) was
+retired with it; `git show d346b8a` is the last commit that has them. Bot
+navigation lives in `gg2-server` — its `docs/NAVGEN.md`, `docs/BOTAI.md` and
+`docs/TRAPS-BOTS.md` — and its server generates any graph it is missing on a map
+change, so there is nothing to warm here.
 
 The bridge is **injected** into the game's source tree at build time and removed
 again afterwards. If you find `AgentBridge` files, an `instance_create(0, 0,
 AgentBridge);` line, or an `AgentBridge.heldMask` reference inside
-`PlayerControl` committed in the fork, that is a mistake — run `cleanup.js`.
+`PlayerControl` committed there, that is a mistake — run `cleanup.js`.
+
+⚠️ **Injecting also rewrites a few lines of the game's own logic**, not just adds
+lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps three call sites for
+calls to payload scripts, so a failure the game only ever put on screen reaches
+`agent_bridge_<port>.log` too. `cleanup.js` swaps them back and now fails if one
+survives. An `agentDebug*` call inside `deserializeState.gml` or
+`getCharacterSpriteId.gml` in the fork is the same kind of mistake as the ones
+above. `docs/CLIENTDEBUG.md` is why it exists and how to add a site — read it
+before patching a fourth, because **both existing sites are the braceless body of
+an `if`, where inserting a line beside the anchor silently changes what the game
+does.**
 
 ## The loop
 
+There are two front doors onto the same code, and **one socket between them**. The bridge
+inside the game accepts a single client — `payload/Scripts/AgentBridge/agentBridgeStep.gml:26`
+takes a connection only while it has none — and every *process* that talks to a game is a
+client. So an editor's MCP session and a `node tools/...` invocation cannot both hold one
+game: whoever is second sits in the accept backlog forever, which presents as every call
+timing out while the game is plainly alive and answering the other one.
+
+That, and nothing else, is what decides which door to use.
+
+### Offline — run these from the shell, always
+
+None of these opens a bridge connection, so none of them can conflict with anything an
+agent is holding. The build scripts read and write the source tree; `walkmask.js` reads
+the maps' own PNGs off disk.
+
 ```powershell
-node build-fast.js      # splice code changes into the last build         (~3s)
-node run-agent.js       # launch the game, wait for the bridge
-node build-agent.js     # full build - drives GM8 headlessly            (~1min)
-node tools/selftest.js  # check the tooling itself, against a fake game   (~3s)
-node tools/navaudit.js  # can bots path to the objective on each map?     (~1s)
-node tools/navfollow.js # which promised arcs can the FOLLOWER not fly?   (~1s)
-node tools/navcensus.js # what have the bots on this server already failed at?
-node tools/navsoak.js   # ...that, driven over every map in turn, unattended
-node tools/botscenario.js # do bots still WALK those routes?              (~1min)
-node tools/control.js   # a browser control panel, for playtesting by hand
+node build-fast.js        # splice code changes into the last build         (~3s)
+node build-agent.js       # full build - drives GM8 headlessly            (~1min)
+node run-agent.js         # launch the game, wait for the bridge
+node tools/selftest.js    # check the tooling itself, against a fake game   (~3s)
+node tools/walkmask.js    # render a map's collision mask on its own
 ```
 
 `build-agent.js` used to be the one step that needed a person: Game Maker 8 has
@@ -44,6 +77,17 @@ resource.
 Every script takes `--repo <path>` and `--help`, and each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
 
+### Live — these are bridge clients, so do not run them from an agent session
+
+Each of these drives a running game, which makes each one a second client. **From an
+editor session use the MCP tool instead**; these CLIs are for CI and for a game nothing
+else is talking to. They ping first and explain themselves rather than timing out
+anonymously, but the explanation costs a round trip you do not need to spend.
+
+| CLI | What it answers | From an agent session, instead |
+|---|---|---|
+| `node tools/control.js` | a browser control panel, for playtesting by hand | keep using the MCP tools; the panel hands the game back with `/api/release` |
+
 Then drive the running game with the MCP tools:
 
 | Tool | Use it for |
@@ -53,7 +97,7 @@ Then drive the running game with the MCP tools:
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |
 | `gg2_screenshot` | look at the game; works while it is frozen |
-| `gg2_map_image` | full-resolution map, no camera involved; `base` picks walkmask/art/both, `overlay: true` adds bot nav-graph reachability |
+| `gg2_map_image` | full-resolution map, no camera involved; `base` picks walkmask/art/both |
 | `gg2_area_shot` | full-resolution **live** screenshot of an area bigger than one window, tiled and stitched; `walkmask: true` traces the collision boundary over it |
 | `gg2_step` | freeze, then advance an exact number of frames |
 | `gg2_resume` | let a frozen game run again |
@@ -66,7 +110,7 @@ Then drive the running game with the MCP tools:
 | `gg2_event` | read and write the GML inside object events, escaping handled |
 | `gg2_find` | search scripts *and* event code together — grep cannot see events |
 | `gg2_test` | run the game's own unit tests and read the results back |
-| `gg2_scenario` | run live bot behaviour scenarios; can a bot still walk A to B? |
+| `gg2_profile` | time GML the game has no profiler for: `expr` mode repeats code, `frames` mode samples frame times |
 | `gg2_session` | start, stop and list games: a dedicated server and its clients |
 | `gg2_rebuild` | apply edited `.gml` and event code to the game, then relaunch (~3s) |
 | `gg2_log` | read the game's logs, including GML errors the launcher dismissed |
@@ -87,44 +131,28 @@ that gap, and between them they cover almost every "why did it do that":
   to the bridge log; `gg2_log` is how you read the trace back.
 
 **`gg2_map_image` and `gg2_area_shot` answer two different questions that look similar.**
-The first is "what does the map look like" (or "why is the nav graph disconnected here");
-the second is "what is actually happening on the map right now."
+The first is "what does this map look like, and what can a body stand on"; the second is
+"what is actually happening on the map right now."
 
 - **`gg2_map_image`** doesn't touch the camera at all — it reads the map's own
   `Included Files/<name>.png` directly off disk (every built-in map ships as exactly this
   art, at native map-pixel resolution, e.g. `koth_valley` is 804×170 - checked against all
-  22) and, if asked, plots the bot nav graph on top: a directed BFS from a start point
-  (a bot's own position by default), green if reached and red if not, one bar per node.
-  A nav cell is exactly one map pixel (F10's ×6 world-scale constant is the same
-  `NAV_CELL_SIZE`), so the overlay needs no coordinate conversion. **The drawing itself
-  is `tools/mapimage.js`, shared with `navimage.js`** — the same picture was being built
-  twice and had drifted apart by 2026-08-22, the live overlay drawing each node's span to
-  `x1` where the offline one drew it to `x1 + NAV_BOX_W - 1`. A node's span is in *anchor*
-  columns (the left edge of the body box), so the second is right and every surface in the
-  live overlay was reading three cells short. Selftest now pins the geometry. This is what
-  root-caused a real `navJumpFlight` bug (2026-08-20 — a steep jump-up was being
-  rejected; see `Gang-Garrison-2`'s bot plan for the detail): a screenshot answered in
-  one look what used to take a dozen `gg2_eval` round-trips summing edges by hand, and
-  because it never goes through the game's own renderer there is no camera distortion,
-  no window-resolution cap, and nothing to stitch. This replaced an earlier `gg2_nav_map`
-  that *did* screenshot the live camera, and had exactly those problems - most visibly,
-  a wide map squashed to fit an ~4:3 window (GM8 scales each view axis independently, so
-  a rectangle whose aspect ratio doesn't already match the window comes out warped) -
-  worth knowing if `gg2_nav_map` shows up in an old transcript. It only knows built-in
-  maps; a custom (player-uploaded) one has no fixed path on disk and gets a clear error
-  rather than a wrong image.
-  **The base layer is the walkmask, not the art, whenever the overlay is on** (`base:
-  "mask" | "art" | "both"` overrides; it defaults to `art` with the overlay off, since
-  that is a different question). The same PNG carries the map's collision mask in its own
-  `zTXt` "Gang Garrison 2 Level Data" chunk - the game reads it the same way, see
-  `Scripts/Maps/CustomMaps` - and `tools/walkmask.js` decodes it with no game running.
-  This matters because **the nav graph is built against the mask and nothing else**, so
-  the art agrees with an overlay only by coincidence: it paints scenery nothing collides
-  with, and draws real geometry as though it were background. `koth_valley` is the plain
-  case - a dark night scene whose underground is nearly black, in which the two vertical
-  shafts that cost this project a bug are invisible, and where the mask shows every
-  standable surface the node bars are sitting on. `node tools/walkmask.js <map> out.png`
-  renders one on its own; `navimage.js --base` is the same switch.
+  22). Because it never goes through the game's own renderer there is no camera
+  distortion, no window-resolution cap, and nothing to stitch. An earlier `gg2_nav_map`
+  *did* screenshot the live camera and had exactly those problems - most visibly, a wide
+  map squashed to fit an ~4:3 window (GM8 scales each view axis independently, so a
+  rectangle whose aspect ratio doesn't already match the window comes out warped) - worth
+  knowing if `gg2_nav_map` shows up in an old transcript. It only knows built-in maps; a
+  custom (player-uploaded) one has no fixed path on disk and gets a clear error rather
+  than a wrong image.
+  **`base: "mask" | "art" | "both"` picks what is drawn**, and defaults to `art`. The same
+  PNG carries the map's collision mask in its own `zTXt` "Gang Garrison 2 Level Data"
+  chunk - the game reads it the same way, see `Scripts/Maps/CustomMaps` - and
+  `tools/walkmask.js` decodes it with no game running. The art answers "what can a body
+  stand on" badly: it paints scenery nothing collides with, and draws real geometry as
+  though it were background. `koth_valley` is the plain case - a dark night scene whose
+  underground is nearly black, in which two vertical shafts are invisible in the art and
+  obvious in the mask. `node tools/walkmask.js <map> out.png` renders one on its own.
 - **`gg2_area_shot`** is for when the *live* game is what needs seeing at more than one
   window's worth at a time - players, projectiles, capture progress, an actual running
   match - which `gg2_map_image` fundamentally cannot show, since it never asks the game
@@ -157,16 +185,16 @@ the second is "what is actually happening on the map right now."
   that *does* need only `visible`, since neither has a custom Draw event of its own.
   **`walkmask: true` traces the collision boundary over the shot in magenta**, so what the
   geometry is and what everyone is doing in it can be read off one picture. It is
-  composited on the Node side, not drawn in the game: one mask cell is exactly
-  `NAV_CELL_SIZE` (6) world pixels and the tiles are captured at 1:1, so it lands on the
+  composited on the Node side, not drawn in the game: one mask cell is exactly six world
+  pixels and the tiles are captured at 1:1, so it lands on the
   pixels the collision actually uses - no resample, no GML, and nothing that can disturb a
   running server. It is an *outline* because a fill was tried first and lost: over a map
   painted this dark, tinting solid ground either disappears into the art or hides whatever
   the shot was taken for.
 
-The underlying pieces (`agentNavReach`, `agentNavDump`, `agentBridgeDraw`,
-`agentBridgeHudVisible`) live permanently in the bridge payload, not a spare, since this
-is meant to be reached for again rather than rebuilt from scratch each time.
+The underlying pieces (`agentBridgeDraw`, `agentBridgeHudVisible`) live permanently in the
+bridge payload, not a spare, since this is meant to be reached for again rather than
+rebuilt from scratch each time.
 
 `press left|right|up|jump|down|taunt` actually holds - the bridge ORs a mask
 into `PlayerControl`'s own `keybyte` every step - so `gg2_input` plus
@@ -186,8 +214,8 @@ carefully inside a session.
 `gg2_speed` scales how many game ticks happen per real second - `factor: 10` for
 ten times normal, `factor: 0.5` for half-speed slow motion, no `factor` (or `0`)
 to reset. It exists because `gg2_step`/`gg2_wait` are for *inspecting* a handful
-of frames closely, not for skipping past a slow stretch of bot behaviour in real
-time before you get to the part worth looking at.
+of frames closely, not for skipping past a slow stretch of play in real time
+before you get to the part worth looking at.
 
 GM8 paces its own step loop to hit `room_speed` steps a real second, and
 `RateController.Begin Step` resets `room_speed` back to 30 or 60 every single
@@ -230,16 +258,15 @@ itself to the public lobby. `gg2_session` handles all three. Both games share on
 ### Driving it by hand, rather than by call
 
 `node tools/control.js` serves a browser control panel on `localhost:7311`: freeze,
-teleport, set the bot count, change map. The MCP tools are shaped for an agent — one call,
+step, teleport, change map. The MCP tools are shaped for an agent — one call,
 one answer — and playtesting wants the opposite, so this exists alongside them rather than
 instead of them. It drives the game through the MCP server's own `callTool`, so the
 framing, the request ids and the wedged-bridge recovery are the same code.
 
-⚠️ **The bridge serves one client at a time**, and this process is a client. It and an
-editor's MCP session cannot both hold a game — whoever is second is queued in the accept
-backlog forever, which presents as every call timing out for no stated reason. `/api/release`
-(there is a button) drops this process's sockets so an agent can take the game back without
-stopping the panel; the next request from the page reconnects.
+⚠️ **This process is a bridge client** (see *The loop*), so it and an editor's MCP session
+cannot both hold a game. `/api/release` (there is a button) drops this process's sockets so
+an agent can take the game back without stopping the panel; the next request from the page
+reconnects.
 
 ### The spare objects, and the spare scripts
 
@@ -272,197 +299,6 @@ inside the executable. Three ways to close that gap, cheapest first:
 
 So: experiment with `gg2_eval`, write the result into the source, and
 `gg2_rebuild`. Reach for the full build only when the fast one refuses.
-
-### Investigating bad bot navigation
-
-`docs/NAVMETHOD.md` is the loop, written to be repeated: sweep offline with `navsuspects`, read
-the route, read the mask, then run it live and let `ticks / travel` say whether the route
-is long or the bot is broken. It also carries the two rules that have saved the most
-damage - model a generator change in Node before building it, and A/B it against rebuilt
-graphs on every map rather than against the scenario suite, which only covers three.
-
-**That loop finds a bad GRAPH. Two newer tools find a bad FOLLOWER**, which is where the
-remaining failures live - the graph is right, the arc is a fiction, and every check above
-is green:
-
-- **`tools/navfollow.js`** replays the follower's own acceleration law against every jump
-  edge in a cached graph and reports how far short of the landing it comes down. The
-  generator proves an arc as a *constant* velocity from tick 0; a character accelerates
-  from what it has, and `basemaxspeed` is 4.53 for a Heavy against 7.93 for a Scout over
-  one class-blind graph. Offline, a whole map in under a second. **Model the slowest class
-  that will fly it** - `--class heavy` is the default for that reason.
-
-  ⚠️ **`--class` does NOT apply to every edge, and assuming it did cost this tool its
-  credibility for months.** The ordinary jump graph is class-blind, but type 5 and type 6
-  are not: `navFindPath` hands `NAV_EDGE_DOUBLEJUMP` only to a Scout and
-  `NAV_EDGE_ROCKETJUMP` only to a healthy Soldier, so scoring either as a Heavy is
-  scoring a flight nobody makes. It did exactly that until 2026-08-24 and reported 32
-  perfectly good double-jump edges as unflyable, which meant its whole reason to exist -
-  **"expect 0, a non-zero count is a regression"** - had quietly stopped being true and
-  stayed that way because nothing re-ran it after the double jump landed. Type 5 is scored
-  as a Scout now and type 6 as a rocket-jumping Soldier, under `moveStatus 1`'s own tick
-  law (controlFactor 0.65, frictionFactor **1** - no speed bleed at all, so that arc is a
-  different control problem, not a faster one). It reads 0 again over all 24 graphs.
-- **`tools/navcensus.js`** reads the failures every bot on a running server has *already*
-  recorded (`botBlacklistLog` and the three counters), aggregates them by edge and by
-  node, and says which ones `navfollow` predicted. An ordinary twelve-bot server walks the
-  whole map thousands of times an hour; `botscenario.js` only ever walks the three legs
-  somebody thought of. `--reset`, let it play, harvest.
-- **`tools/navsoak.js`** is `navcensus` with the driving done for it: every cached graph in
-  turn, 20x, counters zeroed, twelve bots, harvest, next. Two things make that more than a
-  loop. It **drains the log** every `--chunk` frames rather than reading it once, because
-  `botBlacklistLog` stops at 240 characters and a long window otherwise returns a biased
-  early sample - and the read and the clear are one `gg2_eval`, since as two calls the game
-  runs in the gap. And it **prints a capture rate**: `botBlacklistFires` is exact and is not
-  cleared by a drain, so its delta says what a chunk should have yielded, measured against
-  what the log actually gave. Under 100% means the map is under-reported and the chunk was
-  too long. Exits 1 when an edge fails live *and* `navfollow` refuses it offline.
-
-Between them: `navcensus` says *where* bots are failing on maps nobody aimed at, `navsoak`
-says that for all 24 maps without anyone watching, and `navfollow` says *why*, with a
-number, before the game is even running.
-
-### Auditing the bot nav graph without a running game
-
-Every map a server has loaded leaves its whole nav graph on disk at
-`Source/build/botnav/<map>_a<area>.txt`. That is enough to answer "can a bot
-path from its spawn to the objective on this map" with no game, no bridge and no
-map rotation - seconds for all 22 shipped maps, against roughly a minute each to
-watch one live.
-
-```powershell
-node tools/navaudit.js                      # every cached graph, failures only
-node tools/navaudit.js koth_corinth         # one map, in detail
-node tools/navaudit.js koth_corinth --gaps  # near-miss pairs across a boundary
-node tools/navaudit.js koth_corinth --node 64
-node tools/navimage.js koth_corinth out.png --crop 228,100,300,145 --scale 14
-```
-
-`tools/navgraph.js` is the reader and the model (cache decoding, world<->node
-conversion, the gate rules); `navaudit.js` is the checks; `navimage.js` draws the
-graph over the map's own collision mask. Run the audit **before** playtesting a
-map - a bot with no route stands perfectly still, which is indistinguishable
-from a dozen other bugs when you are watching it happen.
-
-**`tools/walkmask.js` is the one decoder for what a map is made of** - the zTXt
-level-data chunk, the `{WALKMASK}` bitstream inside it, and the three ways of
-drawing it (`toRgba`, `tint`, `outline`). `navgraph.js` re-exports `levelData`
-and `walkmask` from it rather than keeping a second copy, so `nav.entities`,
-`navaudit --mask`, `navimage --base` and `gg2_map_image`/`gg2_area_shot` all
-read one implementation. `decode()` hands back `{ width, height, bits,
-solid(x, y) }`: the buffer for whole-image work, the bounds-checked accessor for
-asking about a handful of cells. Solidity only - **gates, player walls and
-drop-through platforms are instances, not mask**, stamped into the graph at
-generation time by `gg2-nav-gen`'s `instances.js`, so a cell the mask calls open
-can still be closed to a bot.
-
-### Behaviour scenarios (`tools/botscenario.js`)
-
-The third tier, and the only one that can see whether a bot can *execute* the
-route the graph promised. That gap is the whole point: every one of this
-project's three jump-edge bugs was a graph describing an arc the follower could
-not fly, and `navaudit` passes all of them, because the edge is right there in
-the graph. On its first run this found `ctf_truefort` red -> blue intel stalling
-740px short with a valid 19-node path in hand.
-
-```powershell
-node tools/botscenario.js                   # every scenario
-node tools/botscenario.js valley-floor-to-point
-node tools/botscenario.js --list
-node tools/botscenario.js --speed 10 --keep # slower, and leave the bot in place
-```
-
-**To test a behaviour you are working on right now, do not edit the file** -
-pass `gg2_scenario` an inline `scenario` object (same shape as a file entry) and
-it runs that and nothing else. Nothing is written to disk, so trying a
-coordinate and trying again costs nothing and no throwaway probe ends up in the
-committed suite. Promote it into `tools/bot-scenarios.js` once it earns a place;
-that is an edit to that file and nothing else, no GML and no rebuild, which is
-the reason the runner is in Node rather than in the game's own test suite. (The other reason is that a GML
-script runs to completion inside one step, so the existing `test_*.gml` suites
-fundamentally cannot express "run 600 frames and then check".)
-
-Three things it needs from the game, all of them because they cannot be
-recovered from outside: `botGoalLocked` (suspends the objective layer, which
-would otherwise rewrite the goal every 30 ticks), `botArrivedAt` (the exact tick
-of arrival - polling can only bracket it), and the four diagnostics counters. It
-asserts on those counters, not on final position: a bot that arrives clears its
-goal and is then free to walk away, so a position sampled at the end is
-meaningless. **Never cap `replans`** - planning is on a 45-90 tick timer, so that
-number measures how long the leg took, not whether anything went wrong.
-
-⚠️ **The bridge serves one client at a time**, so from an editor session use the
-`gg2_scenario` tool, not this CLI: the CLI's connection would be accepted into
-the backlog and never serviced, hanging every call while the game is plainly
-alive and answering the MCP server. The CLI is for CI and for a game nothing else
-is talking to; it pings first and explains itself rather than timing out
-anonymously.
-
-The full set takes about 11 seconds. `gg2_wait` keeps a `gg2_speed` boost - it
-never touches instances - so a scenario fast-forwards and waits for its own
-finish condition in one call, with the tick count coming back exact instead of
-bracketed by a poll interval. A **map change** does reset the boost (new room,
-new `RateController`), which is why the factor is applied per scenario rather
-than once.
-
-Three things it does that a naive reachability BFS does not, each added after a
-human playtest found a map the previous version had passed:
-
-- **Gates are per-query, not baked into the graph.** `navGatePassable` answers by
-  the caller's team *and* whether it is carrying intel. A gate-blind traversal
-  asks "can a body get there" and passed a `ctf_conflict` where blue cannot reach
-  the red intel at all.
-- **The CTF return leg is a different query.** Carrying the intel closes your
-  *own* team gate. `ctf_conflict` passes outbound for red and fails the return -
-  the bot fetches the flag, cannot carry it home, and stands on it forever.
-- **"A region whose only entrance is a gated node"** localises a missing edge to
-  one chokepoint, which no percentage ever does.
-
-The cache format is not the obvious one - `ds_grid_write` is column-major with
-sixteen-byte cells and the double four bytes in, not packed doubles. `navgraph.js`
-documents it; do not re-derive it by hand.
-
-⚠️ **A full `build-agent.js` wipes `Source/build/`, and the nav cache with it.**
-Re-warm it with `gg2-nav-gen`, which is one command and about half a second:
-
-```powershell
-node ..\gg2-nav-gen\bin\gg2navgen.js build --all
-```
-
-This used to mean cycling a dedicated server through the whole rotation and
-waiting for each map to build - four minutes of the most mechanical work in the
-loop. **The game does not build nav graphs any more**; the generator lives in
-`gg2-nav-gen` and `Scripts/BotNav/` keeps only `navCacheLoad` and the search.
-
-⚠️ **A map with no cache file is a map with no bot navigation.** `global.navReady`
-stays false, bots stand perfectly still, and any wait on `navBuildState == 9` sits
-there until it times out. That is now the first thing to check when bots do
-nothing on a map that used to work - `node tools/navaudit.js` answers it offline
-in a second. The server retries the load every five seconds, so generating the
-file while it is running is enough; no restart, no map change.
-
-The map-change wait itself is unchanged and still needs the key in it:
-
-```
-gg2_wait  setup: 'global.currentMapArea = N; serverGotoMap("<name>");'
-          expr:  'global.navKey == "<name>_a<N>" and global.navBuildState == 9'
-```
-
-Waiting on `navBuildState` alone races - it is still 9 from the previous map for
-a frame or two before `navServerTick` notices the key changed. Multi-stage maps
-(`cp_dirtbowl`) need one pass per `currentMapArea`.
-
-⚠️ **Do not `botRemove` and `botAdd` in the same call as a map change.** It leaves
-a dangling entry in `global.players`, and since `-1` is GM8's `self`, every later
-`player.team` read errors against whatever object asked. The server then raises
-the same error every frame forever and the instance has to be restarted.
-
-⚠️ **The overlay image tells you *where* to look and lies about *why*.** A picture
-of `koth_corinth` suggested an unreachable island needing an exotic jump; the
-edge lists showed an ordinary ramp with every edge present except one, running
-one-way downhill. An asymmetric edge list - outgoing edges to a neighbour with
-none coming back - is one line of `--node` output and is invisible at any zoom.
-Find the region with `navimage.js`, then diagnose with `--node` and `--gaps`.
 
 ## Why the fast rebuild works, and when it refuses
 
@@ -613,13 +449,12 @@ modules against a fake bridge and a scratch copy of the tree, in about three
 seconds and with no Game Maker anywhere. Run it after changing anything under
 `tools/`.
 
-The offline nav layer is covered against a **synthetic** graph written by the test
-itself — four ledges, one deliberately one-way edge, one gated node — because a real
-map's cache can only ever be checked against the reader that produced the expectation.
-That is what pins the `ds_grid_write` column-major layout, the gate table (including the
-CTF return leg, where carrying intel closes your *own* team gate), and the overlay bar
-geometry. It also asserts that every tool in `mcp-schemas.js` has a `case` in `callTool`
-and vice versa, since the table and the behaviour are now in separate files.
+It asserts that every tool in `mcp-schemas.js` has a `case` in `callTool` and vice
+versa, since the table and the behaviour are in separate files; and it round-trips
+`CODE_PATCHES` against the real tree, checking each anchor is still exactly one line of
+the file it names and that inject/cleanup restores it byte for byte. That last one
+matters because those patches rewrite lines of the game's own logic rather than adding
+lines beside them — see `docs/CLIENTDEBUG.md`.
 
 ## Error handling has no safety net
 
@@ -666,6 +501,22 @@ exactly what broke.
   leave a thread on that hidden desktop: while switched to it, `win32.js` can
   see no window on the machine at all, and `CloseDesktop` refuses with
   `ERROR_BUSY`. `build-fast.js` needs none of this, which is the point of it.
+- **A GM8 *startup* dialog stalls the headless build for 180s and says nothing
+  useful.** `gm8directbuild.js` waits for `TMainForm` to have a menu and gives up
+  with `timed out waiting for the project to finish loading`; `build-agent.js`
+  then falls back to opening the project for a person, which on an unattended
+  machine burns another `--wait` (default 15) minutes. Both times the real cause
+  is a modal in front of the IDE that nobody can see, and the dialog handling
+  there only watches `#32770` - a Delphi `TMessageForm` is invisible to it.
+  Hit for real on 2026-09-05, and the culprit is this tooling's own exhaust:
+  **"Game Maker detected 190 old temp folders left over from earlier runs... Do
+  you want me to remove these?"** — every launched game leaves a `gm_ttt_*`
+  folder in `%TEMP%` (671 of them by then). Turned off permanently by setting
+  `RemoveTemp` to 0 under `HKCU:\Software\Game Maker\Version 8\Preferences`
+  (the same switch as Preferences > General). If a build ever stalls like this
+  again, do not guess: enumerate Game_Maker.exe's top-level windows, and
+  `PrintWindow` any `TMessageForm` into a PNG and read it - its caption has no
+  handle, so `WM_GETTEXT` on the children returns only `&Yes`/`&No`.
 - **`gg2_input aim` hangs** rather than erroring: `window_views_mouse_set` never
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher
@@ -702,9 +553,9 @@ exactly what broke.
   caused it. No amount of waiting fixes it: `gg2_session stop` then `start` is
   the only cure, and the tooling now says so when it sees an error repeating
   frame after frame. Before the first risky call of a session, check the
-  relevant script's docstring for a warning like `navEdgesBegin`'s, and
-  `gg2_wait` on whatever says that background job is idle. Freezing instead
-  would trade this hazard for another — `FREEZE` drops network clients.
+  docstring of whatever you are about to touch for a warning about a background
+  job that owns it, and `gg2_wait` on whatever says that job is idle. Freezing
+  instead would trade this hazard for another — `FREEZE` drops network clients.
 - **`E|` is an error, `M|` is a message.** The launcher marks the two kinds of
   dialog differently in its log, because the game's unit tests report through
   `show_message` and a failed assertion is a result, not a crash. Anything
@@ -712,7 +563,8 @@ exactly what broke.
 - **Logs and the register are per port.** `agent_bridge_<port>.log`,
   `agent_launcher_<port>.log` and `agent_instances.json`, all beside the exe, so
   two games in one directory never interleave.
-- **Only one bridge client at a time.** The game accepts a single connection;
+- **Only one bridge client at a time.** This is the constraint *The loop* routes
+  around; what follows is the mechanism. The game accepts a single connection;
   a second one waits. A second one also waits *forever* while a deferred `STEP`
   or `WAIT` is outstanding, because the bridge reads nothing else until that
   reply goes out — so the only thing that reaches a game in that state is

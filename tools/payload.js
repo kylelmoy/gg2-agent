@@ -50,6 +50,50 @@ const KEYSTATE_EVENT = 'Begin Step';
 const KEYSTATE_ANCHOR = 'if(keyboard_check(global.taunt)) keybyte |= $01;';
 const KEYSTATE_LINE = '        if (instance_exists(AgentBridge)) keybyte |= (AgentBridge.heldMask & $E3);';
 
+// Call sites in the game's own code that the payload rewrites, so a failure the
+// game currently only puts on screen also reaches agent_bridge_<port>.log.
+//
+// WHY REPLACE A LINE RATHER THAN INSERT ONE. Both of these sites are the
+// braceless body of an `if`, so an inserted neighbour does not join the branch -
+// it displaces the original out of it. Insert beside deserializeState's
+// show_message and the log line fires on every state update; insert beside
+// getCharacterSpriteId's show_error and every sprite lookup in the game aborts.
+// Swapping the whole line for a call to a payload script is the only edit that
+// leaves the control flow alone, and it is its own inverse: cleanup.js replaces
+// `to` with `from` and the file goes back byte for byte, indentation included.
+//
+// WHY THESE SITES AND NOTHING ELSE. show_message/show_error appear ~93 times
+// across Scripts/ and 9 event files. Blanket coverage is not worth it - every
+// anchor is a brittle exact-match string, and almost all of those sites are
+// menu and hosting paths no automated run reaches. These are the ones that have
+// actually cost a day: a desync whose cause only warns, and a fatal two steps
+// downstream of it that names a symptom. Add a site when one bites.
+const CODE_PATCHES = [
+  {
+    file: ['Scripts', 'Serialization', 'deserializeState.gml'],
+    // The declared count is read INSIDE the condition, so by the next line it is
+    // gone. Wrapping the read is the only way to keep it, and the script hands
+    // the byte straight back - the comparison is the stock comparison.
+    from: 'if(read_ubyte(global.tempBuffer) != ds_list_size(global.players))',
+    to: 'if(agentDebugStateCount(read_ubyte(global.tempBuffer)) != ds_list_size(global.players))',
+  },
+  {
+    file: ['Scripts', 'Serialization', 'deserializeState.gml'],
+    from: 'show_message("Wrong number of players while deserializing state");',
+    to: 'agentDebugDesync();',
+  },
+  {
+    file: ['Scripts', 'Misc', 'getCharacterSpriteId.gml'],
+    from: 'show_error("Attempted to get a sprite for unknown class ID: " + string(class), true);',
+    to: 'agentDebugSpriteError(0, class, team, animation);',
+  },
+  {
+    file: ['Scripts', 'Misc', 'getCharacterSpriteId.gml'],
+    from: 'show_error("Attempted to get a sprite for unknown team ID: " + string(team), true);',
+    to: 'agentDebugSpriteError(1, class, team, animation);',
+  },
+];
+
 // Anything matching this in `git status` after a cleanup means the fork is not
 // clean and the build must fail.
 const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher|agent_instances|agent_shot/;
@@ -57,5 +101,5 @@ const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher|agent_instances|a
 module.exports = {
   OBJECTS, SCRIPT_GROUP, INIT_ANCHOR, INIT_LINE,
   KEYSTATE_OBJECT, KEYSTATE_EVENT, KEYSTATE_ANCHOR, KEYSTATE_LINE,
-  STRAY,
+  CODE_PATCHES, STRAY,
 };

@@ -152,28 +152,7 @@
           <select id="map" style="flex:1"></select>
           <button id="mapGo" class="go">Go</button>
         </div>
-        <p class="hint">Switches the server and every client on it, then waits for the bot nav graph
-        to finish rebuilding — a few seconds on the big maps.</p>
-      </div>
-    </section>
-
-    <section>
-      <h2>Bots</h2>
-      <div class="body">
-        <div class="row">
-          <label class="w">Count</label>
-          <input type="range" id="bots" min="0" max="24" step="1" value="12">
-          <span class="val" id="botsVal">12</span>
-        </div>
-        <div class="row">
-          <label class="w">Difficulty</label>
-          <input type="range" id="diff" min="1" max="5" step="1" value="3">
-          <span class="val" id="diffVal">3</span>
-        </div>
-        <button id="botsGo" class="primary">Apply</button>
-        <p class="hint" id="botNote" style="display:none;color:var(--warn)"></p>
-        <p class="hint">Raising the count lets the population manager fill in on its next step;
-        lowering it removes the newest bots immediately rather than waiting for them to die.</p>
+</p>
       </div>
     </section>
 
@@ -380,37 +359,13 @@ function paint() {
   t.className = 'big ' + (s.frozen ? 'go' : 'freeze');
 
   el('mapPill').textContent = s.map || '?';
-  if (s.navReady === false) el('mapPill').textContent += ' · nav building';
 
-  var bots = s.players.filter(function (p) { return p.isBot; }).length;
-  el('popPill').textContent = bots + ' bots · ' + s.humans + ' human' + (s.humans === 1 ? '' : 's');
+  el('popPill').textContent = s.players.length + ' player' + (s.players.length === 1 ? '' : 's') + ' connected';
+
   // Slot accounting, because "the server is full" is decided by these two
   // numbers and nothing else shows them.
   el('slotPill').textContent = 'slots ' + s.humans + '/' + s.playerLimit;
   el('slotPill').className = 'pill' + (s.humans >= s.playerLimit ? ' down' : '');
-
-  // These sliders are an input as well as a display, so the poll must not
-  // overwrite a value the user has dialled in but not yet applied. Checking
-  // "is it focused" is NOT enough and was a real bug: clicking Apply moves
-  // focus to the button, so the next poll reset the slider to the live count
-  // and Apply then submitted that instead of what was set. Once touched, a
-  // control is the user's until Apply succeeds.
-  if (!el('bots').dataset.dirty && s.botMaxBots != null) setRange('bots', bots);
-  if (!el('diff').dataset.dirty && s.botDifficulty != null) setRange('diff', s.botDifficulty);
-
-  // Say so when the game is about to overrule the number that was asked for.
-  // botPopulationUpdate removes every bot while humans < botMinHumans, which
-  // with nobody connected is the difference between "12 bots" and no bots at
-  // all - and it is silent, so it looks like the panel did nothing.
-  var warn = '';
-  if (s.botsEnabled && s.botMinHumans > s.humans) {
-    warn = 'the server needs ' + s.botMinHumans + ' human' + (s.botMinHumans === 1 ? '' : 's') +
-           ' before it will keep bots, and ' + s.humans + ' are connected';
-  } else if (s.botsEnabled && bots < s.botMaxBots) {
-    warn = 'filling: ' + bots + ' of ' + s.botMaxBots;
-  }
-  el('botNote').textContent = warn;
-  el('botNote').style.display = warn ? '' : 'none';
 
   if (s.map && s.map !== mapShown) loadMapImage();
   syncMapSelect(s.map);
@@ -419,7 +374,6 @@ function paint() {
   el('release').disabled = busy;
 }
 
-function setRange(id, v) { el(id).value = v; el(id + 'Val').textContent = id === 'bots' ? v : v; }
 
 function syncMapSelect(map) {
   var sel = el('map');
@@ -446,7 +400,7 @@ function paintRoster(s) {
     var tag = document.createElement('span');
     tag.className = 'tag t' + p.team;
     name.appendChild(tag);
-    name.appendChild(document.createTextNode(p.name + (p.isBot ? '' : ' ★')));
+    name.appendChild(document.createTextNode(p.name));
     tr.appendChild(name);
 
     [p.className, p.hp == null ? '–' : p.hp, p.x == null ? '–' : p.x, p.y == null ? '–' : p.y]
@@ -461,16 +415,16 @@ function paintRoster(s) {
 
     var o = document.createElement('option');
     o.value = String(p.index);
-    o.textContent = p.name + '  (' + p.teamName + ' ' + p.className + ')' + (p.isBot ? '' : '  ★ human');
+    o.textContent = p.name + '  (' + p.teamName + ' ' + p.className + ')';
     who.appendChild(o);
   });
 
   if (keep && who.querySelector('option[value="' + keep + '"]')) who.value = keep;
   else if (selected != null && who.querySelector('option[value="' + selected + '"]')) who.value = String(selected);
   else if (who.options.length) {
-    // Default to the first human - on a server full of bots that is almost
+    // Default to the first player not sitting in spectator - almost
     // always the person holding this panel.
-    var human = s.players.filter(function (p) { return !p.isBot && p.team !== 2; })[0];
+    var human = s.players.filter(function (p) { return p.team !== 2; })[0];
     who.value = String(human ? human.index : s.players[0].index);
   }
   selected = who.value === '' ? null : Number(who.value);
@@ -486,7 +440,7 @@ function paintDots(s) {
   s.players.forEach(function (p) {
     if (p.x == null || p.team === 2) return;
     var d = document.createElement('div');
-    d.className = 'dot t' + p.team + (p.isBot ? '' : ' human') +
+    d.className = 'dot t' + p.team +
                   (String(p.index) === String(selected) ? ' sel' : '');
     d.style.left = (p.x / worldPerPixel) * scale + 'px';
     d.style.top = (p.y / worldPerPixel) * scale + 'px';
@@ -563,21 +517,7 @@ el('mapGo').onclick = function () {
 // Mark dirty on ANY user input, so the once-a-second poll stops overwriting the
 // value until it has been applied. Without this, clicking Apply blurs the
 // slider, the next poll resets it to the live count, and Apply submits that.
-el('bots').oninput = function () { this.dataset.dirty = '1'; el('botsVal').textContent = this.value; };
-el('diff').oninput = function () { this.dataset.dirty = '1'; el('diffVal').textContent = this.value; };
 
-el('botsGo').onclick = function () {
-  var count = Number(el('bots').value);
-  var difficulty = Number(el('diff').value);
-  post('bots', { count: count, difficulty: difficulty }).then(function (j) {
-    // Only hand the sliders back to the poll once the game has actually taken
-    // the value - a failed Apply must not silently lose what was dialled in.
-    if (j && j.ok) {
-      delete el('bots').dataset.dirty;
-      delete el('diff').dataset.dirty;
-    }
-  });
-};
 
 el('who').onchange = function () { selected = Number(this.value); paintDots(state); };
 

@@ -12,14 +12,10 @@ msgLen = 0;
 
 // No sprite, so this costs nothing - it is what lets AgentBridge's own Draw event fire
 // at all (GM8 skips Draw for an invisible instance regardless of what code is in it).
-// Currently only agentBridgeDraw's (unused) in-game overlay path needs this; kept
-// enabled since it costs nothing idle and nothing else assumes it is off.
+// agentBridgeDraw's in-world labels need it; kept enabled since it costs nothing while
+// they are off and nothing else assumes it is off.
 visible = true;
 depth = -1000000;
-
-// No BFS result to draw until agentNavReach has been called at least once.
-global.agentNavOverlay = false;
-global.agentNavReachValid = false;
 
 // The in-world diagnostic labels agentBridgeDraw paints above every Character. On by
 // default, because the only builds that have this code at all are the ones the bridge
@@ -33,6 +29,19 @@ global.agentHideHud = false;
 
 // gg2_speed's boost factor: 1 = normal. See agentBridgeSpeed.
 global.agentSpeedFactor = 1;
+
+// The debug-logging call sites inject.js patches into the game's own code -
+// agentDebugDesync and agentDebugSpriteError - read these two, so they are set
+// here where every build that has the payload at all runs them, and before the
+// -agent check below: a build launched with no bridge still logs.
+//
+// agentFailFast turns deserializeState's count-mismatch WARNING into an abort.
+// Off by default and it must stay that way: the value of driving a real client
+// against another implementation is asking whether a stock one survives, and a
+// client that dies at the mismatch answers a different question. Flip it live
+// with gg2_eval when the mismatch is the thing being hunted.
+global.agentFailFast = false;
+global.agentDeclaredPlayers = -1;
 
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer

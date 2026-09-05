@@ -25,19 +25,14 @@
 // ASCII. Rows are not padded: the stream runs on from one row into the next,
 // and only the very last character is padded out with zeros.
 //
-// A mask cell is one map pixel and six world px - the same cell the nav graph is
-// built in - so nothing here needs converting. Verified against the running game
+// A mask cell is one map pixel and six world px, so nothing here needs
+// converting. Verified against the running game
 // on ctf_avanti: a 35x30 cell window came back identical, cell for cell, to
 // collision_point against the live CollisionDummy.
 //
-// ⚠️ Solidity only. Gates, player walls and drop-through platforms are instances,
-// stamped into the graph at generation time by gg2-nav-gen's instances.js, and
-// are NOT here: a cell this calls open can still be closed to a bot.
-//
-// This is the one decoder. navgraph.js reads the same chunk for the entity list
-// and re-exports levelData/walkmask from here rather than keeping a second copy
-// of either - they were written independently on 2026-08-22 and merged the same
-// day.
+// ⚠️ Solidity only. Gates, player walls and drop-through platforms are
+// instances listed in the same chunk's entity section, not bits in the mask,
+// so a cell this calls open can still be closed to whoever is asking.
 //
 // Usage:
 //   node tools/walkmask.js koth_valley out.png [--scale 3]
@@ -69,8 +64,7 @@ function mapFile(map, repo) {
   return path.join(path.resolve(repo || lib.defaultRepo()), 'Source', 'gg2', 'Included Files', `${map}.png`);
 }
 
-// The whole level-data text - entities as well as the mask - out of a map's
-// PNG. navgraph.js's entity list comes through here too.
+// The whole level-data text - entities as well as the mask - out of a map's PNG.
 //
 // Throws rather than returning empty for a map it cannot find: a custom
 // (player-uploaded) map has no fixed path on disk, and an empty entity list

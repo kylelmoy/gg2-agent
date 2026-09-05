@@ -4,11 +4,11 @@
 //
 // The MCP tools are built for an agent: one call, one answer, a paragraph of
 // reasoning either side. Playtesting wants the opposite - freeze *now*, put me
-// over there, make it eight bots, try that map - which is a control panel, not
+// over there, freeze that, try that map - which is a control panel, not
 // a conversation. This serves one.
 //
 // It drives the game through gg2-mcp-server.js's own `callTool`/`command`
-// rather than reimplementing the wire protocol, exactly as botscenario.js does:
+// rather than reimplementing the wire protocol:
 // the framing, the request ids, the wedged-bridge recovery and the modal-dialog
 // detection are all subtle and all already solved in there. This file adds a
 // transport (HTTP) and the four operations a playtest actually wants.
@@ -137,9 +137,8 @@ const evalExpr = (where, expr) => mcp.callTool('gg2_evalx', { instance: where.na
 //
 // Built as one delimited string by the game rather than read field by field:
 // a poll that costs nine round trips is a poll you cannot run once a second.
-// gg2_state already returns most of this, but not `isBot` - and which players
-// are bots is the whole point of half this panel - so it is assembled here
-// instead of parsing GGON.
+// gg2_state returns most of this already, but as GGON and one field at a time
+// for positions; this asks the game to assemble the whole poll in one string.
 //
 // chr(1) between fields and chr(2) between records, because a player name can
 // contain any printable character a person can type and every printable
@@ -191,22 +190,17 @@ function freezeSafe(body) {
 }
 
 const SNAPSHOT_GML = freezeSafe([
-  'var i, n, p, c, s, nav;',
+  'var i, n, p, c, s;',
   'if(!variable_global_exists("players"))',
   '    global.ctlSnapshot = "nogame";',
   'else',
   '{',
-  '    nav = -1;',
-  '    if(variable_global_exists("navReady"))',
-  '        nav = global.navReady;',
   '    s = "";',
   '    if(variable_global_exists("currentMap"))',
   '        s = string(global.currentMap);',
   '    s = s + chr(1) + room_get_name(room) + chr(1) + string(fps)',
-  '      + chr(1) + string(global.botsEnabled) + chr(1) + string(global.botMaxBots)',
-  '      + chr(1) + string(global.botFillToPlayers) + chr(1) + string(global.botDifficulty)',
   '      + chr(1) + string(global.playerLimit) + chr(1) + string(getNumberOfOccupiedSlots())',
-  '      + chr(1) + string(nav) + chr(2);',
+  '      + chr(2);',
   '    n = ds_list_size(global.players);',
   '    for(i = 0; i < n; i += 1)',
   '    {',
@@ -216,7 +210,7 @@ const SNAPSHOT_GML = freezeSafe([
   '        if(!instance_exists(p))',
   '            continue;',
   '        s = s + string(i) + chr(1) + string(p.name) + chr(1) + string(p.team)',
-  '          + chr(1) + string(p.class) + chr(1) + string(p.isBot);',
+  '          + chr(1) + string(p.class);',
   '        c = p.object;',
   '        if(c != -1 and instance_exists(c))',
   '            s = s + chr(1) + string(round(c.x)) + chr(1) + string(round(c.y)) + chr(1) + string(round(c.hp));',
@@ -251,15 +245,8 @@ async function snapshot(where) {
     map: head[0],
     room: head[1],
     fps: num(head[2]),
-    botsEnabled: num(head[3]) === 1,
-    botMaxBots: num(head[4]),
-    botFillToPlayers: num(head[5]),
-    botDifficulty: num(head[6]),
-    playerLimit: num(head[7]),
-    humans: num(head[8]),
-    // -1 is "this game has no nav graph at all" (a client), which is a
-    // different thing from "not built yet" and must not render as a warning.
-    navReady: num(head[9]) === -1 ? null : num(head[9]) === 1,
+    playerLimit: num(head[3]),
+    humans: num(head[4]),
     players: records.map((r) => {
       const f = r.split('\x01');
       return {
@@ -269,10 +256,9 @@ async function snapshot(where) {
         teamName: TEAMS[num(f[2])] || String(num(f[2])),
         class: num(f[3]),
         className: CLASSES[num(f[3])] || String(num(f[3])),
-        isBot: num(f[4]) === 1,
-        x: num(f[5]),
-        y: num(f[6]),
-        hp: num(f[7]),
+        x: num(f[4]),
+        y: num(f[5]),
+        hp: num(f[6]),
       };
     }),
   };
@@ -359,7 +345,7 @@ async function worldPerPixel(where) {
 //
 //    Skipping phase one does not work, and this was established by experiment
 //    rather than by reading: with the CHANGE_MAP broadcast alone - and with
-//    zero bots, so nothing else could be blamed - a connected client still died
+//    nothing else in the room to blame - a connected client still died
 //    every time. `global.mapchanging` is what quiesces the client: while it is
 //    set, PlayerSpawn does not spawn, charSetSolids/gunSetSolids/
 //    collision_line_bulletblocking all no-op, intel is dropped and team and
@@ -418,93 +404,16 @@ async function changeMap(where, name, wait) {
 
   if (!wait) return 'switching to ' + name + ' in ' + (MAP_CHANGE_TICKS / 30).toFixed(1) + 's';
 
-  // The nav graph is loaded on arrival and the bots are useless until it is:
-  // navBuildState 9 is done. That is a single file read now rather than the
-  // multi-second build it used to be, but the budget stays generous because the
-  // wait is really on the map change. A map gg2-nav-gen has not been run over has
-  // no file, never reaches 9, and times out here. (Matches botscenario.js.)
+  // The map change is a room change and a reload, so wait on the map name the
+  // server actually ended up on rather than on a tick count. Generous budget:
+  // the wait is really on the map load, and a client that is still receiving
+  // gets there later than the server does.
   await mcp.callTool('gg2_wait', {
     instance: where.name,
-    expr: 'global.navKey == "' + name + '_a1" and global.navBuildState == 9',
+    expr: 'global.currentMap == "' + name + '"',
     frames: 3600,
   });
-  return 'on ' + name + ', nav graph built';
-}
-
-// Set the bot population.
-//
-// The server has three knobs for this and only one of them means "N bots".
-// A control panel that asks for 12 must get 12 and keep 12, so the other two are
-// set to values that cannot interfere rather than left where a human's coming
-// and going moves them:
-//
-//   botMaxBots        IS the knob. Set to what was asked for.
-//   botFillToPlayers  is a fill-to-TOTAL, and the manager takes
-//                     min(maxBots, fillToPlayers - humans) - so leaving it at
-//                     humans+want means every human who joins evicts a bot.
-//                     Set well clear of maxBots so it never binds.
-//   botMinHumans      removes EVERY bot while fewer humans than this are
-//                     connected. At its default of 1 an unattended server drops
-//                     all 12 bots the moment the last client leaves, silently -
-//                     which is exactly the "observe the bots" case. Set to 0.
-//
-// playerLimit is raised generously and never lowered. Bots are excluded from the
-// join check (getNumberOfOccupiedSlots subtracts them), so this only has to
-// cover humans - but that subtraction is a `with(Player)` loop, which iterates
-// nothing while the world is frozen, and a frozen server therefore counts every
-// bot as a human. Headroom is what stops that arithmetic ever reaching the
-// limit and answering a join with "the server is full".
-//
-// Raising the count is just the globals - botPopulationUpdate reconciles on its
-// next step - but lowering it is not: botRemoveOnDeath makes the manager wait
-// for each surplus bot to die, which is right for a live server and wrong for a
-// knob you just turned. So the surplus is removed here, newest first, collected
-// before any of it is removed because botRemove renumbers global.players
-// underneath an index loop.
-async function setBots(where, count, difficulty) {
-  const want = Math.max(0, Math.min(31, Math.round(count)));
-  const diff = Math.max(1, Math.min(5, Math.round(difficulty)));
-
-  await evalCode(where, freezeSafe([
-    'var want, have, i, p, doomed, extra;',
-    'want = ' + want + ';',
-    'global.botDifficulty = ' + diff + ';',
-    'global.botsEnabled = (want > 0);',
-    'global.botMaxBots = want;',
-    'global.botFillToPlayers = want + 24;',
-    'global.botMinHumans = 0;',
-    'if(global.playerLimit < want + 16)',
-    '    global.playerLimit = min(48, want + 16);',
-    'have = 0;',
-    'with(Player)',
-    '    if(isBot)',
-    '        have += 1;',
-    'if(have > want)',
-    '{',
-    '    doomed = ds_list_create();',
-    '    extra = have - want;',
-    '    for(i = ds_list_size(global.players) - 1; i >= 0; i -= 1)',
-    '    {',
-    '        if(extra <= 0)',
-    '            break;',
-    '        p = ds_list_find_value(global.players, i);',
-    '        if(p == -1)',
-    '            continue;',
-    '        if(!instance_exists(p))',
-    '            continue;',
-    '        if(p.isBot)',
-    '        {',
-    '            ds_list_add(doomed, p);',
-    '            extra -= 1;',
-    '        }',
-    '    }',
-    '    for(i = 0; i < ds_list_size(doomed); i += 1)',
-    '        botRemove(ds_list_find_value(doomed, i));',
-    '    ds_list_destroy(doomed);',
-    '}',
-  ]));
-
-  return 'bots -> ' + want + ' at difficulty ' + diff;
+  return 'on ' + name;
 }
 
 // Put a player somewhere. Velocity is zeroed as well as position: dropping a
@@ -588,7 +497,6 @@ const OPS = {
   step: (w, b) => step(w, Math.max(1, Math.min(3600, Math.round(Number(b.frames) || 1)))),
   speed: (w, b) => speed(w, Number(b.factor) || 0),
   map: (w, b) => changeMap(w, String(b.name || ''), b.wait !== false),
-  bots: (w, b) => setBots(w, Number(b.count), Number(b.difficulty) || 3),
   teleport: (w, b) => teleport(w, Number(b.index), Number(b.x), Number(b.y)),
   eval: (w, b) => evalCode(w, String(b.code || '')).then(() => 'ok'),
   evalx: (w, b) => evalExpr(w, String(b.expr || '')),
@@ -717,4 +625,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { readMaps, snapshot, setBots, teleport, changeMap };
+module.exports = { readMaps, snapshot, teleport, changeMap };
