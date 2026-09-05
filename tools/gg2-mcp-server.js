@@ -95,6 +95,12 @@ class Bridge {
     // still set has just proved the reconnect did not help, which is a
     // different diagnosis from the first timeout - see timedOut.
     this.recoveredFromWedge = false;
+    // Set while recoverIfWedged is working. request() calls recoverIfWedged
+    // before it sends anything, and recovery sends a CANCEL through request(),
+    // so without this the two call each other forever: on re-entry the pending
+    // map still holds only the abandoned calls that made wedged() true, since
+    // the CANCEL's own slot is not added until after that check.
+    this.recovering = false;
   }
 
   disconnect(reason) {
@@ -228,26 +234,72 @@ class Bridge {
     return true;
   }
 
+  // Ask the game to abandon whatever deferred reply it is sitting on.
+  //
+  // The polite half of recoverIfWedged, and the one that costs nothing: a
+  // current bridge reads while a STEP or WAIT is outstanding, so CANCEL reaches
+  // it, is answered immediately, and the connection - along with whatever this
+  // client had frozen - survives untouched.
+  //
+  // The short budget is the compatibility test as well as a timeout. A bridge
+  // built before this reads NOTHING while deferred, so CANCEL sits unread in
+  // its socket buffer and no answer comes; that silence is the signal to fall
+  // back to dropping the connection, which is the only thing such a bridge
+  // notices. Two seconds is far longer than the ~40ms a live one takes and far
+  // shorter than the frame budget of the WAIT being escaped.
+  // Returns true only when something was actually cancelled. "OK nothing
+  // deferred" means the bridge is reading and answering - so it is not stuck
+  // behind a defer - but says nothing about why the outstanding calls went
+  // unanswered. That is a different fault, and the reconnect is still the right
+  // move for it; treating a polite "nothing to do" as a recovery would leave
+  // those calls hanging with the wedge merely renamed.
+  async cancelDeferred() {
+    try {
+      const said = await this.request('CANCEL', 2000);
+      log(`bridge on ${this.port}: CANCEL -> ${said}`);
+      // request() resolves the reply body verbatim, "OK ..." and all - there is
+      // no layer below this that strips it.
+      return said.startsWith('OK cancelled');
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Recover a bridge that has stopped answering, before sending anything else
   // down it.
   //
-  // Dropping the connection is the only thing that reaches a game that has
-  // stopped *reading*, and one that has is the common case rather than an
-  // exotic one: while a deferred STEP or WAIT is outstanding the bridge reads
-  // no further requests at all, so a WAIT whose caller gave up after 10s blocks
-  // every later call for the rest of its frame budget - up to two minutes.
-  // agentBridgeStep notices the EOF, clears deferKind, unfreezes and accepts
-  // the next client, which is exactly the reset that was wanted.
+  // Two tiers, because they cost very different amounts. CANCEL is tried first
+  // and keeps everything: the connection, the freeze, and the call that
+  // triggered it. Dropping the connection is the fallback, and it is a
+  // sledgehammer - it loses the freeze, so the world runs on for a moment, and
+  // the triggering call is failed rather than answered, because a result
+  // measured after the world moved is exactly the plausible wrong answer the
+  // rest of this file exists to prevent.
   //
-  // The unfreeze is why this is not unconditional: it silently resumes a game
-  // the caller deliberately stopped. So when this client is the one that froze
-  // it, the freeze is re-applied and the call that triggered the recovery is
-  // failed rather than answered - the world moved, and a result measured after
-  // it moved is exactly the plausible wrong answer the rest of this file exists
-  // to prevent. Retrying is then a working call against a game in the state it
-  // was left in, minus a few frames that are named rather than hidden.
+  // The fallback is still here because it is the only thing that reaches a
+  // bridge that has stopped *reading* - every build from before CANCEL, and any
+  // future one wedged in a way CANCEL cannot describe. agentBridgeStep notices
+  // the EOF ahead of its deferred reply, clears deferKind, unfreezes and
+  // accepts the next client.
   async recoverIfWedged() {
+    if (this.recovering) return;
     if (!this.wedged()) return;
+    this.recovering = true;
+    try {
+      await this.recover();
+    } finally {
+      this.recovering = false;
+    }
+  }
+
+  async recover() {
+
+    // A bridge that answers this is reading, which means it is not wedged in
+    // the sense that needs a reconnect - only stuck behind a defer this clears.
+    if (await this.cancelDeferred()) {
+      log(`bridge on ${this.port}: cleared a deferred reply with CANCEL, connection kept`);
+      return;
+    }
 
     const lost = this.pending.size;
     const wasFrozen = this.frozen;
@@ -259,10 +311,11 @@ class Bridge {
     if (!wasFrozen) return;
     await this.request('FREEZE');
     throw new Error(
-      `The bridge on port ${this.port} had stopped answering - ${lost} call(s) went unanswered, and while a ` +
-        'deferred STEP or WAIT is outstanding the game reads no further requests at all, so nothing sent down ' +
-        'that connection could clear it. Reconnecting did: the game drops the old client, cancels what it was ' +
-        'waiting on, and accepts a new one.\n\n' +
+      `The bridge on port ${this.port} had stopped answering - ${lost} call(s) went unanswered, and CANCEL ` +
+        'went unanswered too, which means this game reads nothing at all while a deferred STEP or WAIT is ' +
+        'outstanding. Every build from before CANCEL behaves that way; rebuilding it with gg2_rebuild (~3s) ' +
+        'makes this recoverable without dropping anything. Reconnecting worked: the game drops the old ' +
+        'client, cancels what it was waiting on, and accepts a new one.\n\n' +
         'It also unfreezes on losing a client, and this game was frozen at your request - so it ran on for a ' +
         'moment before being frozen again. It is frozen now, but has advanced by a few frames that nothing ' +
         'counted. That is why this call failed instead of answering: retry it, and the answer will be honest.'

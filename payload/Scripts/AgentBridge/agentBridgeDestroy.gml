@@ -22,5 +22,7 @@ if (listener >= 0)
 
 ds_list_destroy(watchExpr);
 ds_list_destroy(watchLast);
+ds_list_destroy(queuedPrefix);
+ds_list_destroy(queuedBody);
 
 agentBridgeLog("bridge closed");

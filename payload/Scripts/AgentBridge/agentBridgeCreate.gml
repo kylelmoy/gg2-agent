@@ -45,8 +45,7 @@ global.agentDeclaredPlayers = -1;
 
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer
-// sends the reply later. Nothing new is read while one is outstanding, so
-// replies always come back in the order they were asked for.
+// sends the reply later.
 deferKind = 0;      // 0 = nothing pending, 1 = stepping, 2 = waiting
 deferExpr = "";
 deferFrames = 0;
@@ -55,9 +54,31 @@ deferWaitOutcome = "";  // sentinel agentBridgeDefer uses to tell a raised WAIT
                         // expression apart from one that merely evaluated false
 
 // "#<id> " for a request that carried an id, "" for one that did not. Set once
-// per request by agentBridgeStep and prepended to the reply by agentBridgeSend,
-// including a deferred reply sent frames later - see agentBridgeStep.
+// per request by agentBridgeStep and prepended to the reply by agentBridgeSend.
 replyPrefix = "";
+
+// The deferred request's own prefix, kept separately from replyPrefix.
+//
+// This is not tidiness. replyPrefix used to survive a defer by accident: the
+// bridge read nothing while one was outstanding, so nothing overwrote it before
+// agentBridgeDefer sent the reply frames later. Reading during a defer - which
+// is the whole point of the queue below - overwrites it with the next request's
+// id, and the deferred reply would then come back tagged as the answer to some
+// other call. That is worse than not answering: the client matches by id, so it
+// would hand a STEP's result to whoever asked the question after it.
+deferPrefix = "";
+
+// Requests that arrived while a reply was deferred, in arrival order, as two
+// parallel lists (GM8 has no structs).
+//
+// They are held rather than run because a deferred STEP has the world RUNNING -
+// STEP activates every instance and re-deactivates on completion - so anything
+// executed in that window changes what the STEP measures, and touches a world
+// the caller believes is stopped. They are dispatched the moment the deferred
+// reply goes out. CANCEL is the one verb that jumps this queue, since being
+// answerable mid-defer is its entire purpose.
+queuedPrefix = ds_list_create();
+queuedBody = ds_list_create();
 
 // The world is frozen by deactivating every instance except this one, so the
 // game stops advancing between agent calls while the bridge keeps answering.

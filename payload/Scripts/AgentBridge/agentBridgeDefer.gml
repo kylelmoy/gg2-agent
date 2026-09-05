@@ -1,6 +1,12 @@
 // Finishes the one request that could not be answered in the frame it arrived,
 // and sends its reply. Called once per step from agentBridgeStep while
-// deferKind is set; clearing deferKind is what lets the next request be read.
+// deferKind is set; clearing deferKind is what lets the queue behind it run.
+
+// Answer under the deferred request's own id, not whatever was read most
+// recently. The bridge reads while a defer is outstanding, so replyPrefix has
+// almost certainly moved on since - it used to survive by accident, because
+// nothing was read in between.
+replyPrefix = deferPrefix;
 
 if (deferKind == 1)
 {
@@ -10,6 +16,7 @@ if (deferKind == 1)
         exit;
 
     deferKind = 0;
+    deferPrefix = "";
     if (frozen)
     {
         instance_deactivate_all(true);
@@ -44,6 +51,7 @@ if (deferKind == 2)
     if (deferWaitOutcome == "raised")
     {
         deferKind = 0;
+        deferPrefix = "";
         agentBridgeSend("ERR WAIT expression raised an error, abandoned after " +
             string(deferTotal - deferFrames) + " frame(s) - see gg2_log source: launcher: " + deferExpr);
         exit;
@@ -52,6 +60,7 @@ if (deferKind == 2)
     if (deferWaitOutcome == "true")
     {
         deferKind = 0;
+        deferPrefix = "";
         agentBridgeSend("OK true after " + string(deferTotal - deferFrames) + " frame(s)");
         exit;
     }
@@ -59,6 +68,7 @@ if (deferKind == 2)
     if (deferFrames <= 0)
     {
         deferKind = 0;
+        deferPrefix = "";
         agentBridgeSend("ERR still false after " + string(deferTotal) + " frame(s): " + deferExpr);
     }
 }

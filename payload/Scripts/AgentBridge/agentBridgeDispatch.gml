@@ -48,6 +48,50 @@ case "INPUT":
 case "WATCH":
     return agentBridgeWatch(rest);
 
+case "CANCEL":
+    // Abandon the outstanding deferred request, and answer it.
+    //
+    // This is the verb that makes reading-while-deferred worth anything. The
+    // queue alone only stops later requests being invisible; it does not make
+    // them faster, because they still run after the WAIT they are stuck behind.
+    // CANCEL is what actually unsticks a caller that has given up, and it is
+    // handled the moment it is read rather than queued - being answerable while
+    // a defer is outstanding is its entire purpose.
+    //
+    // Deliberately idempotent: a client racing a WAIT that has just completed
+    // gets "nothing deferred", not an error. Cancelling is a statement about
+    // what the caller no longer wants, and it has got what it wanted either way.
+    if (deferKind == 0)
+        return "OK nothing deferred";
+
+    // The cancelled request is answered first, under ITS id - which is why
+    // deferPrefix exists at all. replyPrefix currently holds CANCEL's own, so it
+    // is swapped out and put back rather than assumed.
+    var cancelPrefix, cancelled, done;
+    cancelPrefix = replyPrefix;
+    done = deferTotal - deferFrames;
+    if (deferKind == 1)
+        cancelled = "STEP";
+    else
+        cancelled = "WAIT";
+
+    replyPrefix = deferPrefix;
+    agentBridgeSend("ERR cancelled after " + string(done) + " of " + string(deferTotal) + " frame(s)");
+    replyPrefix = cancelPrefix;
+
+    // A STEP activated the world to run its frames and re-deactivates when it
+    // finishes. Cancelling it has to do the same, or the caller is left with a
+    // game it believes is frozen and that is in fact running.
+    if (deferKind == 1 and frozen and !instancesDeactivated)
+    {
+        instance_deactivate_all(true);
+        instancesDeactivated = true;
+    }
+
+    deferKind = 0;
+    deferPrefix = "";
+    return "OK cancelled " + cancelled + " after " + string(done) + " of " + string(deferTotal) + " frame(s)";
+
 case "FREEZE":
     // Stop the world. Deactivating every instance but this one leaves the
     // bridge answering while nothing else in the game advances.

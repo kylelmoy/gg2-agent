@@ -15,15 +15,6 @@ See `CLAUDE.md`'s *Where documentation goes* for what belongs here and what does
 
 ## Still open
 
-### The bridge reads nothing while a reply is deferred
-
-Reconnecting now clears a `STEP`/`WAIT` that outlived its caller, and does it in 70ms, but
-the mechanism is still "tear the connection down and build another". A bridge that drained
-buffered frames into a queue while deferred - dispatching them after, which request ids
-now make safe - could take an explicit `CANCEL` instead, and would make `tcp_eof` reachable
-without the RST. It is a bigger change to `agentBridgeStep` than any edition so far has
-wanted to make while another session was building from the same tree.
-
 ### `gg2_input aim` hangs, and the obvious fix does not work
 
 `window_views_mouse_set` never returns while the game window is not the foreground window,
@@ -54,6 +45,13 @@ exists before reaching for a running game.
   the fnames-derived built-in list is holding up.
 - **The `M!` force-close fallback and the WAIT sentinel** are both verified against a
   running exe, not just reasoned about - keep that habit for whatever replaces them.
+- **`CANCEL`, and reading while a reply is deferred.** The bridge answers a
+  `CANCEL` on the spot and holds everything else until the deferred reply goes
+  out. Do not "simplify" this back into answering queued requests immediately: a
+  deferred `STEP` has the world running, so anything run in that window changes
+  what the `STEP` measures. And `deferPrefix` is not redundant with
+  `replyPrefix` — the deferred reply must carry its own id, which used to happen
+  by accident only because nothing was read in between.
 - **`CODE_PATCHES` and its selftest round-trip.** The patches rewrite lines of the game's
   own logic rather than adding lines beside them, and both sites are the braceless body of
   an `if`, where an insertion silently changes what the game does. The selftest checks each

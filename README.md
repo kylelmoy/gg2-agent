@@ -179,17 +179,28 @@ agent is holding a game, and which may not.
 
 `uint32` little-endian length, then that many bytes. Requests are
 `VERB [argument]` — `PING`, `EVAL`, `EVALX`, `STATE`, `SHOT`, `INPUT`, `WATCH`,
-`FREEZE`, `RESUME`, `STEP`, `WAIT`, `SPEED`, `QUIT` — and replies are `OK`, `OK <text>` or
-`ERR <text>`. The Node server speaks MCP on one side and this on the other, so
-the GML never parses JSON.
+`FREEZE`, `RESUME`, `STEP`, `WAIT`, `SPEED`, `CANCEL`, `QUIT` — and replies are
+`OK`, `OK <text>` or `ERR <text>`, each prefixed with `#<id> ` echoing the request
+it answers. The Node server speaks MCP on one side and this on the other, so the
+GML never parses JSON.
 
 Two of those verbs cannot answer in the frame they arrive: `STEP` counts frames
 down and `WAIT` re-tests an expression. The dispatcher returns an empty reply for
 those, having recorded what it is waiting for, and a per-frame handler sends the
-answer once it is due. Nothing further is read while one is outstanding, so
-replies always come back in the order they were asked for — and a client that
-disconnects mid-request clears the state and unfreezes the world, so the next one
-does not inherit a game that never advances.
+answer once it is due.
+
+The bridge keeps reading while that reply is outstanding. `CANCEL` is answered
+immediately — it exists to let a caller that has given up escape a `WAIT` with
+most of its frame budget left, which costs one round trip instead of the rest of
+the budget. Everything else is held in arrival order and dispatched the moment
+the deferred reply goes out, because a deferred `STEP` has the world *running*
+and anything executed in that window would change what the `STEP` measures.
+
+**Replies are therefore not in request order**, and matching them by position is
+wrong: a `CANCEL` jumps ahead of requests that arrived before it, and the reply
+it cancels lands under its own id. That is what the ids are for. A client that
+disconnects mid-request clears the state, drops the queue and unfreezes the
+world, so the next one does not inherit a game that never advances.
 
 `FREEZE` stops the world by deactivating every instance except the bridge, which
 keeps answering while nothing else moves. A deactivated instance is not drawn, so

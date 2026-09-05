@@ -51,13 +51,12 @@ if (sock < 0)
 
 // Drop a broken or closed connection so the next one can be accepted.
 //
-// Ahead of the deferred reply below, and that ordering is the whole of what
-// makes a wedged bridge recoverable: while a STEP or a WAIT is outstanding this
-// script answers nothing else, so a client that gave up on one and reconnected
-// used to sit in the accept backlog for the rest of its frame budget - up to
-// two minutes - with the game plainly alive and every call timing out. Checked
-// live on 2026-08-22, before and after. Dropping the connection is all a client
-// can do to reach a bridge that has stopped reading, so it has to be enough.
+// Ahead of the deferred reply below, and that ordering is what makes a bridge
+// recoverable by a client that cannot reach it any other way. Dropping the
+// connection used to be the ONLY thing that reached a bridge with a STEP or
+// WAIT outstanding, because nothing else was read until that reply went out;
+// CANCEL is the ordinary way now, and this stays as the fallback that works
+// even against a client that has stopped talking altogether.
 if (socket_has_error(sock) or tcp_eof(sock))
 {
     agentBridgeLog("client disconnected");
@@ -65,8 +64,14 @@ if (socket_has_error(sock) or tcp_eof(sock))
     sock = -1;
 
     // A client that vanishes mid-request must not leave the world stopped, or
-    // the next one finds a game that never advances.
+    // the next one finds a game that never advances. Its queued requests go
+    // with it: they were asked by a connection that no longer exists, and
+    // answering them into the next client's socket would be worse than
+    // dropping them.
     deferKind = 0;
+    deferPrefix = "";
+    ds_list_clear(queuedPrefix);
+    ds_list_clear(queuedBody);
     if (frozen)
     {
         frozen = false;
@@ -76,18 +81,42 @@ if (socket_has_error(sock) or tcp_eof(sock))
     exit;
 }
 
-// A deferred reply owns the connection until it is sent. Reading further
-// requests before then would answer them out of order.
+// Advance the deferred reply, if there is one. This may clear deferKind and
+// send its answer, which is what releases the queue below.
 if (deferKind != 0)
-{
     agentBridgeDefer();
-    if (deferKind != 0)
-        exit;
+
+// Run whatever arrived while that reply was outstanding, in arrival order.
+//
+// In the same frame the defer finished, deliberately: a request held behind a
+// STEP has already waited for it, and making it wait another frame for no
+// reason would be a latency nobody asked for. Stops the moment one of them
+// defers in its turn - a queued STEP is perfectly legal - leaving the rest
+// queued behind that one.
+var guard, request, reply, queuedReply, idEnd, idText, isCancel;
+
+while (deferKind == 0 and ds_list_size(queuedBody) > 0)
+{
+    replyPrefix = ds_list_find_value(queuedPrefix, 0);
+    request = ds_list_find_value(queuedBody, 0);
+    ds_list_delete(queuedPrefix, 0);
+    ds_list_delete(queuedBody, 0);
+
+    queuedReply = agentBridgeDispatch(request);
+    if (queuedReply == "")
+        deferPrefix = replyPrefix;
+    else
+        agentBridgeSend(queuedReply);
 }
 
 // Drain whatever complete requests are already buffered. The guard stops one
 // very chatty client from starving the rest of the frame.
-var guard;
+//
+// This runs whether or not a reply is deferred, which is the change that made
+// CANCEL possible: a bridge that reads nothing while deferred cannot be told
+// anything, so the only way to reach one was to drop the connection and let it
+// notice the EOF. Reading always means a request can arrive and be answered -
+// or, for anything that would touch the game, held until the defer is done.
 guard = 0;
 while (guard < 32)
 {
@@ -114,7 +143,6 @@ while (guard < 32)
         if (!tcp_receive(sock, msgLen))
             exit;
 
-        var request, reply, idEnd, idText;
         request = read_string(sock, msgLen);
         readState = 0;
 
@@ -125,6 +153,12 @@ while (guard < 32)
         // stays empty and the reply is bare, exactly as before, so a client
         // built against the older protocol keeps working against a game that
         // has been rebuilt with this.
+        //
+        // ⚠️ Ids stopped being a convenience the moment this loop began running
+        // during a defer. Replies are no longer in arrival order - CANCEL jumps
+        // the queue, and a deferred reply lands after requests that arrived
+        // later - so a client matching by position would now be wrong. This
+        // client refuses a bridge that answers without an id for that reason.
         replyPrefix = "";
         if (string_char_at(request, 1) == "#")
         {
@@ -140,9 +174,40 @@ while (guard < 32)
             }
         }
 
+        // CANCEL is answered immediately even mid-defer; everything else waits.
+        isCancel = (request == "CANCEL" or string_copy(request, 1, 7) == "CANCEL ");
+
+        if (deferKind != 0 and !isCancel)
+        {
+            // Held, not run: see queuedPrefix in agentBridgeCreate for why. The
+            // cap is a backstop against a client that never stops asking - it
+            // answers rather than dropping the connection, because with ids an
+            // out-of-order error is unambiguous and losing the connection is
+            // not.
+            if (ds_list_size(queuedBody) >= 32)
+            {
+                agentBridgeSend("ERR bridge queue is full (32 requests held behind a deferred reply) - " +
+                    "send CANCEL to abandon it");
+            }
+            else
+            {
+                ds_list_add(queuedPrefix, replyPrefix);
+                ds_list_add(queuedBody, request);
+            }
+            continue;
+        }
+
         reply = agentBridgeDispatch(request);
         if (reply == "")
-            exit;               // deferred; agentBridgeDefer sends it
+        {
+            // Deferred. Keep its id: replyPrefix will have moved on by the
+            // time agentBridgeDefer answers, because this loop keeps reading -
+            // and it keeps reading rather than stopping here, so anything else
+            // already buffered is queued now instead of waiting a frame to be
+            // noticed.
+            deferPrefix = replyPrefix;
+            continue;
+        }
 
         agentBridgeSend(reply);
     }

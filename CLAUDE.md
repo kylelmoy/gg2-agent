@@ -568,30 +568,45 @@ exactly what broke.
   `agent_launcher_<port>.log` and `agent_instances.json`, all beside the exe, so
   two games in one directory never interleave.
 - **Only one bridge client at a time.** This is the constraint *The loop* routes
-  around; what follows is the mechanism. The game accepts a single connection;
-  a second one waits. A second one also waits *forever* while a deferred `STEP`
-  or `WAIT` is outstanding, because the bridge reads nothing else until that
-  reply goes out — so the only thing that reaches a game in that state is
-  dropping the connection, and the client does exactly that (see below).
-- **Every request carries an id, and a wedged bridge reconnects itself.** The
-  frame body is `#<id> <request>` and the reply comes back `#<id> <reply>`, so a
-  reply belongs to the call that asked for it by name rather than by position —
-  a late reply to a call that already gave up is dropped as that call's, not
-  handed to whoever asked next. The game treats the id as optional and echoes
-  whatever it is given, so rebuilding a game does not break an older client;
-  this client always sends one, and refuses (with instructions) to talk to a
-  bridge that answers without one. On top of that, a call that finds *every*
-  outstanding request abandoned reconnects first: the game notices the dropped
-  client, cancels what it was deferring, and accepts the new connection, which
-  turns a two-minute `WAIT` nobody is waiting for into a 70ms recovery. If the
-  game was frozen at this client's request it is frozen again afterwards, and
-  the call that triggered the recovery *fails* rather than answering — the world
-  ran on for a few frames in between, and a value measured after that is worth
-  less than being told it happened. Retry and the answer is honest.
-  ⚠️ **The client's disconnect is abortive (RST) on purpose.** `tcp_eof` only
-  goes true once the read buffer is *also* exhausted, so with a second request
-  still sitting unread behind the deferred one, an ordinary FIN is invisible to
-  the game for the whole frame budget. Measured live both ways.
+  around. The game accepts a single connection; a second one waits.
+- **Every request carries an id, and replies are no longer in order.** The frame
+  body is `#<id> <request>` and the reply comes back `#<id> <reply>`, so a reply
+  belongs to the call that asked for it by name rather than by position — a late
+  reply to a call that already gave up is dropped as that call's, not handed to
+  whoever asked next. The game treats the id as optional and echoes whatever it
+  is given, so rebuilding a game does not break an older client; this client
+  always sends one, and refuses (with instructions) to talk to a bridge that
+  answers without one.
+  ⚠️ **Matching by position is now wrong, not merely fragile.** A `CANCEL` jumps
+  the queue and a deferred reply lands after requests that arrived later than it
+  — measured live, `#1` and `#3` come back before `#2` when `#2` was sent second.
+  A test harness written against this got three false failures out of correct
+  behaviour before it was fixed to match by id.
+- **A deferred `STEP` or `WAIT` no longer blocks the connection — `CANCEL` ends
+  it.** The bridge keeps reading while a reply is deferred: `CANCEL` is answered
+  on the spot, and anything else is held and run the moment that reply goes out.
+  So a `WAIT` whose caller gave up costs one round trip to escape rather than the
+  rest of its frame budget. Measured live: gave up on a 3000-frame wait after 2s,
+  next call answered in **53ms with the connection kept**, where the old path was
+  a ~98s wait or a reconnect. `CANCEL` is idempotent — nothing deferred is `OK`,
+  not an error — and cancelling a `STEP` re-deactivates the world, since `STEP`
+  activates it to run its frames.
+  Requests are *held* rather than run because a deferred `STEP` has the world
+  running, so anything executed in that window changes what the `STEP` measures.
+  The queue is capped at 32; past that a request is refused rather than the
+  connection dropped.
+- **Dropping the connection is still the fallback, and still abortive (RST).**
+  A bridge built before `CANCEL` reads nothing while deferred, so the request is
+  never seen; that silence is what selects the reconnect. The game then notices
+  the dropped client, cancels what it was deferring, unfreezes and accepts the
+  next connection. If it was frozen at this client's request it is frozen again
+  afterwards and the triggering call *fails* rather than answering — the world
+  ran on for a few frames, and a value measured after that is worth less than
+  being told it happened.
+  ⚠️ **The RST is on purpose.** `tcp_eof` only goes true once the read buffer is
+  *also* exhausted, so with a second request still sitting unread behind the
+  deferred one, an ordinary FIN is invisible to the game for the whole frame
+  budget. Measured live both ways.
 - **The listener binds all interfaces**, because that is what Faucet's
   `tcp_listen` does. The accept path drops anything that is not loopback. Do not
   remove that check — the bridge runs arbitrary GML.

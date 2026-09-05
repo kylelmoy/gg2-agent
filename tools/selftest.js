@@ -166,6 +166,16 @@ function fakeMapPng(width, height, solid) {
 function startFakeBridge(port) {
   const seen = [];
   const live = [];
+  // How this fake answers a CANCEL sent while a reply is deferred:
+  //   'answer' - a current bridge, which reads during a defer
+  //   'ignore' - a bridge built before CANCEL, which reads nothing while one is
+  //              outstanding, so the request is never even seen
+  // The second is not a hypothetical: every build before this protocol change
+  // behaves that way, and it is what the client's reconnect fallback exists for.
+  const mode = { cancel: 'answer' };
+  // The deferred request's own prefix, held so its reply carries its own id.
+  // This models the bridge's deferPrefix, and the reason it has to exist.
+  let deferred = null;
   let counters = { total: -1, succeeded: -1 };
   let fakeClock = 1000000;
   const server = net.createServer((sock) => {
@@ -174,6 +184,11 @@ function startFakeBridge(port) {
     // disconnect), so ECONNRESET here is normal and not a failure - the real
     // game notices the same reset and goes back to accepting.
     sock.on('error', () => {});
+    // agentBridgeStep clears deferKind when it loses a client, so a deferred
+    // reply never outlives the connection that asked for it. Modelled here for
+    // the same reason it exists there: without it a WAIT abandoned by one
+    // connection is still sitting there for the next one to trip over.
+    sock.on('close', () => { deferred = null; });
     let rx = Buffer.alloc(0);
     const send = (text) => {
       const body = Buffer.from(text, 'latin1');
@@ -207,12 +222,28 @@ function startFakeBridge(port) {
         const [verb, ...restParts] = request.split(' ');
         const rest = restParts.join(' ');
 
-        if (verb === 'PING') reply('OK pong');
+        if (verb === 'CANCEL') {
+          if (mode.cancel === 'ignore') continue; // never read it in the first place
+          if (!deferred) reply('OK nothing deferred');
+          else {
+            clearTimeout(deferred.timer);
+            send(deferred.prefix + 'ERR cancelled after 1 of 600 frame(s)');
+            deferred = null;
+            reply('OK cancelled WAIT after 1 of 600 frame(s)');
+          }
+        } else if (verb === 'PING') reply('OK pong');
         else if (verb === 'FREEZE') reply('OK frozen');
         else if (verb === 'RESUME') reply('OK running');
         else if (verb === 'STATE') reply('OK {room: MainMenu, fps: 30}');
         else if (verb === 'STEP') setTimeout(() => reply(`OK advanced ${rest} frame(s)`), 50);
-        else if (verb === 'WAIT') setTimeout(() => reply('OK true after 2 frame(s)'), 50);
+        else if (verb === 'WAIT') {
+          // "neverFinishes" is the case the whole redesign is about: a deferred
+          // reply whose caller has given up long before its frame budget runs
+          // out. Nothing is scheduled, so only a CANCEL - or losing the
+          // connection - ends it.
+          if (rest.includes('neverFinishes')) deferred = { prefix, timer: null };
+          else setTimeout(() => reply('OK true after 2 frame(s)'), 50);
+        }
         else if (verb === 'INPUT') reply('OK');
         else if (verb === 'WATCH') reply('OK watching 1 expression(s)');
         else if (verb === 'SHOT') {
@@ -343,7 +374,7 @@ function startFakeBridge(port) {
     });
   });
 
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, seen, live })));
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, seen, live, mode })));
 }
 
 //---------------------------------------------------------------------------
@@ -359,7 +390,7 @@ async function main() {
   const image = require('./image.js');
   const mcp = require('./gg2-mcp-server.js');
 
-  const { server, seen, live } = await startFakeBridge(PORT);
+  const { server, seen, live, mode } = await startFakeBridge(PORT);
 
   // The register is what routes a call to a game. This process stands in for
   // the game, so its own pid is one that is genuinely alive.
@@ -779,6 +810,46 @@ async function main() {
       failed('EVALX global.quietlyNeverAnswers', 500),
     ]);
     contains('and says it was stuck behind an earlier call', behind, '1 earlier call(s) never answered');
+
+    // --- escaping a deferred reply -----------------------------------------
+    //
+    // The case the whole CANCEL protocol exists for: a WAIT whose caller gave
+    // up long before its frame budget ran out. Before this, the only way to
+    // reach a bridge in that state was to drop the connection - which loses
+    // whatever the caller had frozen and costs the game a few unaccounted
+    // frames - because the bridge read nothing at all until the deferred reply
+    // went out.
+    {
+      // Settle first. The block above deliberately leaves two abandoned calls,
+      // and the next request through this bridge recovers from them - so
+      // without this, the reconnect being measured here would be the previous
+      // test's, not this one's.
+      await mcp.callTool('gg2_evalx', { expr: 'room_speed' });
+      const connections = live.length;
+      const stuck = await failed('WAIT 600 0:neverFinishes', 200);
+      contains('a deferred reply that outlives its caller times out', stuck, 'did not reply');
+
+      // The next call clears it with CANCEL. Same connection: nothing is
+      // dropped, so nothing this client froze is lost.
+      contains('the next call goes through', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+      check('and CANCEL cleared it without reconnecting', live.length === connections, `${live.length} vs ${connections}`);
+      check('and the CANCEL actually reached the game', seen.includes('CANCEL'), seen.slice(-4).join(' | '));
+    }
+
+    // A bridge from before CANCEL reads nothing while deferred, so the request
+    // is never even seen and no answer comes. That silence is what selects the
+    // reconnect, and it must still work - every build older than this protocol
+    // behaves this way.
+    {
+      mode.cancel = 'ignore';
+      const connections = live.length;
+      const stuck = await failed('WAIT 600 0:neverFinishes', 200);
+      contains('an older bridge still times out the same way', stuck, 'did not reply');
+      contains('the next call still succeeds', await mcp.callTool('gg2_evalx', { expr: 'room_speed' }), '42');
+      check('and it reconnected, because CANCEL went unanswered', live.length > connections, `${live.length} vs ${connections}`);
+      mode.cancel = 'answer';
+    }
+
 
     // The rest of the file needs a bridge that is not queued behind either of
     // those.
