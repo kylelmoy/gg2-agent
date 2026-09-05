@@ -91,8 +91,12 @@ need any of this - use build-fast.js.
 // exe, and a JRE is a far more ordinary thing to have - which matters here,
 // because Gmk-Splitter's own build-release.sh emits the jar unconditionally and
 // only wraps it into an exe if it can also fetch launch4j.
-function resolveSplitter(source, sibling = path.resolve(__dirname, '..', 'Gmk-Splitter')) {
-  const here = [path.join(__dirname, 'tools'), source];
+function resolveSplitter(
+  source,
+  sibling = path.resolve(__dirname, '..', 'Gmk-Splitter'),
+  toolsDir = path.join(__dirname, 'tools')
+) {
+  const here = [toolsDir, source];
   try {
     return { exe: lib.findTool('gmksplit.exe', here), args: [] };
   } catch (e) {
@@ -120,8 +124,12 @@ function resolveSplitter(source, sibling = path.resolve(__dirname, '..', 'Gmk-Sp
 // rather than throwing before anything has been done. It used to throw at
 // discovery, so a missing patcher failed the build a minute before it would
 // have mattered, and for a reason that never had to stop it.
-function resolveGm8xFix(source, sibling = path.resolve(__dirname, '..', 'gm8x_fix')) {
-  const dirs = [path.join(__dirname, 'tools'), source, sibling];
+function resolveGm8xFix(
+  source,
+  sibling = path.resolve(__dirname, '..', 'gm8x_fix'),
+  toolsDir = path.join(__dirname, 'tools')
+) {
+  const dirs = [toolsDir, source, sibling];
   try {
     return lib.findTool('gm8x_fix.exe', dirs);
   } catch (e) {

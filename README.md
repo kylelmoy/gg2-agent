@@ -85,12 +85,18 @@ beside this one.
 - Game Maker 8.0 **Pro** — the Lite edition cannot build a project with extensions.
   `build-agent.js` auto-detects a few common install paths; if yours is
   elsewhere, pass `--gm8 <dir>` or set `GM8_DIR`.
-- A JRE, plus **gmksplit** - either `gmksplit.exe` or `gmksplit.jar` (the exe is only a
+- **gmksplit** - either `gmksplit.exe` or `gmksplit.jar` plus a JRE (the exe is only a
   launch4j wrapper around the jar), in `tools/`, the game's `Source/`, or
-  `../Gmk-Splitter/release/<version>/`
-- Optionally `gm8x_fix.exe`, in `tools/`, the game's `Source/`, or `../gm8x_fix/`. It
-  patches input lag, joystick, scheduler and DirectPlay in the built exe; without it the
-  build warns and carries on
+  `../Gmk-Splitter/release/<version>/`. Prebuilt in the
+  [GmkSplitter releases](https://github.com/Medo42/Gmk-Splitter/releases); the game's own
+  `Contributing.md` points at the same tool
+- Optionally `gm8x_fix.exe`, in `tools/`, the game's `Source/`, or `../gm8x_fix/`, from the
+  [gm8x_fix releases](https://github.com/skyfloogle/gm8x_fix/releases). It patches input
+  lag, joystick, scheduler and DirectPlay in the built exe; without it the build warns and
+  carries on
+
+`tools/*.exe` and `tools/*.jar` are gitignored, so dropping both there is the simplest
+arrangement and keeps them out of every repo.
 - Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
   compiler needed)
 - **An audio device.** GM8 loads sound resources into DirectSound during engine

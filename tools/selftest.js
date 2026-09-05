@@ -435,12 +435,19 @@ async function main() {
     // accepted as a jar, since its .exe is only a launch4j wrapper around one.
     const agent = require('../build-agent.js');
     const lib = require('./lib.js');
+    // Every search root is injected, tools/ included. These checks passed at
+    // first only because no binary was installed yet; the moment one was, the
+    // real tools/ shadowed the scratch dirs and all seven failed. A test that
+    // depends on a tool being absent is a test that stops meaning anything the
+    // day someone installs it.
+    const empty = path.join(SCRATCH, 'no-tools');
+    fs.mkdirSync(empty, { recursive: true });
     const sib = path.join(SCRATCH, 'Gmk-Splitter');
     const rel = path.join(sib, 'release', 'GmkSplitter.v0.19-dev');
     fs.mkdirSync(rel, { recursive: true });
     fs.writeFileSync(path.join(rel, 'gmksplit.jar'), 'not really a jar');
 
-    const found = agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib);
+    const found = agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib, empty);
     check('a jar in the sibling repo\'s release dir is found', found.exe === 'java', JSON.stringify(found));
     check('and is run with -jar', found.args[0] === '-jar' && found.args[1] === path.join(rel, 'gmksplit.jar'),
       JSON.stringify(found.args));
@@ -452,17 +459,17 @@ async function main() {
     fs.writeFileSync(path.join(older, 'gmksplit.jar'), 'older');
     fs.utimesSync(older, new Date(Date.now() - 86400000), new Date(Date.now() - 86400000));
     check('the newest release directory wins',
-      agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib).args[1] === path.join(rel, 'gmksplit.jar'));
+      agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib, empty).args[1] === path.join(rel, 'gmksplit.jar'));
 
     await throws('and a missing splitter names the repo and what it needs',
-      async () => agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-splitter')),
+      async () => agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-splitter'), empty),
       'build-release.sh');
 
     // gm8x_fix only applies quality patches to an exe that already runs, so a
     // missing one must not fail the build a minute before it would matter.
     const quiet = [];
     const restore = lib.setSink((line) => quiet.push(line));
-    const fix = agent.resolveGm8xFix(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-fix'));
+    const fix = agent.resolveGm8xFix(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-fix'), empty);
     restore();
     check('a missing gm8x_fix returns null rather than throwing', fix === null);
     contains('and says the build continues without it', quiet.join('\n'), 'building without it');
