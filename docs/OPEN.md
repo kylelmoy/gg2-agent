@@ -32,18 +32,40 @@ which a game this tooling launched normally is not. Forcing focus from the launc
 invalid-parameter errors; `git show efedf8b:HANDOFF.md` has the detail before anyone tries
 it again. `press`/`click` do not depend on focus and are unaffected.
 
-### A full build has no `gmksplit.exe`
+### A full build has no gmksplit, and this machine cannot build one
 
 `gmksplit.exe` and `gm8x_fix.exe` lived in the old fork's `Source/` and went with it when
-`Gang-Garrison-2` was replaced by the upstream checkout on 2026-09-05; upstream ships
-`Source/GitToGmk.bat`, which calls `gmksplit.exe`, but not the binary. `build-agent.js`
-therefore stops at *"gmksplit.exe not found. Looked in: gg2-agent/tools; Source and PATH"*
-before it reaches Game Maker at all, and `Source/build/` is gone with the same checkout -
-so there is no exe, no fast-rebuild template and no instance register either.
+`Gang-Garrison-2` was replaced by the upstream checkout on 2026-09-05. Upstream ships
+`Source/GitToGmk.bat`, which calls `gmksplit.exe`, but not the tool it calls, and
+`Source/build/` is gone with the same checkout - so there is no exe, no fast-rebuild
+template and no instance register either.
 
-The sources are on this machine: `D:/code/Gmk-Splitter` (Java, `build-release.sh` plus
-launch4j) and `D:/code/gm8x_fix` (C). Building either, or restoring the binaries from a
-backup, unblocks every build path; nothing else about the tooling needs it.
+`build-agent.js` now looks in the sibling source repos as well, at the paths their own
+build scripts write to, and **accepts `gmksplit.jar` run through `java -jar`** - the `.exe`
+is only a launch4j wrapper around that jar, so a JRE does the same job. `gm8x_fix` is no
+longer fatal: it applies input-lag, joystick, scheduler, memory and DirectPlay patches to
+an exe that already runs, so a build without it warns and carries on.
+
+⚠️ **Neither repo can be built on this machine as it stands.** Measured 2026-09-05:
+
+| Needed | Have |
+|---|---|
+| `javac`, to build `gmksplit.jar` | JRE 1.8.0_503 only - no JDK anywhere under Program Files |
+| a C compiler, for `gm8x_fix.c` | none - no gcc, clang, cl or MinGW |
+| WSL, to run `Gmk-Splitter/build-release.sh` (it is a Linux script and downloads a linux-x64 JDK) | not installed |
+
+So the search paths are wired and proven, and the thing they are searching for does not
+exist yet. Three ways out, none of them taken here because each is the user's call:
+install a JDK and run `build-release.sh` under something Linux-ish; install a C compiler
+and `cc gm8x_fix.c patches.c -o gm8x_fix.exe`; or download the upstream release zips,
+which carry both binaries prebuilt.
+
+⚠️ **The jar path has never been run against a real GmkSplitter jar** - there isn't one to
+try. What is proven is the resolution and the invocation: `resolveSplitter` finds a jar in
+`<repo>/release/<version>/`, newest first, and `lib.run` spawns `java -jar <that path> gg2
+build/gg2.gmk` with Java confirming it received exactly that path. Whether GmkSplitter
+itself behaves identically as a jar is untested, though it is the same code the `.exe`
+wraps.
 
 ### Nothing uses the walkmask except pictures
 

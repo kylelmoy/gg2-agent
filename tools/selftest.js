@@ -427,6 +427,48 @@ async function main() {
       'instanceof gm8directbuild.BlockedByDialog');
   }
 
+  process.stdout.write('\nexternal build tools\n');
+  {
+    // gmksplit.exe and gm8x_fix.exe are not in this repo, and since 2026-09-05
+    // not in the game's checkout either - both lived in the old fork's Source/.
+    // So both are also looked for in their own source repos, and gmksplit is
+    // accepted as a jar, since its .exe is only a launch4j wrapper around one.
+    const agent = require('../build-agent.js');
+    const lib = require('./lib.js');
+    const sib = path.join(SCRATCH, 'Gmk-Splitter');
+    const rel = path.join(sib, 'release', 'GmkSplitter.v0.19-dev');
+    fs.mkdirSync(rel, { recursive: true });
+    fs.writeFileSync(path.join(rel, 'gmksplit.jar'), 'not really a jar');
+
+    const found = agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib);
+    check('a jar in the sibling repo\'s release dir is found', found.exe === 'java', JSON.stringify(found));
+    check('and is run with -jar', found.args[0] === '-jar' && found.args[1] === path.join(rel, 'gmksplit.jar'),
+      JSON.stringify(found.args));
+
+    // build-release.sh writes one directory per version; the newest must win,
+    // or a stale build keeps being used after a rebuild.
+    const older = path.join(sib, 'release', 'GmkSplitter.v0.18');
+    fs.mkdirSync(older, { recursive: true });
+    fs.writeFileSync(path.join(older, 'gmksplit.jar'), 'older');
+    fs.utimesSync(older, new Date(Date.now() - 86400000), new Date(Date.now() - 86400000));
+    check('the newest release directory wins',
+      agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib).args[1] === path.join(rel, 'gmksplit.jar'));
+
+    await throws('and a missing splitter names the repo and what it needs',
+      async () => agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-splitter')),
+      'build-release.sh');
+
+    // gm8x_fix only applies quality patches to an exe that already runs, so a
+    // missing one must not fail the build a minute before it would matter.
+    const quiet = [];
+    const restore = lib.setSink((line) => quiet.push(line));
+    const fix = agent.resolveGm8xFix(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-fix'));
+    restore();
+    check('a missing gm8x_fix returns null rather than throwing', fix === null);
+    contains('and says the build continues without it', quiet.join('\n'), 'building without it');
+    contains('and where its source is', quiet.join('\n'), 'gm8x_fix.c');
+  }
+
   process.stdout.write('\ngg2.ini\n');
   fs.writeFileSync(path.join(BUILD, 'gg2.ini'), '[Settings]\r\nUseLobby=1\r\nHostingPort=8190\r\n\r\n[Server]\r\nDedicated=0\r\n');
   check('a value is read out of a section', session.iniValue(fs.readFileSync(path.join(BUILD, 'gg2.ini'), 'latin1'), 'Settings', 'HostingPort') === '8190');

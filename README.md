@@ -85,7 +85,12 @@ beside this one.
 - Game Maker 8.0 **Pro** — the Lite edition cannot build a project with extensions.
   `build-agent.js` auto-detects a few common install paths; if yours is
   elsewhere, pass `--gm8 <dir>` or set `GM8_DIR`.
-- A JRE, plus `gmksplit.exe` and `gm8x_fix.exe`, in `tools/` or the game's `Source/`
+- A JRE, plus **gmksplit** - either `gmksplit.exe` or `gmksplit.jar` (the exe is only a
+  launch4j wrapper around the jar), in `tools/`, the game's `Source/`, or
+  `../Gmk-Splitter/release/<version>/`
+- Optionally `gm8x_fix.exe`, in `tools/`, the game's `Source/`, or `../gm8x_fix/`. It
+  patches input lag, joystick, scheduler and DirectPlay in the built exe; without it the
+  build warns and carries on
 - Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
   compiler needed)
 - **An audio device.** GM8 loads sound resources into DirectSound during engine

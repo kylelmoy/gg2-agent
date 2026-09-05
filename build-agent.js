@@ -71,6 +71,79 @@ if that is not available for this Game Maker build. Code-only changes do not
 need any of this - use build-fast.js.
 `;
 
+//---------------------------------------------------------------------------
+// The two external tools
+//
+// Neither is committed to this repo, and as of 2026-09-05 neither is in the
+// game's checkout either: both binaries lived in the old fork's Source/ and
+// went with it when that was replaced by upstream, which ships GitToGmk.bat
+// (which calls gmksplit.exe) but not the tool it calls.
+//
+// So both are looked for in the sibling source repos as well, at the paths
+// their own build scripts write to. Neither is fetched or built from here -
+// that is the user's call, not a build step's - but the moment an artefact
+// exists in either repo it is picked up with nothing else to configure.
+//---------------------------------------------------------------------------
+
+// gmksplit reassembles the split tree into a .gmk, and it is a JAR: the .exe
+// is only a launch4j wrapper around gmksplit.jar, whose manifest names
+// com.ganggarrison.gmdec.GmkSplitter. So a jar and a JRE do the same job as the
+// exe, and a JRE is a far more ordinary thing to have - which matters here,
+// because Gmk-Splitter's own build-release.sh emits the jar unconditionally and
+// only wraps it into an exe if it can also fetch launch4j.
+function resolveSplitter(source, sibling = path.resolve(__dirname, '..', 'Gmk-Splitter')) {
+  const here = [path.join(__dirname, 'tools'), source];
+  try {
+    return { exe: lib.findTool('gmksplit.exe', here), args: [] };
+  } catch (e) {
+    // ignore: the jar is just as good
+  }
+
+  const jarDirs = [...here, sibling, ...releaseDirs(path.join(sibling, 'release'))];
+  for (const dir of jarDirs) {
+    const jar = path.join(dir, 'gmksplit.jar');
+    if (fs.existsSync(jar)) return { exe: 'java', args: ['-jar', path.resolve(jar)] };
+  }
+
+  throw new Error(
+    'neither gmksplit.exe nor gmksplit.jar found.\n' +
+      `  Looked in: ${jarDirs.join('; ')} and PATH.\n` +
+      `  The source is at ${sibling}; its build-release.sh writes release/GmkSplitter.<version>/gmksplit.jar,\n` +
+      '  and needs a JDK (javac) - a JRE alone can run the jar but cannot build it.\n' +
+      '  A prebuilt gmksplit.exe also ships in the upstream GmkSplitter release zip.'
+  );
+}
+
+// gm8x_fix patches the built exe: input lag, joystick, scheduler, memory and
+// DirectPlay. All of them are quality fixes to a game that already runs, so a
+// build without it is a working build - which is why this warns and carries on
+// rather than throwing before anything has been done. It used to throw at
+// discovery, so a missing patcher failed the build a minute before it would
+// have mattered, and for a reason that never had to stop it.
+function resolveGm8xFix(source, sibling = path.resolve(__dirname, '..', 'gm8x_fix')) {
+  const dirs = [path.join(__dirname, 'tools'), source, sibling];
+  try {
+    return lib.findTool('gm8x_fix.exe', dirs);
+  } catch (e) {
+    lib.warn('gm8x_fix.exe not found - building without it');
+    lib.detail(`looked in: ${dirs.join('; ')} and PATH`);
+    lib.detail('the exe still runs; it just keeps GM8\'s input lag, joystick, scheduler and DirectPlay bugs');
+    lib.detail(`source at ${sibling}: cc gm8x_fix.c patches.c -o gm8x_fix.exe`);
+    return null;
+  }
+}
+
+// Every <dir>/*/ under a release directory, newest first, so the most recent
+// build-release.sh run wins without anyone naming a version.
+function releaseDirs(root) {
+  if (!fs.existsSync(root)) return [];
+  return fs
+    .readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => path.join(root, e.name))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+}
+
 async function buildAgent({
   repo,
   keepInjected = false,
@@ -86,10 +159,10 @@ async function buildAgent({
   const exeOut = path.join(build, 'Gang Garrison 2.exe');
   const gmkOut = path.join(build, 'gg2.gmk');
 
-  // gmksplit / gm8x_fix may sit in this repo's tools directory or, following
-  // the game's own convention, in its Source directory.
-  const gmksplit = lib.findTool('gmksplit.exe', [path.join(__dirname, 'tools'), source]);
-  const gm8x = lib.findTool('gm8x_fix.exe', [path.join(__dirname, 'tools'), source]);
+  // gm8x_fix first: it only warns, and resolving it after gmksplit would mean
+  // a missing patcher stayed invisible until the missing splitter was fixed.
+  const gm8x = resolveGm8xFix(source);
+  const gmksplit = resolveSplitter(source);
 
   lib.step(`Building ${repoFull}`);
 
@@ -136,7 +209,7 @@ async function buildAgent({
 
     // --- 2. reassemble the split tree ----------------------------------------
     lib.step('Reassembling source tree');
-    await lib.run(gmksplit, ['gg2', path.join('build', 'gg2.gmk')], source);
+    await lib.run(gmksplit.exe, [...gmksplit.args, 'gg2', path.join('build', 'gg2.gmk')], source);
     if (!fs.existsSync(gmkOut)) throw new Error(`gmksplit produced no ${gmkOut}`);
     lib.ok(`gg2.gmk (${fs.statSync(gmkOut).size} bytes)`);
 
@@ -192,9 +265,13 @@ async function buildAgent({
     lib.ok(`built (${fs.statSync(exeOut).size} bytes)`);
 
     // --- 4. patch the executable ----------------------------------------------
-    lib.step('Patching executable');
-    await lib.run(gm8x, ['-nb', '-s', exeOut], source);
-    lib.ok('patched');
+    if (gm8x) {
+      lib.step('Patching executable');
+      await lib.run(gm8x, ['-nb', '-s', exeOut], source);
+      lib.ok('patched');
+    } else {
+      lib.skip('not patching: gm8x_fix.exe is not available (warned above)');
+    }
 
     // --- 5. record the fast-rebuild template ----------------------------------
     // The tree is still injected here, which is the state this exe was built
@@ -237,4 +314,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = { buildAgent };
+module.exports = { buildAgent, resolveSplitter, resolveGm8xFix };
