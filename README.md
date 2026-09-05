@@ -75,10 +75,12 @@ tools/
   lib.js            shared helpers (file edits, tool discovery, processes, paths)
 ```
 
-Every script is a plain module as well as a CLI — which is how the MCP server's
-`gg2_rebuild` builds in-process instead of spawning a shell — and every one takes
-`--help` and `--repo <path>`. `--repo` defaults to a `Gang-Garrison-2` checkout
-beside this one.
+The six scripts at the root, plus `control.js`, `events.js`, `session.js` and
+`walkmask.js`, are CLIs taking `--help` and `--repo <path>`; `--repo` defaults to a
+`Gang-Garrison-2` checkout beside this one. Every one of them is also a plain module,
+which is how the MCP server's `gg2_rebuild` builds in-process instead of spawning a
+shell. The rest of `tools/` is modules only, reached through the MCP tools or through
+each other.
 
 ## Setup
 
@@ -94,15 +96,15 @@ beside this one.
   [gm8x_fix releases](https://github.com/skyfloogle/gm8x_fix/releases). It patches input
   lag, joystick, scheduler and DirectPlay in the built exe; without it the build warns and
   carries on
-
-`tools/*.exe` and `tools/*.jar` are gitignored, so dropping both there is the simplest
-arrangement and keeps them out of every repo.
 - Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
   compiler needed)
 - **An audio device.** GM8 loads sound resources into DirectSound during engine
   startup; with no endpoint it raises two modal errors and terminates before any
   game code runs. Over RDP: audio redirection while connected,
   `tscon <id> /dest:console`, or a virtual audio driver.
+
+`tools/*.exe` and `tools/*.jar` are gitignored, so dropping the two binaries there is
+the simplest arrangement and keeps them out of every repo.
 
 Register the MCP server once, at user scope, so nothing lands in the game repo:
 
@@ -148,15 +150,18 @@ never reach a player's build. Injecting it, rather than committing it, is what
 guarantees that.
 
 It is practical because the bridge touches the game's tree in only a handful of
-places, one line each:
+places, a line or two each. The first four are lines *added*; the last two are
+existing lines *replaced*, because both sit as the braceless body of an `if` where an
+inserted neighbour would change what the game does — `docs/CLIENTDEBUG.md` has the
+detail, and `cleanup.js` swaps them back and fails if one survives:
 
 | File | Change |
 |---|---|
-| `Objects/_resources.list.xml` | register the object |
+| `Objects/_resources.list.xml` | register `AgentBridge` and the four spares (5 lines) |
 | `Scripts/_resources.list.xml` | register the script group |
 | `Scripts/Game/game_init.gml` | `instance_create(0, 0, AgentBridge);` |
 | `Objects/InGameElements/PlayerControl.events/Begin Step.xml` | OR `AgentBridge.heldMask` into `keybyte`, so `gg2_input press left` etc. can hold a direction without a keyboard |
-| `Scripts/Serialization/deserializeState.gml` | route the player-count mismatch through a payload script, so it reaches the log as well as the screen |
+| `Scripts/Serialization/deserializeState.gml` | route the player-count mismatch through a payload script, so it reaches the log as well as the screen — 2 lines, since the declared count is consumed inside the `if` |
 | `Scripts/Misc/getCharacterSpriteId.gml` | the same for its two `show_error` calls, which abort — see `docs/CLIENTDEBUG.md` |
 
 Everything else is new files. The object configures itself from the command line
@@ -174,7 +179,7 @@ agent is holding a game, and which may not.
 
 `uint32` little-endian length, then that many bytes. Requests are
 `VERB [argument]` — `PING`, `EVAL`, `EVALX`, `STATE`, `SHOT`, `INPUT`, `WATCH`,
-`FREEZE`, `RESUME`, `STEP`, `WAIT`, `QUIT` — and replies are `OK`, `OK <text>` or
+`FREEZE`, `RESUME`, `STEP`, `WAIT`, `SPEED`, `QUIT` — and replies are `OK`, `OK <text>` or
 `ERR <text>`. The Node server speaks MCP on one side and this on the other, so
 the GML never parses JSON.
 
@@ -269,10 +274,13 @@ as a crash. That log — `gg2_log` with `source: "launcher"` — is usually the 
 explanation you will get for a call that suddenly started timing out, and
 `tools/gmlerror.js` turns its errors back into `file:line`.
 
-`show_message` is the exception, and a hard one: its form holds exactly one
-windowed control, the OK button, and the message is painted onto the form
-itself. Nothing outside the process can read it, which is why `gg2_test` reads
-the assertion counters rather than the words.
+`show_message` is the exception, and a hard one: its form holds exactly one windowed
+control, the OK button, and the message is painted onto the form itself, so
+`WM_GETTEXT` finds nothing to return. The log says `(dialog had no readable text)` and
+**captures the window with `PrintWindow` instead**, naming the `.bmp` beside the log —
+the pixels are there even when the text is not, and that picture is often the only
+record of what the game said. `gg2_test` still reads the assertion counters rather
+than the words, because a counter is exact and a screenshot needs an eye.
 
 It also owns the game as a child process, which is what lets it register the
 instance on start and take the entry out again when the game exits.
