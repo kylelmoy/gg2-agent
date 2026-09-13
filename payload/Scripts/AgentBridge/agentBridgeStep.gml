@@ -15,6 +15,12 @@ if (not variable_local_exists("listener"))
 if (keyboard_check_pressed(vk_f11))
     global.agentLabels = !global.agentLabels;
 
+// Soak mode pins the two idle timers that would otherwise end a long unattended
+// run without saying so. Ahead of the listener check for the same reason F11 is:
+// it costs one global read while off, and a run that has been armed should stay
+// armed across a reconnect. agentSoakTick.
+agentSoakTick();
+
 if (listener < 0)
     exit;
 

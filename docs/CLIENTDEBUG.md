@@ -151,6 +151,78 @@ To add one:
    `build-fast.js`; that is what `agentScriptSpare0..5` are for while a script is
    still being written.
 
+## The soak sites, which are not debug logging
+
+Four of the patched sites exist to make an unattended, accelerated, hours-long
+run against another server implementation possible rather than to route a failure
+into the log. Same rules: one line for one line, and each replacement is a no-op
+unless its global has been turned on.
+
+| Site | Script | Global |
+|---|---|---|
+| `RateController.events/Begin Step.xml`, both `room_speed =` lines | `agentRoomSpeed` | `agentRate`, 0 = off |
+| `Character.events/User Event 13.xml`, the position block's first and last read | `agentSnapBegin` / `agentSnapEnd` | `agentSnap`, false = off |
+| `AudioControlPlaySong.gml`, its first line | `agentAudioStopSong` | always on, and observationally identical |
+
+`agentSoakTick` is called from `agentBridgeStep` and needs no site.
+
+### Why `agentRoomSpeed` rather than `agentBridgeSpeed`
+
+`agentBridgeSpeed` deactivates `RateController` so a different `room_speed`
+sticks. That is the right trade for a look at something and the wrong one for a
+soak, in two ways its own header already names one of:
+
+- **A room change ends the boost.** A new room means a new `RateController`,
+  active and unaware, resetting `room_speed` on its next Begin Step. A soak
+  crosses a map change every few minutes, so the boost is gone almost
+  immediately. Patching the assignment means the new instance runs the patched
+  line too and the rate simply survives.
+- **`run_virtual_ticks` stops being maintained.** `RateController`'s *Step* is
+  what sets it, and a deactivated instance runs no Step. Harmless in the 30 fps
+  arm, where `ticks_per_virtual` is 1 and the flag is true every frame. Not
+  harmless in the 60 fps arm, where it alternates: freezing it breaks the
+  virtual-tick cadence the simulation advances on.
+
+Patching the line keeps the instance active, so `delta_factor`,
+`skip_delta_factor`, `ticks_per_virtual` and `frameskip` all keep the values
+`RateController` just computed. `agentRateArm()` reads them back, and a soak
+should assert they did not move: that invariant is the whole reason an
+accelerated run measures the same simulation a real-time one does. Verified in
+both arms under boost.
+
+### The snap probe
+
+The two sites in `User Event 13` bracket the authoritative position block a
+client hard-assigns every seventh tick, so the predicted and the authoritative
+values are both in hand in the same frame. That is the only way to measure the
+correction at all — between updates a client's state *is* its prediction.
+
+The block's last statement is `moveStatus = (temp >> 1) & $07;`, and the event
+XML stores that line escaped (`&gt;&gt;`, `&amp;`), so an anchor for it would
+have to carry the escaping. `hp = read_ubyte(...)` is the last line that assigns
+anything the probe reads and it is plain text, so it is the anchor instead. Both
+anchors are plain statements inside a braced `if`, so neither is the body of
+anything.
+
+`agentSnapReport()` prints count, mean, max and three threshold counts per
+field. The numbers themselves, and what they establish about the 60 fps arm,
+live in `gg2-server`'s `docs/TRAPS-LIVEGAME.md` — measurements belong with the
+implementation they measure.
+
+### The audio site
+
+`WinBanner`'s Create reaches `AudioControlPlaySong` unguarded, so a round ending
+raises `Unknown variable currentSong` where that variable is absent — including
+with `Music=3`, which only guards `basicRoomSetup.gml:79`. One modal per round
+end is survivable by hand and not by an unattended run: at a boosted rate,
+dismissing it stalled a client until the server dropped the connection.
+
+`agentAudioStopSong` makes the stock script safe and then does what the stock
+line did. **Why the variable goes missing is not established**, and the
+misplaced parenthesis in `AudioControl.events/Create.xml` is not it — GM8 parses
+`if(instance_number(X)) > 1 { ... }` as intended, measured against an object with
+exactly one instance.
+
 ## What was measured, 2026-09-05
 
 Built with `build-agent.js`, run against a `gg2_session` server and one client:

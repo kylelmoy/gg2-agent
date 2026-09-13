@@ -27,15 +27,17 @@ AgentBridge);` line, or an `AgentBridge.heldMask` reference inside
 `PlayerControl` committed there, that is a mistake — run `cleanup.js`.
 
 ⚠️ **Injecting also rewrites a few lines of the game's own logic**, not just adds
-lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps three call sites for
-calls to payload scripts, so a failure the game only ever put on screen reaches
-`agent_bridge_<port>.log` too. `cleanup.js` swaps them back and now fails if one
-survives. An `agentDebug*` call inside `deserializeState.gml` or
-`getCharacterSpriteId.gml` in the fork is the same kind of mistake as the ones
-above. `docs/CLIENTDEBUG.md` is why it exists and how to add a site — read it
-before patching a fourth, because **both existing sites are the braceless body of
-an `if`, where inserting a line beside the anchor silently changes what the game
-does.**
+lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps nine call sites for
+calls to payload scripts. Four route a failure the game only ever put on screen
+into `agent_bridge_<port>.log`; the other five are what make an unattended,
+accelerated soak against another server implementation possible — the rate
+override, the prediction-snap probe and the audio guard. `cleanup.js` swaps them
+all back and fails if one survives. An `agentDebug*`, `agentSnap*`,
+`agentRoomSpeed` or `agentAudioStopSong` call left inside the game's own files in
+the fork is the same kind of mistake as the ones above. `docs/CLIENTDEBUG.md` is
+why each exists and how to add another — read it before patching a tenth,
+because **some anchors are the braceless body of an `if`, where inserting a line
+beside the anchor silently changes what the game does.**
 
 ## The loop
 

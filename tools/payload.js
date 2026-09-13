@@ -92,6 +92,70 @@ const CODE_PATCHES = [
     from: 'show_error("Attempted to get a sprite for unknown team ID: " + string(team), true);',
     to: 'agentDebugSpriteError(1, class, team, animation);',
   },
+
+  // --- soak testing ---------------------------------------------------------
+  //
+  // The four below are not debug-logging sites; they are what makes an
+  // unattended, accelerated, hours-long run against another server
+  // implementation possible. Same rules apply: one line for one line, and every
+  // replacement is a no-op unless its global has been turned on.
+
+  // RateController pins room_speed every frame from global.game_fps, so nothing
+  // outside can hold a different value. Patching the assignment keeps the
+  // instance ACTIVE, which is what agentBridgeSpeed's deactivation gives up:
+  // the boost then survives a map change, and RateController's Step keeps
+  // maintaining global.run_virtual_ticks. agentRoomSpeed has the full argument.
+  //
+  // Both lines are plain statements inside a braced block, so neither is the
+  // body of anything.
+  {
+    file: ['Objects', 'RateController.events', 'Begin Step.xml'],
+    from: 'room_speed = 60;',
+    to: 'agentRoomSpeed(60);',
+  },
+  {
+    file: ['Objects', 'RateController.events', 'Begin Step.xml'],
+    from: 'room_speed = 30;',
+    to: 'agentRoomSpeed(30);',
+  },
+
+  // The prediction-snap probe. These two bracket the authoritative position
+  // block a client hard-assigns every seventh tick, so the predicted and the
+  // authoritative values are both in hand in the same frame - which is the only
+  // way to measure the correction at all. agentSnapBegin has the argument.
+  //
+  // ANCHOR CHOICE. The block's last statement is
+  //   moveStatus = (temp >> 1) & $07;
+  // and in the event XML that line is stored escaped, as `&gt;&gt;` and `&amp;`,
+  // so an anchor for it would have to carry the escaping and would break if the
+  // file were ever re-serialised. `hp = read_ubyte(...)` is the last line that
+  // assigns anything this probe reads and it is plain text, so it is the anchor.
+  // Both are plain statements inside the braced `if`.
+  {
+    file: ['Objects', 'InGameElements', 'Character.events', 'User Event 13.xml'],
+    from: 'receiveCompleteMessage(global.serverSocket,9,global.deserializeBuffer);',
+    to: 'agentSnapBegin(); receiveCompleteMessage(global.serverSocket,9,global.deserializeBuffer);',
+  },
+  {
+    file: ['Objects', 'InGameElements', 'Character.events', 'User Event 13.xml'],
+    from: 'hp = read_ubyte(global.deserializeBuffer);',
+    to: 'hp = read_ubyte(global.deserializeBuffer); agentSnapEnd();',
+  },
+
+  // AudioControl destroys itself in its own Create - `if(instance_number(
+  // AudioControl)) > 1 {`, parenthesis in the wrong place - so currentSong is
+  // never initialised and every round end raises a modal from WinBanner. One
+  // dialog per round is survivable by hand and not by an unattended run: at 8x
+  // it stalled a client until the server dropped it. agentAudioStopSong makes
+  // the stock script safe and then does what the stock line did.
+  //
+  // This line IS the braceless body of an `if` - both are on one line - so the
+  // whole line is replaced, which is the only safe edit for that shape.
+  {
+    file: ['Scripts', 'AudioControl', 'AudioControlPlaySong.gml'],
+    from: 'if(AudioControl.currentSong != -1) sound_stop(AudioControl.currentSong);',
+    to: 'agentAudioStopSong();',
+  },
 ];
 
 // Anything matching this in `git status` after a cleanup means the fork is not

@@ -43,6 +43,23 @@ global.agentSpeedFactor = 1;
 global.agentFailFast = false;
 global.agentDeclaredPlayers = -1;
 
+// The soak-testing switches, here for the same reason as the two above: the call
+// sites inject.js patches into the game's own code read them, and
+// RateController's Begin Step runs in every build whether or not a bridge was
+// asked for. Each one is off, and off means observationally identical to stock.
+//
+// agentRate   room_speed to force, 0 = leave RateController's own value alone.
+//             agentRoomSpeed says why this is a patched line rather than
+//             agentBridgeSpeed's deactivation.
+// agentSnap   collect prediction-snap statistics - agentSnapBegin.
+// agentSoak   keep an unattended run alive - agentSoakTick.
+global.agentRate = 0;
+global.agentSnap = false;
+global.agentSoak = false;
+global.agentAudioOk = false;
+
+agentSnapReset();
+
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer
 // sends the reply later.
