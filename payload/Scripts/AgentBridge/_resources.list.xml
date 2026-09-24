@@ -16,8 +16,7 @@
   <resource name="agentBridgeDraw" type="RESOURCE"/>
   <resource name="agentBridgeHudVisible" type="RESOURCE"/>
   <resource name="agentBridgeSpeed" type="RESOURCE"/>
-  <resource name="agentDebugStateCount" type="RESOURCE"/>
-  <resource name="agentDebugDesync" type="RESOURCE"/>
+  <resource name="agentDebugProtocolError" type="RESOURCE"/>
   <resource name="agentDebugSpriteError" type="RESOURCE"/>
   <resource name="agentRoomSpeed" type="RESOURCE"/>
   <resource name="agentRateArm" type="RESOURCE"/>

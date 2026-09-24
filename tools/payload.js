@@ -70,17 +70,11 @@ const KEYSTATE_LINE = '        if (instance_exists(AgentBridge)) keybyte |= (Age
 // downstream of it that names a symptom. Add a site when one bites.
 const CODE_PATCHES = [
   {
-    file: ['Scripts', 'Serialization', 'deserializeState.gml'],
-    // The declared count is read INSIDE the condition, so by the next line it is
-    // gone. Wrapping the read is the only way to keep it, and the script hands
-    // the byte straight back - the comparison is the stock comparison.
-    from: 'if(read_ubyte(global.tempBuffer) != ds_list_size(global.players))',
-    to: 'if(agentDebugStateCount(read_ubyte(global.tempBuffer)) != ds_list_size(global.players))',
-  },
-  {
-    file: ['Scripts', 'Serialization', 'deserializeState.gml'],
-    from: 'show_message("Wrong number of players while deserializing state");',
-    to: 'agentDebugDesync();',
+    // Every stream desync the client detects reports through this one line, with
+    // the counts, class or recent message ids already in the text.
+    file: ['Scripts', 'Client', 'clientProtocolError.gml'],
+    from: 'promptRestartOrQuit(text);',
+    to: 'agentDebugProtocolError(text);',
   },
   {
     file: ['Scripts', 'Misc', 'getCharacterSpriteId.gml'],

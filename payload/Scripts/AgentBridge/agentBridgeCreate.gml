@@ -31,17 +31,16 @@ global.agentHideHud = false;
 global.agentSpeedFactor = 1;
 
 // The debug-logging call sites inject.js patches into the game's own code -
-// agentDebugDesync and agentDebugSpriteError - read these two, so they are set
-// here where every build that has the payload at all runs them, and before the
+// agentDebugProtocolError and agentDebugSpriteError - read this, so it is set
+// here where every build that has the payload at all runs it, and before the
 // -agent check below: a build launched with no bridge still logs.
 //
-// agentFailFast turns deserializeState's count-mismatch WARNING into an abort.
+// agentFailFast turns clientProtocolError's Restart/Quit prompt into an abort.
 // Off by default and it must stay that way: the value of driving a real client
-// against another implementation is asking whether a stock one survives, and a
-// client that dies at the mismatch answers a different question. Flip it live
-// with gg2_eval when the mismatch is the thing being hunted.
+// against another implementation is asking what a stock one does, and a client
+// that dies at the first desync answers a different question. Flip it live
+// with gg2_eval when the desync is the thing being hunted.
 global.agentFailFast = false;
-global.agentDeclaredPlayers = -1;
 
 // The soak-testing switches, here for the same reason as the two above: the call
 // sites inject.js patches into the game's own code read them, and

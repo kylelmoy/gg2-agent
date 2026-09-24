@@ -67,34 +67,29 @@ being hunted.
 
 ## The sites, and why each earns its place
 
-### `deserializeState.gml` — the desync, which is the cause and only warns
+### `clientProtocolError.gml` — every desync the client detects
 
 ```
-DESYNC deserializeState: server declared 6 players, client holds 5, updateType=1
+666593312  DESYNC live test of the log patch |  | Last messages received from the server, oldest first: | 6, 6, 6, 6, 9, 6, 6, 6, 6, 6, 6, 9, 6, 6, 6, 6
 ```
 
-The client compares the state update's declared player count against its own
-list, says so, and **carries on deserialising a stream it now knows is
-misaligned**. Everything after that point is read at the wrong offset, until
-some later read lands somewhere absurd — a character bit on a slot the client
-holds as a spectator — and kills the game *there*. So the fatal that gets
-reported names a symptom two steps downstream, and neither string ever reached a
-file.
+This site used to be two patches in `deserializeState.gml`, which warned about
+a player-count mismatch and then **carried on deserialising a stream it knew was
+misaligned**, so the fatal that eventually got reported named a symptom two
+steps downstream. The game's `desync-fixes` branch (kylelmoy/Gang-Garrison-2)
+changed the stock client: that mismatch, a character
+record for an unknown class, and a message id with no handler all go through
+`Scripts/Client/clientProtocolError.gml`, which stops parsing
+(`global.serverStreamBroken`) and shows a Restart/Quit prompt whose text already
+names both counts, the class, or the last 16 message ids. The only thing left to
+add is getting that text into a file, so this is one patch on the
+`promptRestartOrQuit(text);` line; `agentDebugProtocolError` logs the text with
+`#` turned into ` | ` and then shows the identical prompt.
 
-Two patches, not one, because **the declared count is consumed inside the `if`
-condition** and is gone by the next line:
-
-```gml
-if(agentDebugStateCount(read_ubyte(global.tempBuffer)) != ds_list_size(global.players))
-    agentDebugDesync();
-```
-
-`agentDebugStateCount` stores the byte in `global.agentDeclaredPlayers` and
-returns it unchanged, so the comparison is the stock comparison. It costs one
-script call per state update — the same order as the dozens the receive loop
-already makes each frame. "The server said 6, we hold 5" is the diagnosis; "we
-hold 5" on its own is not, which is why this was worth a second patch rather
-than a whole replaced file.
+That branch changes the stock behaviour this tooling is an oracle for: a stock
+client now stops at the first detected desync instead of reading on. With the
+launcher dismissing the prompt it neither restarts nor quits, it just stops
+reading from the server.
 
 ### `getCharacterSpriteId.gml` — the fatal, which names only what was already known
 
@@ -245,10 +240,20 @@ re-sourced from the live stream on every state update — but it means the desyn
 line cannot be faked from outside in two calls; plant and log in one `gg2_eval`
 if you ever need to.
 
+The `agentDebugDesync` and `agentDeclaredPlayers` rows describe the two
+`deserializeState` patches that `agentDebugProtocolError` replaced. The new site,
+measured 2026-09-23 against the game's `desync-fixes` branch with a server and
+two clients: calling `clientProtocolError("live test of the log patch")` on a
+client logged the line quoted above (message 6 is `INPUTSTATE`, 9 is
+`QUICK_UPDATE`), the launcher force-closed the prompt, and the client stayed up
+with `global.serverStreamBroken` set.
+
 ## Not done
 
 A **message ring buffer** — the last N message types and lengths the client read,
-dumped from these two sites. A desync is a framing failure and the bytes leading
+dumped from these two sites. (The game's `desync-fixes` branch now keeps the last
+16 message *ids* itself and puts them in the `clientProtocolError` text; lengths
+are still not recorded.) A desync is a framing failure and the bytes leading
 into it are the evidence; nothing recovers them after the fact. It is the one
 addition with a real cost on a per-message path, and the bridge's own per-frame
 cost was measured at zero, so it should be held to the same bar.
