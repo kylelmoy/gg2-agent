@@ -1,30 +1,27 @@
 #!/usr/bin/env node
 //=============================================================================
-// build-fast.js - rebuild the game from code changes alone, without Game
-// Maker (~3s).
+// build-fast.js - rebuild the game in place and relaunch it (~2s).
 //
-// GM8 does not compile GML: a built executable stores it as source text inside
-// the gamedata appended to the runner. So a change that only touches code can
-// be spliced straight into the last executable the IDE produced, instead of
-// driving the IDE again:
+// The same build as build-agent.js - gm8-builder writes the executable straight
+// from the tree, so a new script, object, sprite or room costs no more than an
+// edited line - but shaped for the edit loop:
 //
-//   1. inject the agent bridge, so the tree matches how the template was built
-//   2. gamedata.js  splice every changed script and event into the template
-//   3. cleanup      remove the bridge again
+//   1. stop the running game, which holds its own exe open
+//   2. inject the agent bridge
+//   3. gm8-builder  lint the tree, then build over Source/build's exe; bad GML
+//                   is refused rather than built, since in an exe it is a
+//                   modal dialog with no way back
+//   4. cleanup      remove the bridge again
+//   5. relaunch, with --launch
 //
-// The template and a manifest of the code it contains are written by
-// build-agent.js into Source/build/template. Anything the splicer cannot
-// express - a new sprite, object, room or setting - is caught by a hash of the
-// tree taken at that time, and reported as an error telling you to run
-// build-agent.js. It never silently produces a stale executable.
-//
-// Use build-agent.js for releases, and whenever this refuses.
+// Nothing else in Source/build is touched: gg2.ini, maps and logs stay.
+// --dry-run stops after linting.
 //=============================================================================
 
 const fs = require('fs');
 const path = require('path');
 const lib = require('./tools/lib.js');
-const gamedata = require('./tools/gamedata.js');
+const gm8 = require('./tools/gm8.js');
 const { inject } = require('./inject.js');
 const { cleanup } = require('./cleanup.js');
 const { runAgent, GAME_IMAGE } = require('./run-agent.js');
@@ -34,7 +31,7 @@ usage: node build-fast.js [--repo <path>] [--launch] [--dry-run] [--port <n>]
 
   --repo     the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
   --launch   relaunch the game afterwards and wait for the bridge
-  --dry-run  list what would be spliced and stop
+  --dry-run  lint the tree and stop, building nothing
   --port     bridge port to wait on with --launch (default 17777)
 `;
 
@@ -42,13 +39,7 @@ async function buildFast({ repo, launch = false, dryRun = false, port = 17777 })
   const repoFull = path.resolve(repo);
   const tree = path.join(repoFull, 'Source', 'gg2');
   const build = path.join(repoFull, 'Source', 'build');
-  const template = path.join(build, 'template', 'Gang Garrison 2.exe');
-  const manifest = path.join(build, 'template', 'gamedata.manifest.json');
   const exeOut = path.join(build, 'Gang Garrison 2.exe');
-
-  if (!fs.existsSync(template) || !fs.existsSync(manifest)) {
-    throw new Error(`no fast-rebuild template in ${path.join(build, 'template')} - run build-agent.js once first`);
-  }
 
   const started = Date.now();
 
@@ -56,21 +47,49 @@ async function buildFast({ repo, launch = false, dryRun = false, port = 17777 })
   if (!dryRun && (await lib.stopProcess(GAME_IMAGE))) lib.step('Stopped the running game');
 
   inject(repoFull, true);
-  let result;
   try {
-    lib.step('Splicing code changes into the template');
-    result = gamedata.patch(manifest, tree, exeOut, dryRun, lib.detail);
+    if (dryRun) {
+      lib.step('Linting the tree');
+      const failures = await lintTree(tree);
+      if (failures.length) throw new Error(`the GML has errors:\n${failures.join('\n')}`);
+      lib.ok('the tree lints clean');
+      return;
+    }
+    lib.step('Building the executable');
+    fs.mkdirSync(build, { recursive: true });
+    await gm8.build(tree, exeOut);
   } finally {
     cleanup(repoFull, true);
   }
-
-  if (dryRun) return result;
 
   lib.ok(`rebuilt in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   if (launch && !(await runAgent({ repo: repoFull, port }))) {
     throw new Error('the game was rebuilt but its bridge never came up - see the log tails above');
   }
-  return result;
+}
+
+// Every script and event file of the tree, through the lint server - the same
+// check `build --lint` runs, without writing anything.
+async function lintTree(tree) {
+  const files = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (/\.gml$/i.test(e.name) || (/\.xml$/i.test(e.name) && !/_resources\.list\.xml$/i.test(e.name))) files.push(f);
+    }
+  };
+  walk(tree);
+  const failures = [];
+  for (const f of files) {
+    const text = lib.readText(f);
+    const xml = /\.xml$/i.test(f);
+    if (xml && !text.includes('<argument kind="STRING">')) continue;
+    const r = await gm8.lint(text, { trees: [tree], xml, name: path.relative(tree, f) });
+    if (r.note && r.ok && !r.findings.length) throw new Error(r.note);
+    for (const e of r.errors || []) failures.push(`${e.file}:${e.line}:${e.col}: ${e.message} [${e.rule}]`);
+  }
+  return failures;
 }
 
 if (require.main === module) {

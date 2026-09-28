@@ -76,7 +76,10 @@ function inject(repo, quiet) {
   }
 
   // --- 4. wire held input into PlayerControl's own keybyte -------------------
-  const opts = { payload: false };
+  // Not linted: this is the game's own code plus one known line, and skipping
+  // the (async) lint keeps writeEvent's write synchronous, so it lands before
+  // the build that follows rather than whenever the lint server answers.
+  const opts = { payload: false, lintFirst: false };
   const before = events.readEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, opts).gml;
   const after = lib.insertLineText(before, payloadSpec.KEYSTATE_ANCHOR, payloadSpec.KEYSTATE_LINE, 'after');
   if (after === null) {

@@ -142,9 +142,8 @@ To add one:
    anchor is still exactly one line of the real tree, that every `agent*` call in
    a replacement is a registered script, and that inject/cleanup round-trips byte
    for byte.
-5. `node build-agent.js`. A genuinely new script cannot be spliced by
-   `build-fast.js`; that is what `agentScriptSpare0..5` are for while a script is
-   still being written.
+5. `node build-fast.js` (or `gg2_rebuild`). A new script builds like any
+   other change.
 
 ## The soak sites, which are not debug logging
 

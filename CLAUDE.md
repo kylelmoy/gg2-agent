@@ -9,6 +9,21 @@ Operating guide for an AI agent. Read this before touching either repo.
 | `gg2-agent` (this one, private) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
 | `Gang-Garrison-2` | the game itself — **upstream `Gang-Garrison-2/Gang-Garrison-2`, the reference checkout** | treat as read-only; never commit tooling, build scripts, or the bridge here |
 | `gg2-server` | the C# port of the server, and everything to do with **bots** | not this repo's business, except that it owns nav now |
+| `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic C#; this repo runs its exe (`tools/gm8.js` finds it in `../gm8-builder/dist`, or `GM8_BUILDER`) |
+
+The build and the GML linter are `gm8-builder` (since 2026-09-28; before that
+`gm8-tools`, which drove Game Maker headlessly and spliced code into a template
+exe - neither exists here any more). `gm8-builder` reproduces *Create
+Executable* itself from the split tree, reading only the runner, libraries and
+`fnames` out of a Game Maker 8.0 install (`GM8_DIR`, else whatever opens
+`.gmk` files), so every build is a full build and takes ~2s. `build-agent.js`
+and `build-fast.js` are still the front doors - they inject the bridge and run
+`gm8-builder build --lint --gm8x-fix` - and `tools/gml-lint.js` is still what the
+MCP tools call, but it asks a long-running `gm8-builder lint --serve`. A change
+to how an exe is built or what the linter checks belongs in that repo, not here.
+It must never learn about this game or the bridge; anything GG2-specific is
+passed in (`--extensions tools/gml-extensions.txt` for the .gex functions, the
+payload as a second `--tree`). Linting is async: every `lintOrThrow` is awaited.
 
 ⚠️ **`Gang-Garrison-2` is upstream now, not the old bot fork** (changed
 2026-09-05). That checkout has **no bot layer at all** — no `Scripts/Bots/`, no
@@ -57,24 +72,19 @@ agent is holding. The build scripts read and write the source tree; `walkmask.js
 the maps' own PNGs off disk.
 
 ```powershell
-node build-fast.js        # splice code changes into the last build         (~3s)
-node build-agent.js       # full build - drives GM8 headlessly            (~1min)
+node build-fast.js        # rebuild in place - lint, build                  (~2s)
+node build-agent.js       # the same build into a cleared Source/build, --package  (~2s)
 node run-agent.js         # launch the game, wait for the bridge
 node tools/selftest.js    # check the tooling itself, against a fake game   (~3s)
 node tools/walkmask.js    # render a map's collision mask on its own
 ```
 
-`build-agent.js` used to be the one step that needed a person: Game Maker 8 has
-no command-line compile. It no longer does in the common case -
-`tools/gm8directbuild.js` runs Game Maker on a desktop that is never displayed
-and calls straight into the compiled routine behind *File > Create Executable*,
-so there is no menu, no Save dialog, no window and no desktop session involved.
-It only falls back to opening the project and waiting for someone if Game Maker
-8 cannot be found, or is not the exact build the call address was
-reverse-engineered against (checked by sha256) - `--manual` forces that
-fallback. Either way it is much slower than `build-fast.js` and only needed to
-bootstrap the fast-rebuild template or after adding/removing/renaming a
-resource.
+Neither runs Game Maker: `gm8-builder` writes the executable itself, so there is
+no IDE, no dialog, no desktop session, and no difference in cost between editing
+a line and adding an object, sprite or room. Both lint the whole tree first and
+build nothing if it has errors. `build-fast.js` stops and (with `--launch`)
+relaunches the game around the build and leaves the rest of `Source/build`
+alone; `build-agent.js` clears `Source/build` first and can `--package`.
 
 Every script takes `--repo <path>` and `--help`, and each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
@@ -114,7 +124,7 @@ Then drive the running game with the MCP tools:
 | `gg2_test` | run the game's own unit tests and read the results back |
 | `gg2_profile` | time GML the game has no profiler for: `expr` mode repeats code, `frames` mode samples frame times |
 | `gg2_session` | start, stop and list games: a dedicated server and its clients |
-| `gg2_rebuild` | apply edited `.gml` and event code to the game, then relaunch (~3s) |
+| `gg2_rebuild` | rebuild the game from the tree - any change, resources included - then relaunch (~2s) |
 | `gg2_log` | read the game's logs, including GML errors the launcher dismissed |
 
 ### Seeing what happens, rather than guessing
@@ -272,65 +282,43 @@ reconnects.
 
 ### The spare objects, and the spare scripts
 
-`AgentSpare0..3` are blank objects built into the executable. `build-fast.js` can
-only replace code that already exists in the template, so a genuinely new object
-costs a full IDE build; a spare costs a ~3s splice. Write to one with
-`gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`. Their
-events hold placeholder comments rather than nothing, because the splicer cannot
-place an empty string — do not tidy them to empty.
-
-`agentScriptSpare0..5` are the same idea for standalone scripts, since
-`gg2_rebuild` refuses a brand new script name exactly like it refuses a brand
-new object. Each is a real registered resource already, with a placeholder
-comment as its body (payload/Scripts/AgentBridge/agentScriptSpareN.gml) — edit
-the file directly (there is no `gg2_event`-equivalent for a plain script; it is
-just a `.gml` file) and `gg2_rebuild`/`build-fast.js` splices it in ~3s, the
-same as any other script edit. Once behaviour proven in a spare is worth
-keeping, giving it its real name still needs one full `build-agent.js` build —
-the spares buy iteration speed while a script is being written, not a way to
-skip ever renaming it.
+`AgentSpare0..3` (blank objects) and `agentScriptSpare0..5` (placeholder scripts)
+are built into the executable. They date from when a fast rebuild could only
+splice code into an existing exe, so a new object or script name meant a full
+IDE build. That is no longer true - a new resource costs the same ~2s build as an
+edit - so they are just blank resources kept ready for an experiment. Write to an
+object with `gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`.
 
 Editing the game's `.gml` does **not** affect the running game: the code lives
-inside the executable. Three ways to close that gap, cheapest first:
+inside the executable. Two ways to close that gap:
 
 | Cost | Use | For |
 |---|---|---|
 | ~40ms | `gg2_eval` | trying an idea out against live state |
-| ~3s | `gg2_rebuild` / `build-fast.js` | code you have written into the tree |
-| ~1min | `build-agent.js` | new objects, sprites, rooms, settings, or the bridge |
+| ~2s | `gg2_rebuild` / `build-fast.js` | anything you have written into the tree: code, objects, sprites, rooms, settings, the bridge |
 
 So: experiment with `gg2_eval`, write the result into the source, and
-`gg2_rebuild`. Reach for the full build only when the fast one refuses.
+`gg2_rebuild`.
 
-## Why the fast rebuild works, and when it refuses
+## How the build works
 
 Game Maker 8 does not compile GML. "Create Executable" copies the runner stub,
 appends the project as zlib blobs behind a swap-table cipher, and stores every
-script and event as **source text**. Nothing in that stream holds an absolute
-offset, so a piece of code can be replaced in place and everything after it
-just shifts.
-
-`build-fast.js` does exactly that: it takes the last executable the IDE built
-(kept in `Source/build/template` with a manifest of the code inside it), splices
-in every script and event that has changed, and re-encrypts. Anything it does
-not recognise is copied through byte for byte.
+script and event as **source text** - the runner compiles it at startup.
+`gm8-builder` reproduces that from the split tree, down to Game Maker's image,
+collision-mask and resource quirks, and applies gm8x_fix's runner patches.
 
 It refuses, rather than guessing, when:
 
-- a non-code file changed - sprite, room, object property, setting, included
-  file - which it detects with a hash of the tree taken when the template built;
-- a script or event was added or removed;
-- the changed code is not the code the manifest recorded, meaning the template
-  is stale;
-- the same code string appears twice in one asset, so the splice is ambiguous;
 - the GML does not lint, since bad code in a built exe is a modal dialog with no
-  way back.
+  way back;
+- the tree uses something it cannot reproduce: fonts (Game Maker renders them
+  with GDI), the *transparent*/*smooth edges* image options, disk and diamond
+  collision masks, triggers.
 
-Every one of those says to run `build-agent.js`. It will not hand you a stale
-executable.
-
-`node tools/gamedata.js selftest "<exe>"` proves the unpack/repack round-trip is
-byte-identical; run it if you suspect the splicer.
+`gm8-builder roundtrip "<exe>"` proves the read/write round-trip is
+byte-identical, and `gm8-builder compare a.exe b.exe` lists content differences
+between two executables. Its own tests are `dotnet test` in gm8-builder.
 
 ## Where documentation goes
 
@@ -480,8 +468,8 @@ project's scripts and extension functions - and it reports nothing on the game's
 existing ~20,000 lines.
 
 Run `gg2_lint` yourself before writing GML into a source file; the linter costs
-nothing and a build costs seconds or a minute. `gg2_rebuild` runs it too and
-refuses to splice code that would not compile, but finding out at edit time
+nothing and a build costs seconds. `gg2_rebuild` runs it too and
+refuses to build code that would not compile, but finding out at edit time
 beats finding out at build time. If it flags a function that really does exist,
 it came from a `.gex` - add it to `tools/gml-extensions.txt`.
 
@@ -494,35 +482,10 @@ exactly what broke.
   DirectSound during engine startup, before any game code runs. With no audio
   endpoint it shows two modal errors and terminates. Over RDP that means audio
   redirection, or `tscon <id> /dest:console`. No code change can avoid this.
-- **A full build does not need a desktop session any more**, but it does need
-  the exact Game Maker build it was reverse-engineered against.
-  `tools/gm8directbuild.js` makes its own desktop, which nothing ever displays,
-  so no window appears and nothing steals focus; against a different
-  `Game_Maker.exe` it refuses (rather than calling an address that means
-  something else there) and `build-agent.js` drops to asking a person. Do not
-  leave a thread on that hidden desktop: while switched to it, `win32.js` can
-  see no window on the machine at all, and `CloseDesktop` refuses with
-  `ERROR_BUSY`. `build-fast.js` needs none of this, which is the point of it.
-- **A GM8 dialog now fails the build in about a second, and says what it said.**
-  `gm8directbuild.js` watches `TMessageForm` and `TErrorForm` as well as `#32770`
-  - GM8's own modals are Delphi's, so watching only the Win32 class saw nothing -
-  and gives up as soon as the same dialog has been there three polls, rather than
-  at the timeout. `build-agent.js` re-throws that one failure instead of falling
-  back to a person, since opening the IDE puts them in front of the same dialog.
-  Measured 2026-09-05, before and after: **18 minutes of silence, then 1.5s with
-  the dialog named.**
-  A Delphi `TMessageForm` paints its message with no window handle, so
-  `WM_GETTEXT` on the children yields only `&Yes`/`&No`. The error therefore
-  reports the title and the buttons, **and saves a `PrintWindow` screenshot next
-  to the output exe** - that picture is the only place the actual question
-  survives, and it is perfectly readable. Same trick, same reason, as
-  `launcher.js` uses on the game's dialogs.
-  The one that caused this was **"Game Maker detected N old temp folders left
-  over from earlier runs... remove these?"** - this tooling's own exhaust, one
-  `gm_ttt_*` in `%TEMP%` per game launched, 671 of them by then. Disarmed
-  permanently with `RemoveTemp=0` under
-  `HKCU:\Software\Game Maker\Version 8\Preferences`; the detection is there for
-  the next one.
+- **A build still needs a Game Maker 8.0 install on disk**, though it never runs
+  it: `gm8-builder` copies the runner, libraries and extensions out of it, and the
+  linter reads its `fnames`. `tools/gm8.js` looks at `GM8_DIR`, then the `.gmk`
+  file association, then the default install paths.
 - **`gg2_input aim` hangs** rather than erroring: `window_views_mouse_set` never
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher

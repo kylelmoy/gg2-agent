@@ -189,7 +189,7 @@ function readEvent(repo, object, event, index = 0, opts) {
 // Replace one action's GML. The file is rewritten from its own bytes with only
 // that span changed, so line endings, indentation and every other action stay
 // exactly as they were.
-function writeEvent(repo, object, event, index, gml, { lintFirst = true, ...opts } = {}) {
+async function writeEvent(repo, object, event, index, gml, { lintFirst = true, ...opts } = {}) {
   const { root, full, event: name } = eventFile(repo, object, event, opts);
   const xml = lib.readText(full);
   const actions = codeActions(xml);
@@ -199,7 +199,7 @@ function writeEvent(repo, object, event, index, gml, { lintFirst = true, ...opts
   }
 
   if (lintFirst) {
-    const res = lint.check(gml, { trees: roots(repo).map((r) => r.dir), name: display(root, full) });
+    const res = await lint.check(gml, { trees: roots(repo).map((r) => r.dir), name: display(root, full) });
     if (!res.ok) {
       throw new Error(
         'Refused: this GML would not compile, and a built executable answers bad code with a modal dialog.\n' +

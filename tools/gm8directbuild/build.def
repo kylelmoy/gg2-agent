@@ -1,3 +1,0 @@
-LIBRARY build
-EXPORTS
-    DoBuild

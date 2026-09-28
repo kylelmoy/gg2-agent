@@ -414,97 +414,33 @@ async function main() {
   })());
   check('captureWindow on a bogus handle returns null rather than throwing', win32.captureWindow(0) === null);
 
-  process.stdout.write('\nblocked build detection\n');
+  process.stdout.write('\ngm8-builder\n');
   {
-    // A modal in front of the IDE is a dead end - the desktop it is on is never
-    // displayed, so nobody can answer it - and the build has to say so rather
-    // than wait out its timeout. That cost 18 minutes of silence on 2026-09-05,
-    // because the only class watched for was #32770 and GM8's own prompt is a
-    // Delphi TMessageForm.
-    const gm8 = require('./gm8directbuild.js');
-    check('TMessageForm is watched for, not just #32770', gm8.DIALOG_CLASSES.includes('TMessageForm'));
-    check('and so is the Delphi error form', gm8.DIALOG_CLASSES.includes('TErrorForm'));
+    // The build and the linter are gm8-builder (../gm8-builder), a separate
+    // tool with its own tests (`dotnet test` there). What is left to check here
+    // is how this repo plugs into it, since nothing in gm8-builder would notice
+    // that going missing.
+    const gm8 = require('./gm8.js');
+    const found = gm8.find();
+    check('gm8-builder.exe is found', !!found,
+      'publish it: cd ../gm8-builder && dotnet publish src/Gm8Builder.Cli -c Release -o dist (or set GM8_BUILDER)');
+    check('a Game Maker 8 install is found', !!gm8.findInstall(), 'set GM8_DIR to the directory holding rundata and fnames');
 
-    const dlg = { cls: 'TMessageForm', title: 'Confirm', hwnd: 1 };
-    const seen = {};
-    const poll = (found) => gm8.settle(found, seen);
-
-    check('one sighting is not enough to fail a build', poll([dlg]) === null);
-    let settled = null;
-    for (let i = 1; i < gm8.DIALOG_SETTLE_POLLS; i++) settled = poll([dlg]);
-    check('the same dialog held for DIALOG_SETTLE_POLLS is', settled === dlg);
-
-    // GM8 flashes windows of its own while loading a project, so a title that
-    // keeps changing must never trip this - that would fail every build.
-    const flap = { title: null, count: 0 };
-    let tripped = false;
-    for (let i = 0; i < 20; i++) {
-      if (gm8.settle([{ cls: 'TMessageForm', title: `Loading ${i}`, hwnd: 1 }], flap)) tripped = true;
+    // Both build scripts go through the one helper, which lints first and
+    // applies gm8x_fix - the game has always shipped with its patches.
+    const helper = gm8.build.toString();
+    contains('the build lints the tree first', helper, "args.push('--lint')");
+    contains('and applies gm8x_fix', helper, "args.push('--gm8x-fix')");
+    for (const script of ['build-agent.js', 'build-fast.js']) {
+      contains(`${script} builds through gm8.build`, fs.readFileSync(path.join(__dirname, '..', script), 'utf8'), 'gm8.build(tree, exeOut');
     }
-    check('a dialog whose title keeps changing never settles', !tripped);
 
-    const gone = { title: null, count: 0 };
-    gm8.settle([dlg], gone);
-    gm8.settle([], gone);
-    check('a dialog that goes away resets the count', gone.count === 0 && gm8.settle([dlg], gone) === null);
-
-    // build-agent.js has to be able to tell this apart from an ordinary
-    // timeout: its fallback opens the IDE for a person, who would meet the
-    // very same dialog and then wait out another --wait minutes.
-    check('the failure has its own type for build-agent to re-throw',
-      typeof gm8.BlockedByDialog === 'function' && new gm8.BlockedByDialog('x') instanceof Error);
-    contains('and build-agent re-throws it rather than falling back',
-      fs.readFileSync(path.join(__dirname, '..', 'build-agent.js'), 'utf8'),
-      'instanceof gm8directbuild.BlockedByDialog');
-  }
-
-  process.stdout.write('\nexternal build tools\n');
-  {
-    // gmksplit.exe and gm8x_fix.exe are not in this repo, and since 2026-09-05
-    // not in the game's checkout either - both lived in the old fork's Source/.
-    // So both are also looked for in their own source repos, and gmksplit is
-    // accepted as a jar, since its .exe is only a launch4j wrapper around one.
-    const agent = require('../build-agent.js');
-    const lib = require('./lib.js');
-    // Every search root is injected, tools/ included. These checks passed at
-    // first only because no binary was installed yet; the moment one was, the
-    // real tools/ shadowed the scratch dirs and all seven failed. A test that
-    // depends on a tool being absent is a test that stops meaning anything the
-    // day someone installs it.
-    const empty = path.join(SCRATCH, 'no-tools');
-    fs.mkdirSync(empty, { recursive: true });
-    const sib = path.join(SCRATCH, 'Gmk-Splitter');
-    const rel = path.join(sib, 'release', 'GmkSplitter.v0.19-dev');
-    fs.mkdirSync(rel, { recursive: true });
-    fs.writeFileSync(path.join(rel, 'gmksplit.jar'), 'not really a jar');
-
-    const found = agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib, empty);
-    check('a jar in the sibling repo\'s release dir is found', found.exe === 'java', JSON.stringify(found));
-    check('and is run with -jar', found.args[0] === '-jar' && found.args[1] === path.join(rel, 'gmksplit.jar'),
-      JSON.stringify(found.args));
-
-    // build-release.sh writes one directory per version; the newest must win,
-    // or a stale build keeps being used after a rebuild.
-    const older = path.join(sib, 'release', 'GmkSplitter.v0.18');
-    fs.mkdirSync(older, { recursive: true });
-    fs.writeFileSync(path.join(older, 'gmksplit.jar'), 'older');
-    fs.utimesSync(older, new Date(Date.now() - 86400000), new Date(Date.now() - 86400000));
-    check('the newest release directory wins',
-      agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), sib, empty).args[1] === path.join(rel, 'gmksplit.jar'));
-
-    await throws('and a missing splitter names the repo and what it needs',
-      async () => agent.resolveSplitter(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-splitter'), empty),
-      'build-release.sh');
-
-    // gm8x_fix only applies quality patches to an exe that already runs, so a
-    // missing one must not fail the build a minute before it would matter.
-    const quiet = [];
-    const restore = lib.setSink((line) => quiet.push(line));
-    const fix = agent.resolveGm8xFix(path.join(SCRATCH, 'nowhere'), path.join(SCRATCH, 'no-fix'), empty);
-    restore();
-    check('a missing gm8x_fix returns null rather than throwing', fix === null);
-    contains('and says the build continues without it', quiet.join('\n'), 'building without it');
-    contains('and where its source is', quiet.join('\n'), 'gm8x_fix.c');
+    if (found && gm8.findInstall()) {
+      // A build that fails comes back as an error carrying what gm8-builder
+      // said, not an exit code.
+      await throws('a failed build comes back in gm8-builder\'s own words', async () =>
+        gm8.build(path.join(BUILD, 'no-such-tree'), path.join(BUILD, 'out.exe'), { lint: false }), 'no-such-tree');
+    }
   }
 
   process.stdout.write('\ngg2.ini\n');
@@ -520,157 +456,104 @@ async function main() {
   const before = fs.readFileSync(heavy);
   const read = events.readEvent(SCRATCH, 'Heavy', 'Step', 0, { payload: false });
   check('event code comes back unescaped', !read.gml.includes('&amp;') && read.gml.includes('&'));
-  events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, read.gml, { payload: false });
+  await events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, read.gml, { payload: false });
   check('a write that changes nothing is byte-identical', before.equals(fs.readFileSync(heavy)));
-  events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, 'a = 1 < 2 & 3 > 0;', { payload: false, lintFirst: false });
+  await events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, 'a = 1 < 2 & 3 > 0;', { payload: false, lintFirst: false });
   check('what is written comes back the same', events.readEvent(SCRATCH, 'Heavy', 'Step', 0, { payload: false }).gml === 'a = 1 < 2 & 3 > 0;');
   contains('and is escaped on disk', fs.readFileSync(heavy, 'latin1'), '&lt; 2 &amp;&amp;'.slice(0, 5));
   await throws('bad GML is refused before it is written', async () =>
     events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, 'array_length(x);', { payload: false }), 'would not compile');
-  await throws('empty code is refused, since the splicer cannot place it', async () =>
+  await throws('empty code is refused', async () =>
     events.writeEvent(SCRATCH, 'Heavy', 'Step', 0, '  ', { payload: false, lintFirst: false }), 'empty code');
   fs.writeFileSync(heavy, before);
 
   process.stdout.write('\nlint cache invalidation\n');
   {
+    // The lint server keeps each tree's symbols in memory. gm8-builder
+    // notices a resource directory's time moving, so a script is in scope on
+    // the very next check.
     const gmllint = require('./gml-lint.js');
     const newScript = path.join(TREE, 'Scripts', 'someBrandNewScript.gml');
-    const manifestDir = path.join(BUILD, 'template');
-    const manifestFile = path.join(manifestDir, 'gamedata.manifest.json');
+    // A directory's time has the file system's resolution; move it on by hand
+    // so the change cannot land in the same tick the last check saw.
+    const bumpDir = (d) => {
+      const t = new Date(Date.now() + 2000 + Math.random() * 1000);
+      fs.utimesSync(d, t, t);
+    };
 
-    const before = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    const before = await gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
     check('a call to an unknown script is refused', !before.ok, JSON.stringify(before.errors));
 
     fs.writeFileSync(newScript, 'return 1;');
-    const stillCached = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
-    check('adding the script alone does not invalidate the cache', !stillCached.ok);
-
-    fs.mkdirSync(manifestDir, { recursive: true });
-    fs.writeFileSync(manifestFile, '{}');
-    const afterBuild = gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
-    check('a rewritten build manifest invalidates it', afterBuild.ok, JSON.stringify(afterBuild.errors));
+    bumpDir(path.dirname(newScript));
+    const after = await gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    check('adding the script puts it in scope straight away', after.ok, JSON.stringify(after.errors || after.note));
 
     fs.rmSync(newScript, { force: true });
-    fs.rmSync(manifestDir, { recursive: true, force: true });
+    bumpDir(path.dirname(newScript));
+    const gone = await gmllint.check('someBrandNewScript();', { trees: [TREE], name: '<test>' });
+    check('and removing it takes it out again', !gone.ok);
   }
 
-  // events.js passes [payload, tree] (the payload is
-  // checked first, since a bridge file the injected copy would shadow); the
-  // MCP server passes [tree, payload]. Two callers in the same process asking
-  // about the same project in a different order must land on one cache
-  // entry, not thrash each other's - which would either waste every call
-  // rebuilding, or, if a key ever collided wrongly, serve one caller's stale
-  // answer to the other.
+  // events.js passes [payload, tree]; the MCP server passes [tree, payload].
+  // Two callers asking about the same project in a different order must get
+  // the same answer.
   process.stdout.write('\ntree order independence\n');
   {
     const gmllint = require('./gml-lint.js');
     const fakePayload = path.join(SCRATCH, 'fake-payload');
-    fs.mkdirSync(fakePayload, { recursive: true });
-    const newScript = path.join(TREE, 'Scripts', 'anotherBrandNewScript.gml');
-    const manifestDir = path.join(BUILD, 'template');
+    fs.mkdirSync(path.join(fakePayload, 'Scripts'), { recursive: true });
+    fs.writeFileSync(path.join(fakePayload, 'Scripts', 'onlyInThePayload.gml'), 'return 1;');
 
-    const orderA = gmllint.check('room_speed', { trees: [TREE, fakePayload] });
-    const orderB = gmllint.check('room_speed', { trees: [fakePayload, TREE] });
+    const orderA = await gmllint.check('onlyInThePayload(); room_speed', { trees: [TREE, fakePayload] });
+    const orderB = await gmllint.check('onlyInThePayload(); room_speed', { trees: [fakePayload, TREE] });
     check(
       'two callers passing the same trees in a different order agree',
       orderA.ok && orderB.ok,
-      JSON.stringify({ orderA: orderA.errors, orderB: orderB.errors })
+      JSON.stringify({ orderA: orderA.errors || orderA.note, orderB: orderB.errors || orderB.note })
     );
-
-    const before = gmllint.check('anotherBrandNewScript();', { trees: [fakePayload, TREE] });
-    check('unknown from the payload-first order too', !before.ok);
-
-    fs.writeFileSync(newScript, 'return 1;');
-    fs.mkdirSync(manifestDir, { recursive: true });
-    fs.writeFileSync(path.join(manifestDir, 'gamedata.manifest.json'), '{}');
-    const after = gmllint.check('anotherBrandNewScript();', { trees: [TREE, fakePayload] });
-    check('a manifest rewrite is picked up regardless of which order asked before it', after.ok, JSON.stringify(after.errors));
-
-    fs.rmSync(newScript, { force: true });
-    fs.rmSync(manifestDir, { recursive: true, force: true });
     fs.rmSync(fakePayload, { recursive: true, force: true });
   }
 
-  // The lint gate: gg2_lint used to pass GML that does not
-  // compile, because it never parsed expression grammar at all. These two
-  // checks are narrow on purpose - "what comes right after this operator" and
-  // "no bare ; inside a non-for-loop paren" - so this locks both the catch and
-  // the absence of false positives on idioms that look similar but are fine.
   process.stdout.write('\nexpression grammar\n');
   {
     const gmllint = require('./gml-lint.js');
-    const bad = (code, rule) => {
-      const r = gmllint.check(code, { trees: [TREE], name: '<test>' });
+    const bad = async (code, rule) => {
+      const r = await gmllint.check(code, { trees: [TREE], name: '<test>' });
       check(`refused: ${code}`, !r.ok && r.errors.some((e) => e.rule === rule), JSON.stringify(r.errors));
     };
-    const good = (code) => {
-      const r = gmllint.check(code, { trees: [TREE], name: '<test>' });
+    const good = async (code) => {
+      const r = await gmllint.check(code, { trees: [TREE], name: '<test>' });
       check(`accepted: ${code}`, r.ok, JSON.stringify(r.errors));
     };
 
-    bad('a = (1 + );', 'dangling-operator');
-    bad('x = * 5;', 'dangling-operator');
-    bad('z = 5 or or 6;', 'dangling-operator');
-    bad('return (1 ; 2);', 'semicolon-in-expression');
+    await bad('a = (1 + );', 'dangling-operator');
+    await bad('x = * 5;', 'dangling-operator');
+    await bad('z = 5 or or 6;', 'dangling-operator');
+    await bad('return (1 ; 2);', 'semicolon-in-expression');
     // The comma-in-grouping-paren gap: "(" opened right
     // after an identifier or "]"/")" is a call, and a call's own comma is
     // fine; any other "(" is a bare grouping, where GM8 has no comma operator
     // at all.
-    bad('y = (1, 2);', 'comma-in-grouping');
-    bad('x = (a, b, c);', 'comma-in-grouping');
-    bad('if (a, b) { exit; }', 'comma-in-grouping');
+    await bad('y = (1, 2);', 'comma-in-grouping');
+    await bad('x = (a, b, c);', 'comma-in-grouping');
+    await bad('if (a, b) { exit; }', 'comma-in-grouping');
 
-    good('for (i = 0; i < 10; i += 1) { x += 1; }');
-    good('a[i, j] = 5;');
-    good('x = -y;');
-    good('z = 1 - -1;');
-    good('if (not flag) { exit; }');
-    good('switch (x) { case 1: break; default: break; }');
-    good('do { i += 1; } until (i >= 10);');
-    good('var i, j; i = 0; j = 0;');
-    good('with (self) { x = 1; }');
-    good('a = b == c;');
-    good('a = !b;');
-    good('if (a = b) { exit; }');
-    good('x = point_distance(a, b, c, d);');       // call comma, not grouping
-    good('x = ds_grid_get(grid, a[i, j], y);');    // call comma alongside a 2D index
-    good('y = (a[i, j]);');                        // 2D index nested inside a grouping paren
-  }
-
-  process.stdout.write('\nbuild-fast refusal\n');
-  {
-    // patch() refuses before it ever opens an exe when the tree hash does not
-    // match, so this needs no real Game Maker build - just a tree and a
-    // manifest shaped the way snapshot() would have written one.
-    const gamedata = require('./gamedata.js');
-    const resourceDir = path.join(TREE, 'Rooms');
-    fs.mkdirSync(resourceDir, { recursive: true });
-    const resourceFile = path.join(resourceDir, 'room_fake.xml');
-    fs.writeFileSync(resourceFile, '<room>original</room>');
-
-    const treeFileHashes = gamedata.treeFileHashes(TREE);
-    const manifest = {
-      version: 1,
-      template: 'nonexistent.exe',
-      treeHash: gamedata.treeHash(TREE),
-      treeFileHashes,
-      code: [],
-    };
-    const manifestPath = path.join(BUILD, 'fake.manifest.json');
-    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-
-    fs.writeFileSync(resourceFile, '<room>changed</room>');
-    await throws('a changed resource file is refused', async () =>
-      gamedata.patch(manifestPath, TREE, path.join(BUILD, 'out.exe'), true), 'Run build-agent.js');
-    try {
-      gamedata.patch(manifestPath, TREE, path.join(BUILD, 'out.exe'), true);
-      check('and names it', false, 'nothing thrown');
-    } catch (e) {
-      contains('and names it', e.message, 'Rooms/room_fake.xml');
-    }
-
-    fs.rmSync(resourceFile, { force: true });
-    fs.rmSync(manifestPath, { force: true });
+    await good('for (i = 0; i < 10; i += 1) { x += 1; }');
+    await good('a[i, j] = 5;');
+    await good('x = -y;');
+    await good('z = 1 - -1;');
+    await good('if (not flag) { exit; }');
+    await good('switch (x) { case 1: break; default: break; }');
+    await good('do { i += 1; } until (i >= 10);');
+    await good('var i, j; i = 0; j = 0;');
+    await good('with (self) { x = 1; }');
+    await good('a = b == c;');
+    await good('a = !b;');
+    await good('if (a = b) { exit; }');
+    await good('x = point_distance(a, b, c, d);');       // call comma, not grouping
+    await good('x = ds_grid_get(grid, a[i, j], y);');    // call comma alongside a 2D index
+    await good('y = (a[i, j]);');                        // 2D index nested inside a grouping paren
   }
 
   process.stdout.write('\npayload call-site patches\n');

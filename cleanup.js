@@ -38,7 +38,10 @@ function cleanup(repo, quiet) {
     lib.skip('game_init.gml already clean', quiet);
   }
 
-  const opts = { payload: false };
+  // Not linted: this is the game's own code plus one known line, and skipping
+  // the (async) lint keeps writeEvent's write synchronous, so it lands before
+  // the build that follows rather than whenever the lint server answers.
+  const opts = { payload: false, lintFirst: false };
   const before = events.readEvent(repo, payloadSpec.KEYSTATE_OBJECT, payloadSpec.KEYSTATE_EVENT, 0, opts).gml;
   const after = lib.removeLineText(before, payloadSpec.KEYSTATE_LINE);
   if (after === null) {

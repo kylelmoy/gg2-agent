@@ -202,7 +202,7 @@ class Bridge {
       this.disconnect(
         `The game on port ${this.port} is running an older AgentBridge: it replied without the request id ` +
           'this protocol carries, so replies cannot be matched to calls. Apply the current bridge with ' +
-          `gg2_rebuild (~3s), or rebuild by hand with build-fast.js. (it said ${JSON.stringify(payload.slice(0, 60))})`
+          `gg2_rebuild (~2s), or rebuild by hand with build-fast.js. (it said ${JSON.stringify(payload.slice(0, 60))})`
       );
       return false;
     }
@@ -676,9 +676,9 @@ async function watched(where, fn) {
 
 const lintGml = (code) => gmllint.check(code, { trees: [TREE, PAYLOAD] });
 
-function lintOrThrow(code, skip) {
+async function lintOrThrow(code, skip) {
   if (skip) return;
-  const res = lintGml(code);
+  const res = await lintGml(code);
   if (res.ok) return;
   const lines = res.errors.map((f) => `  line ${f.line}: ${f.message}`).join('\n');
   throw new Error(
@@ -837,7 +837,7 @@ async function callTool(name, args) {
     case 'gg2_eval': {
       if (typeof args.code !== 'string' || !args.code.trim()) throw new Error('code is required');
       const where = target(args.instance);
-      lintOrThrow(args.code, args.skip_lint);
+      await lintOrThrow(args.code, args.skip_lint);
       await watched(where, () => command(where, 'EVAL ' + args.code));
       return 'ok';
     }
@@ -852,13 +852,13 @@ async function callTool(name, args) {
       // position (e.g. a mistakenly HTML-escaped "&gt;") can be a syntactically
       // valid statement sequence on its own while being invalid inside `return
       // (...)`, so linting the bare form alone missed exactly that case.
-      lintOrThrow('return (' + expr + ')', args.skip_lint);
+      await lintOrThrow('return (' + expr + ')', args.skip_lint);
       return await watched(where, () => command(where, 'EVALX ' + expr));
     }
 
     case 'gg2_lint': {
       if (typeof args.code !== 'string' || !args.code.trim()) throw new Error('code is required');
-      const res = lintGml(args.code);
+      const res = await lintGml(args.code);
       if (res.note) return res.note;
       if (res.ok) return 'clean - this compiles under Game Maker 8';
       return res.errors.map((f) => `line ${f.line}: ${f.message} [${f.rule}]`).join('\n');
@@ -990,12 +990,12 @@ async function callTool(name, args) {
       // for why. WAIT runs it inside `if (expr) ...`, not `return (...)`, but
       // both are expression context, and this catches the same class of thing
       // the bare form does not: an operator or ";" in operand position.
-      lintOrThrow('return (' + expr + ')', args.skip_lint);
+      await lintOrThrow('return (' + expr + ')', args.skip_lint);
       let setup = '';
       if (typeof args.setup === 'string' && args.setup.trim()) {
         // Same shape as gg2_eval: raw GML, run for its side effects.
         setup = args.setup.trim();
-        lintOrThrow(setup, args.skip_lint);
+        await lintOrThrow(setup, args.skip_lint);
       }
       const frames = clamp(args.frames, 1, 3600, 300);
       // Length-prefixed, not delimited, so setup can contain anything - a
@@ -1008,7 +1008,7 @@ async function callTool(name, args) {
       const action = args.action || 'list';
       if (action === 'add') {
         if (typeof args.expr !== 'string' || !args.expr.trim()) throw new Error('expr is required to add a watch');
-        lintOrThrow(args.expr, args.skip_lint);
+        await lintOrThrow(args.expr, args.skip_lint);
         const expr = args.expr.replace(/;\s*$/, '');
         const label = typeof args.label === 'string' ? args.label.trim() : '';
         // Length-prefixed, not delimited, so label can be empty or contain
@@ -1035,7 +1035,7 @@ async function callTool(name, args) {
       const code =
         `sprite_replace(${sprite}, "${file}", ${images}, ` +
         `${args.remove_background ? 'true' : 'false'}, false, ${xorig}, ${yorig});`;
-      lintOrThrow(code, false);
+      await lintOrThrow(code, false);
       await watched(where, () => command(where, 'EVAL ' + code));
       return `replaced ${sprite} from ${file} in ${where.name}`;
     }
@@ -1060,7 +1060,7 @@ async function callTool(name, args) {
 
       if (action === 'write') {
         if (typeof args.code !== 'string') throw new Error('code is required to write an event');
-        const w = events.writeEvent(REPO, args.object, args.event, index, args.code);
+        const w = await events.writeEvent(REPO, args.object, args.event, index, args.code);
         return (
           `wrote ${w.lines} line(s) to ${w.file} (${w.event}, action ${w.index}). ` +
           'Run gg2_rebuild to put it in the running game.'
@@ -1104,7 +1104,7 @@ async function callTool(name, args) {
         } else {
           body = suiteLoader(suite.abs);
         }
-        lintOrThrow(body, args.skip_lint);
+        await lintOrThrow(body, args.skip_lint);
         try {
           await command(where, 'EVAL ' + body, timeout);
         } catch (e) {
@@ -1158,7 +1158,7 @@ async function callTool(name, args) {
           '\n}\n' +
           '__gg2ProfT1 = current_time;\n' +
           'global.gg2ProfileMs = __gg2ProfT1 - __gg2ProfT0;';
-        lintOrThrow(body, args.skip_lint);
+        await lintOrThrow(body, args.skip_lint);
         await watched(where, () => command(where, 'EVAL ' + body, timeout));
         const totalMs = Number(await command(where, 'EVALX global.gg2ProfileMs'));
         return (

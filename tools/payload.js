@@ -8,19 +8,17 @@
 
 // Objects registered in Objects/_resources.list.xml, in order.
 //
-// AgentBridge is the bridge itself. The spares exist because build-fast.js can
-// only replace code that already exists in the template executable: an object
-// that is in the template with empty events can be given behaviour by a ~3s
-// splice, where a genuinely new object needs a trip through the Game Maker IDE.
-// Four is enough for an experiment or two, and they cost nothing until an
-// instance of one is created.
+// AgentBridge is the bridge itself. The spares date from when a fast rebuild
+// could only splice code into an existing exe, so a new object meant a trip
+// through the Game Maker IDE. gm8-builder builds a new object as cheaply as an
+// edited one, so they are no longer needed - but they are still blank objects
+// ready for an experiment, and cost nothing until an instance is created.
 const OBJECTS = ['AgentBridge', 'AgentSpare0', 'AgentSpare1', 'AgentSpare2', 'AgentSpare3'];
 
 // The single script group, registered in Scripts/_resources.list.xml. Besides
 // the bridge's own scripts, it holds agentScriptSpare0..5 - the same idea as
-// the object spares above, for a standalone script: build-fast.js can splice
-// a spare's placeholder body into real behaviour in ~3s, where a genuinely
-// new script name needs a full IDE build to be registered at all.
+// the object spares above, for a standalone script, and likewise no longer
+// needed now that a new script name costs no more to build than an edit.
 const SCRIPT_GROUP = 'AgentBridge';
 
 // The one line added to the game's own code.

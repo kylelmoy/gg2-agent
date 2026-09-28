@@ -294,7 +294,7 @@ const TOOLS = [
     description:
       'Replace a sprite in the running game from a PNG on disk. Sprites are loaded at runtime by GM8, so art can ' +
       'be iterated without a rebuild - but only in the running game: to keep the change, put the file in the ' +
-      'tree and run a full build-agent.js, since build-fast.js can only splice code.',
+      'tree and gg2_rebuild.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -331,8 +331,7 @@ const TOOLS = [
       'and a text edit that writes a bare < or & invalidates the file and makes GmkSplitter reject the whole ' +
       'tree. This reads real GML back and escapes what it writes, leaving every other byte of the file alone. ' +
       'Writes are linted first. Objects resolve against the bridge payload too, so the AgentSpare objects - ' +
-      'blank objects that exist in the build precisely so new behaviour can be added by a 3s splice rather than ' +
-      'an IDE trip - are editable the same way.',
+      'blank objects kept ready for experiments - are editable the same way.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -440,18 +439,17 @@ const TOOLS = [
   {
     name: 'gg2_rebuild',
     description:
-      'Rebuild the game from code changes alone, in about three seconds, and relaunch it. ' +
-      'GM8 stores GML as source inside the executable, so changed scripts and object event code are ' +
-      'spliced into the last exe the IDE produced rather than compiled. Use this after editing .gml ' +
-      'files or event code. It refuses, and tells you to run build-agent.js, if anything else changed ' +
-      '(a new sprite, object, room or setting) - it never produces a stale executable. ' +
-      'The GML is linted first, because bad code in a built exe hangs the game on a modal dialog. ' +
+      'Rebuild the game from the source tree, in about two seconds, and relaunch it. ' +
+      'gm8-builder writes the executable straight from the tree without Game Maker, so any change - ' +
+      'scripts, event code, and new objects, scripts, sprites or rooms alike - is picked up. ' +
+      'The whole tree is linted first and nothing is built if it has errors, because bad code in a built ' +
+      'exe hangs the game on a modal dialog. ' +
       'This stops every running game, so a session has to be started again afterwards.',
     inputSchema: {
       type: 'object',
       properties: {
         relaunch: { type: 'boolean', description: 'Restart the game and wait for the bridge afterwards (default true).' },
-        dry_run: { type: 'boolean', description: 'List what would be spliced without building.' },
+        dry_run: { type: 'boolean', description: 'Lint the tree without building.' },
       },
       additionalProperties: false,
     },

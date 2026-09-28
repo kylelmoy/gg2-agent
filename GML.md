@@ -74,7 +74,7 @@ shadowing `x` does: *"Cannot redeclare a builtin variable"*, the whole script fa
 compile at load, and the game boots into a window that does nothing.
 
 The authoritative list is GM8's own `fnames`: every entry that is not a call and does not
-end in `#` (which marks a constant) is a built-in variable. `tools/gml-lint.js` reads that
+end in `#` (which marks a constant) is a built-in variable. The linter (`gm8-builder lint`) reads that
 and flags the whole set — it did not before 2026-08-20, which is how `var ... score` cost
 a build here. Rename to something domain-specific (`threat`) rather than adding an
 underscore; the name is usually the better one anyway.
@@ -84,7 +84,7 @@ underscore; the name is usually the better one anyway.
 ### ...and not a *keyword* either — `other`, and the linter cannot see this one
 
 `other` is GM8's keyword for the other instance in a `with`/collision block, so it is not
-in `fnames` at all — it is not a built-in variable, it is part of the grammar. `gml-lint.js`
+in `fnames` at all — it is not a built-in variable, it is part of the grammar. The linter
 reads `fnames` to build its shadowing list, so it passes this straight through:
 
 ```gml
@@ -104,8 +104,7 @@ obviously reserved; `other` is the one that reads like a variable name.
 ⚠️ **The general lesson, not the specific one: a clean `gg2_lint` is not proof the game
 will start.** The linter checks syntax, function existence, argument counts and the
 `fnames` shadowing set — everything outside that is only caught by launching. Budget for
-that when the change is a new script rather than an edit to an existing one, since a new
-script needs the ~1min full build either way.
+that: every change needs a rebuild and a launch before it is known to work.
 
 ---
 

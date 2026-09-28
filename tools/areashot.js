@@ -57,7 +57,7 @@ function viewGml(x, y, w, h) {
 }
 
 // `run(text)` sends one bridge request and resolves with the reply.
-// `lint(gml)` throws if the GML would not compile; a no-op is acceptable.
+// `lint(gml)` rejects if the GML would not compile; a no-op is acceptable.
 async function capture({ run, lint = () => {}, buildDir, repo, port, x, y, width, height, hideHud = true, walkmask: withMask = false }) {
   const dims = await run(
     'EVALX string(view_wport[0]) + "," + string(view_hport[0]) + "," + string(map_width()) + "," + string(map_height())'
@@ -83,7 +83,7 @@ async function capture({ run, lint = () => {}, buildDir, repo, port, x, y, width
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const view = viewGml(rx0 + c * wport, ry0 + r * hport, wport, hport);
-        lint(view);
+        await lint(view);
         await run('EVAL ' + view);
 
         try {

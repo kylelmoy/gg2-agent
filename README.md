@@ -9,13 +9,13 @@ Four things live here:
 - **a bridge** injected into the game at build time, letting an agent inspect and
   change the running game over MCP — read state, drive input, freeze it and step
   it a frame at a time, and look at the result;
-- **a ~3s code-only rebuild** that splices changed GML straight into the last
-  executable, skipping the 2008 toolchain entirely;
+- **a ~2s rebuild** of the whole game straight from its source tree, with no
+  Game Maker process, through [gm8-builder](../gm8-builder);
 - **sessions**: a dedicated server and its clients, running at once and
   addressable by name, because nothing about the network protocol is observable
   from inside one process;
-- **the scaffolding** around the one build step Game Maker 8 gives no
-  command-line for — driven automatically where possible, manually otherwise.
+- **a launcher** that clears the modal dialogs GM8 answers errors with, so a
+  game an agent is driving never freezes on one.
 
 Everything is kept out of the game's own repository. The bridge is injected into
 its source tree at build time and removed afterwards, so a build can never ship
@@ -27,8 +27,8 @@ it targets is upstream `Gang-Garrison-2` and is treated as read-only.
 ## Layout
 
 ```
-build-agent.js      inject -> reassemble -> build in the IDE -> patch -> clean up
-build-fast.js       splice changed code straight into the last build (~3s)
+build-agent.js      inject -> lint and build with gm8-builder -> clean up, into a cleared build dir
+build-fast.js       the same build in place, stopping and relaunching the game (~2s)
 run-agent.js        launch the game and wait for the bridge
 package.js          assemble a release-shaped build.zip
 inject.js           add the bridge to a checkout
@@ -53,12 +53,10 @@ tools/
   instances.js      the register of running games, so they can be named
   session.js        a dedicated server and its clients, started together
 
-  -- building --
-  gm8directbuild.js builds a .gmk into an .exe with no window and no person
-  gm8directbuild/   the injected DLL and its 32-bit injector, with sources
-  gamedata.js       reads and rewrites the gamedata inside a built exe
+  -- building (the build itself is gm8-builder, from ../gm8-builder, see below) --
+  gm8.js            finds gm8-builder and Game Maker; the long-running lint server lives here
   events.js         reading, writing and searching the GML inside object events
-  gml-lint.js       checks GML against the installed Game Maker 8
+  gml-lint.js       checks GML before it is sent or built, through `gm8-builder lint`
   gml-extensions.txt  the .gex functions the linter cannot discover on its own
   gmlerror.js       turns a GM8 error dialog back into file:line
   payload.js        what the payload consists of, so inject and cleanup agree
@@ -84,27 +82,21 @@ each other.
 
 ## Setup
 
-- Game Maker 8.0 **Pro** — the Lite edition cannot build a project with extensions.
-  `build-agent.js` auto-detects a few common install paths; if yours is
-  elsewhere, pass `--gm8 <dir>` or set `GM8_DIR`.
-- **gmksplit** - either `gmksplit.exe` or `gmksplit.jar` plus a JRE (the exe is only a
-  launch4j wrapper around the jar), in `tools/`, the game's `Source/`, or
-  `../Gmk-Splitter/release/<version>/`. Prebuilt in the
-  [GmkSplitter releases](https://github.com/Medo42/Gmk-Splitter/releases); the game's own
-  `Contributing.md` points at the same tool
-- Optionally `gm8x_fix.exe`, in `tools/`, the game's `Source/`, or `../gm8x_fix/`, from the
-  [gm8x_fix releases](https://github.com/skyfloogle/gm8x_fix/releases). It patches input
-  lag, joystick, scheduler and DirectPlay in the built exe; without it the build warns and
-  carries on
+- A Game Maker 8.0 install. It is never run - the build copies its runner,
+  libraries and extensions, and the linter reads its `fnames` - so a copy of
+  those files anywhere will do. Found through `GM8_DIR`, then whatever opens
+  `.gmk` files, then the default install paths; `build-agent.js --gm8 <dir>`
+  overrides it.
+- **`gm8-builder.exe`**, from [gm8-builder](../gm8-builder): the build and the GML
+  linter. Check it out beside this repo and run
+  `dotnet publish src/Gm8Builder.Cli -c Release -o dist` there (.NET 10 SDK), or point
+  `GM8_BUILDER` at the exe.
 - Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
   compiler needed)
 - **An audio device.** GM8 loads sound resources into DirectSound during engine
   startup; with no endpoint it raises two modal errors and terminates before any
   game code runs. Over RDP: audio redirection while connected,
   `tscon <id> /dest:console`, or a virtual audio driver.
-
-`tools/*.exe` and `tools/*.jar` are gitignored, so dropping the two binaries there is
-the simplest arrangement and keeps them out of every repo.
 
 Register the MCP server once, at user scope, so nothing lands in the game repo:
 
@@ -127,17 +119,13 @@ clients can be addressed by name; leave it out while only one game is running.
 ## Use
 
 ```powershell
-node build-agent.js            # full build; drives the GM8 IDE itself
+node build-agent.js            # build into a cleared Source/build (~2s)
 node build-agent.js --package  # ...and produce build.zip
-node build-fast.js --launch    # ~3s: code changes only, then relaunch
+node build-fast.js --launch    # build in place, then relaunch (~2s)
 node run-agent.js              # launch and wait for the bridge
 node tools/session.js start --clients 2   # a dedicated server and two clients
 node tools/selftest.js         # check this repo's own modules (~3s, no GM8)
 ```
-
-A full build is only needed to bootstrap the fast-rebuild template, and after
-adding, removing or renaming a resource. Everything else goes through
-`build-fast.js`.
 
 While iterating on the bridge's own GML, `--keep-injected` leaves it in the tree;
 run `node cleanup.js` before leaving that checkout.
@@ -208,63 +196,30 @@ keeps answering while nothing else moves. A deactivated instance is not drawn, s
 redraw runs no step events, so a screenshot of a frozen game shows the real frame
 without advancing it.
 
-## The full build
+## The build
 
-Game Maker 8 has no command-line compile — the IDE is the only way to produce an
-executable, and upstream's `build.bat` stops at a manual *File > Create
-Executable*. `build-agent.js` does everything either side of that step: it
-injects the bridge, reassembles the tree with `gmksplit`, builds the
-executable, patches it with `gm8x_fix`, records the fast-rebuild template, and
-removes the bridge again. Cleanup runs from a `finally` block, so an
-interrupted build still leaves a clean checkout.
+Game Maker 8 has no command-line compile, and upstream's `build.bat` stops at a
+manual *File > Create Executable*. This repo does not run Game Maker at all.
+Game Maker 8 never compiles GML: a built executable is the runner stub with the
+project appended as zlib blobs behind a swap-table cipher, holding every script
+and event as **source text**. [gm8-builder](../gm8-builder) writes that format
+straight from the split tree, reproducing the IDE's image, collision-mask and
+resource quirks, and applies `gm8x_fix`'s runner patches - about two seconds for
+the whole game. It knows nothing about this game or the bridge, and has its own
+README, tests and history.
 
-The build step itself — *File > Create Executable* — is done by
-`tools/gm8directbuild.js`, with no menu, no dialog and no window. It launches
-Game Maker attached to a desktop that is never displayed, injects a small DLL,
-and calls straight into the compiled routine behind that menu item, passing the
-output path the Save dialog would otherwise have collected. The desktop is not
-only there to hide the main window: a Delphi error box, a startup failure or a
-message box from inside the build path is a *separate* window that would
-otherwise land in front of whoever is using the machine and block the injected
-thread, and a desktop nobody is looking at contains all of them at once. The
-calling thread borrows that desktop to poll for Game Maker's window and hands
-it back afterwards, since a thread left on a hidden desktop can see no window
-on the machine at all.
+`build-agent.js` and `build-fast.js` both inject the bridge, run
+`gm8-builder build --lint --gm8x-fix`, and remove the bridge again from a
+`finally` block, so an interrupted build still leaves a clean checkout. The whole
+tree is linted first, because a syntax error in a built exe is a modal dialog
+that hangs the game; `tools/gml-extensions.txt` tells the linter about the
+functions this game's `.gex` packages provide. They differ only around the
+build: `build-agent.js` clears `Source/build` first and can package;
+`build-fast.js` stops the running game, builds in place and can relaunch it.
 
-Because it calls a hardcoded address it is only valid for the one exact
-`Game_Maker.exe` build it was reverse-engineered against, checked by sha256
-before anything is injected. Against any other build — or with `--manual`, or
-if Game Maker cannot be found at all (pass `--gm8 <dir>` or set `GM8_DIR`) —
-this falls back to opening the project and waiting for someone to finish it by
-hand, which is the original behaviour.
-
-`tools/gm8directbuild/` holds the injected DLL, the 32-bit injector that loads
-it (a 64-bit Node cannot `CreateRemoteThread` into a 32-bit process), and the C
-sources for both, whose comments carry the reverse engineering.
-
-## The fast rebuild
-
-Game Maker 8 never compiles GML. A built executable is the runner stub with the
-project appended at offset 2,000,000: zlib blobs behind a swap-table cipher,
-holding every script and event as **source text**. Nothing in that stream stores
-an absolute offset into it, so a piece of code can be swapped for a longer or
-shorter one and the rest simply shifts.
-
-`build-fast.js` takes the last executable the IDE produced — kept alongside a
-manifest of the code it contains — decrypts the stream, replaces each changed
-script and event, and re-encrypts. Everything it does not recognise, which is
-most of the file, is copied through byte for byte. Bytes 0 to 2,000,000 are
-untouched, so the icon and `gm8x_fix`'s patches survive without rerunning
-anything.
-
-It is deliberately narrow. A hash of every non-code file in the tree, taken when
-the template was built, means a new sprite, room, object property or setting is
-an error telling you to run `build-agent.js` — never a silently stale build.
-Changed GML is linted first, because a syntax error in a built exe is a modal
-dialog that hangs the game.
-
-`node tools/gamedata.js selftest "<exe>"` unpacks and repacks an executable and
-asserts the result is byte-identical.
+`gm8-builder roundtrip "<exe>"` reads and rewrites an executable and asserts the
+result is byte-identical; `gm8-builder compare a.exe b.exe` lists the content
+differences between two.
 
 ## The launcher
 

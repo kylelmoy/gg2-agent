@@ -72,10 +72,11 @@ async function packageBuild({ repo }) {
   }
 
   // --- zip ------------------------------------------------------------------
-  // Three things in the build directory are development leftovers rather than
+  // Some things in the build directory are development leftovers rather than
   // parts of a release:
   //
-  //   template     the fast-rebuild exe and its manifest; would double the zip
+  //   template     the exe and manifest the old splicing fast rebuild kept;
+  //                gone from new builds, but a directory built before may have it
   //   agent_*      the bridge and launcher logs, the instance register, and any
   //                screenshot a tool asked for
   //   gg2.ini      whoever ran the game last left their settings in it, and
