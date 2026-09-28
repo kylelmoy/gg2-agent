@@ -37,6 +37,13 @@ function inject(repo, quiet) {
 
   const payload = path.join(__dirname, 'payload');
 
+  // Decided before anything is touched, so a tree that lacks a call site is
+  // reported up front and then built without it, never left half-injected.
+  const { patches, skipped } = payloadSpec.resolvePatches(tree);
+  for (const site of skipped) {
+    lib.warn(`call site '${site}' matches nothing in this tree - skipped, so the build will not log it`);
+  }
+
   // --- 1. copy the payload -------------------------------------------------
   for (const name of payloadSpec.OBJECTS) {
     fs.copyFileSync(path.join(payload, 'Objects', `${name}.xml`), path.join(tree, 'Objects', `${name}.xml`));
@@ -91,7 +98,7 @@ function inject(repo, quiet) {
 
   // --- 5. route the failures worth reading through the bridge log ------------
   let patched = 0;
-  for (const patch of payloadSpec.CODE_PATCHES) {
+  for (const patch of patches) {
     if (lib.replaceLine(path.join(tree, ...patch.file), patch.from, patch.to)) patched++;
   }
   if (patched) lib.ok(`patched ${patched} debug call site(s)`, quiet);

@@ -559,44 +559,82 @@ async function main() {
   process.stdout.write('\npayload call-site patches\n');
   {
     // CODE_PATCHES holds the only edits this tooling makes *to* a line of the
-    // game's own logic rather than beside one, and both sites are the braceless
-    // body of an `if` - so getting a line wrong here does not fail, it silently
-    // changes what the game does. Checked against the real tree's own text,
-    // because an anchor is worth nothing unless it is still exactly one line of
-    // the file it names.
+    // game's own logic rather than beside one, and several sites are the
+    // braceless body of an `if` - so getting a line wrong here does not fail, it
+    // silently changes what the game does. Checked against the real tree's own
+    // text, because an anchor is worth nothing unless it is still exactly one
+    // line of the file it names.
     const payloadSpec = require('./payload.js');
     const lib = require('./lib.js');
     const group = lib.readText(path.join(__dirname, '..', 'payload', 'Scripts', payloadSpec.SCRIPT_GROUP, '_resources.list.xml'));
 
-    const originals = new Map();
-    for (const patch of payloadSpec.CODE_PATCHES) {
-      const file = path.join(TREE, ...patch.file);
-      const name = patch.file.join('/');
-      if (!originals.has(file)) originals.set(file, lib.readText(file));
-      const lines = lib.readText(file).split(/\r?\n/).map((l) => l.trim());
-      check(`${name}: the anchor is exactly one line`, lines.filter((l) => l === patch.from.trim()).length === 1, patch.from);
-
-      // Every agent* name a replacement calls has to be a registered payload
-      // script, or the patched tree is one build away from an unknown-function
-      // error - and a new script is exactly what build-fast cannot splice, so
-      // that failure would land a full minute later.
+    // Every agent* name a replacement calls, in any variant, has to be a
+    // registered payload script, or the patched tree is one build away from an
+    // unknown-function error.
+    for (const patch of payloadSpec.allPatches()) {
       for (const called of patch.to.match(/\bagent[A-Za-z0-9_]*(?=\()/g) || []) {
         check(`${called} is a registered payload script`, group.includes(`name="${called}"`));
       }
     }
 
-    for (const patch of payloadSpec.CODE_PATCHES) {
-      check(`applies: ${patch.to}`, lib.replaceLine(path.join(TREE, ...patch.file), patch.from, patch.to) === true);
-    }
-    check('applying twice is a no-op', payloadSpec.CODE_PATCHES.every(
-      (patch) => lib.replaceLine(path.join(TREE, ...patch.file), patch.from, patch.to) === false));
+    // The checkout selftest copies is upstream, and every site has to resolve
+    // against it: the payload must not depend on a fork of the game.
+    const { patches, skipped } = payloadSpec.resolvePatches(TREE);
+    check('every site resolves against the upstream tree', skipped.length === 0, skipped.join(', '));
 
-    for (const patch of payloadSpec.CODE_PATCHES) {
-      lib.replaceLine(path.join(TREE, ...patch.file), patch.to, patch.from);
-    }
-    for (const [file, text] of originals) {
-      check(`${path.basename(file)} comes back byte for byte`, lib.readText(file) === text);
-    }
+    const roundTrip = (tree, list, label) => {
+      const originals = new Map();
+      for (const patch of list) {
+        const file = path.join(tree, ...patch.file);
+        if (!originals.has(file)) originals.set(file, lib.readText(file));
+        const lines = lib.readText(file).split(/\r?\n/).map((l) => l.trim());
+        check(`${label}${patch.file.join('/')}: the anchor is exactly one line`,
+          lines.filter((l) => l === patch.from.trim()).length === 1, patch.from);
+      }
+      for (const patch of list) {
+        check(`${label}applies: ${patch.to}`, lib.replaceLine(path.join(tree, ...patch.file), patch.from, patch.to) === true);
+      }
+      check(`${label}applying twice is a no-op`, list.every(
+        (patch) => lib.replaceLine(path.join(tree, ...patch.file), patch.from, patch.to) === false));
+      // cleanup cannot know which variant inject chose; an applied tree has to
+      // resolve to the same one.
+      const again = payloadSpec.resolvePatches(tree).patches;
+      check(`${label}an applied tree still resolves to the same patches`, list.every((p) => again.includes(p)));
+      for (const patch of list) {
+        lib.replaceLine(path.join(tree, ...patch.file), patch.to, patch.from);
+      }
+      for (const [file, text] of originals) {
+        check(`${label}${path.basename(file)} comes back byte for byte`, lib.readText(file) === text);
+      }
+    };
+    roundTrip(TREE, patches, '');
+
+    // The other shape of the desync site, the one a tree carrying
+    // Scripts/Client/clientProtocolError.gml has. Built synthetically, so this
+    // does not need a fork checked out.
+    const desync = payloadSpec.patchSites().find((s) => s.name === 'desync report');
+    const protocolPatch = desync.variants[1][0];
+    const serialize = path.join(TREE, 'Scripts', 'Serialization', 'deserializeState.gml');
+    const upstreamSerialize = lib.readText(serialize);
+    const forkFile = path.join(TREE, ...protocolPatch.file);
+    fs.mkdirSync(path.dirname(forkFile), { recursive: true });
+    fs.writeFileSync(forkFile, `// argument0: text\nvar text;\ntext = argument0;\n    ${protocolPatch.from}\n`);
+    fs.writeFileSync(serialize, upstreamSerialize.split(/\r?\n/)
+      .filter((l) => !desync.variants[0].some((p) => l.trim() === p.from.trim())).join('\n'));
+    const fork = payloadSpec.resolvePatches(TREE);
+    check('a clientProtocolError tree picks that variant',
+      fork.skipped.length === 0 && fork.patches.includes(protocolPatch)
+      && !desync.variants[0].some((p) => fork.patches.includes(p)));
+    roundTrip(TREE, [protocolPatch], 'fork shape: ');
+
+    // Neither shape: the site is skipped by name, and the rest still apply.
+    fs.rmSync(forkFile);
+    const neither = payloadSpec.resolvePatches(TREE);
+    check('a site that matches no variant is skipped, not fatal',
+      neither.skipped.length === 1 && neither.skipped[0] === 'desync report'
+      && neither.patches.length === patches.length - desync.variants[0].length);
+
+    fs.writeFileSync(serialize, upstreamSerialize);
   }
 
   process.stdout.write('\nimages\n');

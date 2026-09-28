@@ -46,7 +46,10 @@ lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps nine call sites for
 calls to payload scripts. Four route a failure the game only ever put on screen
 into `agent_bridge_<port>.log`; the other five are what make an unattended,
 accelerated soak against another server implementation possible — the rate
-override, the prediction-snap probe and the audio guard. `cleanup.js` swaps them
+override, the prediction-snap probe and the audio guard. The anchors are
+upstream's, and the payload must not depend on a fork of the game: a site a fork
+reshapes lists each shape as a variant, and a tree matching none is built without
+that site and warned about, not refused. `cleanup.js` swaps them
 all back and fails if one survives. An `agentDebug*`, `agentSnap*`,
 `agentRoomSpeed` or `agentAudioStopSong` call left inside the game's own files in
 the fork is the same kind of mistake as the ones above. `docs/CLIENTDEBUG.md` is

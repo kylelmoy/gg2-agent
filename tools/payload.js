@@ -66,13 +66,47 @@ const KEYSTATE_LINE = '        if (instance_exists(AgentBridge)) keybyte |= (Age
 // menu and hosting paths no automated run reaches. These are the ones that have
 // actually cost a day: a desync whose cause only warns, and a fatal two steps
 // downstream of it that names a symptom. Add a site when one bites.
+//
+// WHICH VERSION OF THE GAME. The payload targets stock upstream Gang Garrison 2
+// and must not depend on any fork of it. Where a fork reshapes a site, the entry
+// is `{ site, variants }` instead of one patch: each variant is a list of
+// patches that must all match together, and the first variant the tree matches
+// is applied (resolvePatches). A site no variant matches is skipped with a
+// warning rather than failing the build - a build without one log line is still
+// a correct build. Every other entry is a site with exactly one variant.
 const CODE_PATCHES = [
   {
-    // Every stream desync the client detects reports through this one line, with
-    // the counts, class or recent message ids already in the text.
-    file: ['Scripts', 'Client', 'clientProtocolError.gml'],
-    from: 'promptRestartOrQuit(text);',
-    to: 'agentDebugProtocolError(text);',
+    site: 'desync report',
+    variants: [
+      // Upstream. deserializeState warns about a player-count mismatch and then
+      // carries on reading a stream it knows is misaligned. The declared count is
+      // read INSIDE the condition, so by the next line it is gone. Wrapping the
+      // read is the only way to keep it, and the script hands the byte straight
+      // back - the comparison is the stock comparison.
+      [
+        {
+          file: ['Scripts', 'Serialization', 'deserializeState.gml'],
+          from: 'if(read_ubyte(global.tempBuffer) != ds_list_size(global.players))',
+          to: 'if(agentDebugStateCount(read_ubyte(global.tempBuffer)) != ds_list_size(global.players))',
+        },
+        {
+          file: ['Scripts', 'Serialization', 'deserializeState.gml'],
+          from: 'show_message("Wrong number of players while deserializing state");',
+          to: 'agentDebugDesync();',
+        },
+      ],
+      // A tree with Scripts/Client/clientProtocolError.gml (the kylelmoy fork's
+      // desync-fixes branch): every stream desync the client detects reports
+      // through this one line, with the counts, class or recent message ids
+      // already in the text.
+      [
+        {
+          file: ['Scripts', 'Client', 'clientProtocolError.gml'],
+          from: 'promptRestartOrQuit(text);',
+          to: 'agentDebugProtocolError(text);',
+        },
+      ],
+    ],
   },
   {
     file: ['Scripts', 'Misc', 'getCharacterSpriteId.gml'],
@@ -150,6 +184,42 @@ const CODE_PATCHES = [
   },
 ];
 
+// Every CODE_PATCHES entry as { name, variants: [[patch, ...], ...] }.
+function patchSites() {
+  return CODE_PATCHES.map((entry) => entry.variants
+    ? { name: entry.site, variants: entry.variants }
+    : { name: `${entry.file.join('/')}: ${entry.from}`, variants: [[entry]] });
+}
+
+// Every patch of every variant - what cleanup has to look for, since it cannot
+// know which variant inject chose.
+function allPatches() {
+  return patchSites().flatMap((s) => s.variants.flat());
+}
+
+// Which patches apply to the tree at `tree`, decided before anything is edited.
+// A variant matches when each of its patches' files exists and holds either the
+// anchor or the replacement (already applied) as a whole line.
+function resolvePatches(tree) {
+  const fs = require('fs');
+  const path = require('path');
+  const hasLine = (file, line) => fs.existsSync(file)
+    && fs.readFileSync(file, 'utf8').split(/\r?\n/).some((l) => l.trim() === line.trim());
+  const matches = (patch) => {
+    const file = path.join(tree, ...patch.file);
+    return hasLine(file, patch.from) || hasLine(file, patch.to);
+  };
+
+  const patches = [];
+  const skipped = [];
+  for (const site of patchSites()) {
+    const variant = site.variants.find((v) => v.every(matches));
+    if (variant) patches.push(...variant);
+    else skipped.push(site.name);
+  }
+  return { patches, skipped };
+}
+
 // Anything matching this in `git status` after a cleanup means the fork is not
 // clean and the build must fail.
 const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher|agent_instances|agent_shot/;
@@ -157,5 +227,5 @@ const STRAY = /Agent(Bridge|Spare)|agent_bridge|agent_launcher|agent_instances|a
 module.exports = {
   OBJECTS, SCRIPT_GROUP, INIT_ANCHOR, INIT_LINE,
   KEYSTATE_OBJECT, KEYSTATE_EVENT, KEYSTATE_ANCHOR, KEYSTATE_LINE,
-  CODE_PATCHES, STRAY,
+  CODE_PATCHES, STRAY, patchSites, allPatches, resolvePatches,
 };

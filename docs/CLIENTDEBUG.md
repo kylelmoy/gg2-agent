@@ -67,29 +67,49 @@ being hunted.
 
 ## The sites, and why each earns its place
 
-### `clientProtocolError.gml` — every desync the client detects
+### The desync report — two shapes, one per version of the game
+
+The payload targets stock upstream Gang Garrison 2 and must not depend on any
+fork of it. This is the one site a fork has reshaped, so its `CODE_PATCHES`
+entry is a `{ site, variants }`: `resolvePatches` picks the first variant the
+tree matches before `inject.js` touches anything, and a tree that matches neither
+is built without the site and says so (`call site 'desync report' matches
+nothing in this tree - skipped`). `cleanup.js` looks for every variant's
+replacement, since it cannot know which one was chosen. Both shapes log a
+`DESYNC ...` line.
+
+**Upstream: `deserializeState.gml`.**
+
+```
+163276375  DESYNC deserializeState: server declared 6 players, client holds 0, updateType=0
+```
+
+The stock client warns about a player-count mismatch and then **carries on
+deserialising a stream it knows is misaligned**, so the fatal that eventually
+gets reported names a symptom two steps downstream (see `getCharacterSpriteId`
+below). Two patches: `agentDebugStateCount` wraps the `read_ubyte` inside the
+`if` — the declared count is consumed in the condition, so by the next line it is
+gone — and hands the byte straight back; `agentDebugDesync` replaces the
+`show_message` body, logs both counts and the update type, and then shows the
+identical message.
+
+**A tree with `Scripts/Client/clientProtocolError.gml`** (the kylelmoy fork's
+`desync-fixes` branch).
 
 ```
 666593312  DESYNC live test of the log patch |  | Last messages received from the server, oldest first: | 6, 6, 6, 6, 9, 6, 6, 6, 6, 6, 6, 9, 6, 6, 6, 6
 ```
 
-This site used to be two patches in `deserializeState.gml`, which warned about
-a player-count mismatch and then **carried on deserialising a stream it knew was
-misaligned**, so the fatal that eventually got reported named a symptom two
-steps downstream. The game's `desync-fixes` branch (kylelmoy/Gang-Garrison-2)
-changed the stock client: that mismatch, a character
-record for an unknown class, and a message id with no handler all go through
-`Scripts/Client/clientProtocolError.gml`, which stops parsing
-(`global.serverStreamBroken`) and shows a Restart/Quit prompt whose text already
-names both counts, the class, or the last 16 message ids. The only thing left to
-add is getting that text into a file, so this is one patch on the
+There the count mismatch, a character record for an unknown class, and a
+message id with no handler all go through `clientProtocolError`, which stops
+parsing (`global.serverStreamBroken`) and shows a Restart/Quit prompt whose text
+already names both counts, the class, or the last 16 message ids. The only thing
+left to add is getting that text into a file, so this is one patch on the
 `promptRestartOrQuit(text);` line; `agentDebugProtocolError` logs the text with
-`#` turned into ` | ` and then shows the identical prompt.
-
-That branch changes the stock behaviour this tooling is an oracle for: a stock
-client now stops at the first detected desync instead of reading on. With the
-launcher dismissing the prompt it neither restarts nor quits, it just stops
-reading from the server.
+`#` turned into ` | ` and then shows the identical prompt. That branch changes
+the stock behaviour this tooling is an oracle for: its client stops at the first
+detected desync instead of reading on, and with the launcher dismissing the
+prompt it neither restarts nor quits, it just stops reading from the server.
 
 ### `getCharacterSpriteId.gml` — the fatal, which names only what was already known
 
@@ -137,7 +157,9 @@ To add one:
 2. Add a script to `payload/Scripts/AgentBridge/` **and register it** in that
    directory's `_resources.list.xml`. It must end by doing what the stock line
    did.
-3. Add the `{ file, from, to }` entry to `CODE_PATCHES`.
+3. Add the `{ file, from, to }` entry to `CODE_PATCHES` — or, if versions of
+   the game disagree about the line, a `{ site, variants }` entry with upstream's
+   shape first.
 4. `node tools/selftest.js` — the *payload call-site patches* section checks the
    anchor is still exactly one line of the real tree, that every `agent*` call in
    a replacement is a registered script, and that inject/cleanup round-trips byte
@@ -239,13 +261,15 @@ re-sourced from the live stream on every state update — but it means the desyn
 line cannot be faked from outside in two calls; plant and log in one `gg2_eval`
 if you ever need to.
 
-The `agentDebugDesync` and `agentDeclaredPlayers` rows describe the two
-`deserializeState` patches that `agentDebugProtocolError` replaced. The new site,
-measured 2026-09-23 against the game's `desync-fixes` branch with a server and
-two clients: calling `clientProtocolError("live test of the log patch")` on a
-client logged the line quoted above (message 6 is `INPUTSTATE`, 9 is
-`QUICK_UPDATE`), the launcher force-closed the prompt, and the client stayed up
-with `global.serverStreamBroken` set.
+The `agentDebugDesync` and `agentDeclaredPlayers` rows are the upstream shape;
+re-checked 2026-09-28 on an upstream build (`ea8d6951`), where planting a count
+and calling `agentDebugDesync()` in one `gg2_eval` logged the upstream line quoted
+above and the game stayed up. The `clientProtocolError` shape, measured
+2026-09-23 against the `desync-fixes` branch with a server and two clients:
+calling `clientProtocolError("live test of the log patch")` on a client logged
+the line quoted above (message 6 is `INPUTSTATE`, 9 is `QUICK_UPDATE`), the
+launcher force-closed the prompt, and the client stayed up with
+`global.serverStreamBroken` set.
 
 ## Not done
 

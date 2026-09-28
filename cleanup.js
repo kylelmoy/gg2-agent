@@ -27,6 +27,10 @@ usage: node cleanup.js [--repo <path>] [--quiet]
 Exit code 1 means bridge artefacts are still in the checkout.
 `;
 
+function isPatched(file, patch) {
+  return fs.existsSync(file) && lib.readText(file).split(/\r?\n/).some((l) => l.trim() === patch.to.trim());
+}
+
 function cleanup(repo, quiet) {
   const tree = lib.resolveGg2Tree(repo);
   lib.step(`Removing agent bridge from ${tree}`, quiet);
@@ -51,9 +55,13 @@ function cleanup(repo, quiet) {
     lib.ok(`removed heldMask wiring from ${payloadSpec.KEYSTATE_OBJECT}.${payloadSpec.KEYSTATE_EVENT}`, quiet);
   }
 
+  // Every variant's replacement is looked for, since which one inject chose
+  // depends on the tree; a file or line that is not there is simply not patched.
   let unpatched = 0;
-  for (const patch of payloadSpec.CODE_PATCHES) {
-    if (lib.replaceLine(path.join(tree, ...patch.file), patch.to, patch.from)) unpatched++;
+  for (const patch of payloadSpec.allPatches()) {
+    const file = path.join(tree, ...patch.file);
+    if (!isPatched(file, patch)) continue;
+    if (lib.replaceLine(file, patch.to, patch.from)) unpatched++;
   }
   if (unpatched) lib.ok(`restored ${unpatched} debug call site(s)`, quiet);
   else lib.skip('debug call sites already restored', quiet);
@@ -92,10 +100,7 @@ function cleanup(repo, quiet) {
   // paths, and a half-restored deserializeState.gml is just a modified path like
   // any other. So check the rewritten lines themselves are gone before trusting
   // the status output.
-  const leftover = payloadSpec.CODE_PATCHES.filter((patch) => {
-    const file = path.join(tree, ...patch.file);
-    return fs.existsSync(file) && lib.readText(file).includes(patch.to);
-  });
+  const leftover = payloadSpec.allPatches().filter((patch) => isPatched(path.join(tree, ...patch.file), patch));
   if (leftover.length > 0) {
     lib.fail('debug call sites still patched - cleanup did not fully reverse');
     for (const patch of leftover) lib.detail(`${path.join(...patch.file)}: ${patch.to}`);
