@@ -1,8 +1,7 @@
 *.log
 
-# Third-party binaries, if you keep them here rather than in the game's Source/
-tools/*.exe
-tools/*.jar
+# gm8-builder, fetched by tools/gm8.js from its pinned release
+.deps/
 
 node_modules/
 

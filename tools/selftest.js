@@ -416,18 +416,23 @@ async function main() {
 
   process.stdout.write('\ngm8-builder\n');
   {
-    // The build and the linter are gm8-builder (../gm8-builder), a separate
-    // tool with its own tests (`dotnet test` there). What is left to check here
-    // is how this repo plugs into it, since nothing in gm8-builder would notice
-    // that going missing.
+    // The build and the linter are gm8-builder, a separate tool with its own
+    // tests, pulled in as a pinned release. What is left to check here is how
+    // this repo plugs into it, since nothing in gm8-builder would notice that
+    // going missing.
     const gm8 = require('./gm8.js');
     const found = gm8.find();
-    check('gm8-builder.exe is found', !!found,
-      'publish it: cd ../gm8-builder && dotnet publish src/Gm8Builder.Cli -c Release -o dist (or set GM8_BUILDER)');
+    check('gm8-builder.exe is found', !!found, 'run: node tools/gm8.js fetch (or set GM8_BUILDER)');
+    check('every pinned release asset has a SHA-256', Object.values(gm8.RELEASE.assets).every((a) => /^[0-9a-f]{64}$/.test(a.sha256)));
+    if (found && !process.env.GM8_BUILDER) {
+      const v = require('child_process').spawnSync(found, ['--version'], { encoding: 'utf8', windowsHide: true });
+      contains('and it is the pinned release', v.stdout, gm8.RELEASE.version);
+    }
     check('a Game Maker 8 install is found', !!gm8.findInstall(), 'set GM8_DIR to the directory holding rundata and fnames');
 
     // Both build scripts go through the one helper, which lints first and
-    // applies gm8x_fix - the game has always shipped with its patches.
+    // applies gm8x_fix's patches (built into gm8-builder) - the game has
+    // always shipped with them.
     const helper = gm8.build.toString();
     contains('the build lints the tree first', helper, "args.push('--lint')");
     contains('and applies gm8x_fix', helper, "args.push('--gm8x-fix')");

@@ -1,12 +1,13 @@
 //=============================================================================
 // gm8.js - running gm8-builder, the Game Maker 8 builder and linter.
 //
-// gm8-builder is a separate project (../gm8-builder) that knows nothing about
-// this game or the bridge. It writes a GM8 executable straight from the split
-// tree - no Game Maker process, no gmksplit, ~2s for the whole game - and
-// checks GML against GM8's own fnames table. Everything here that builds or
-// lints goes through this file, so there is one place that finds the exe and
-// the Game Maker install, and one place that speaks its output formats:
+// gm8-builder (github.com/kylelmoy/gm8-builder) is a separate project that
+// knows nothing about this game or the bridge. It writes a GM8 executable
+// straight from the split tree - no Game Maker process, ~2s for the whole game,
+// gm8x_fix's runner patches built in - and checks GML against GM8's own fnames
+// table. Everything here that builds or lints goes through this file, so there
+// is one place that finds the exe and the Game Maker install, and one place
+// that speaks its output formats:
 //
 //   build()   `gm8-builder build`, failing with what it printed
 //   lint()    a long-running `gm8-builder lint --serve`, started once per
@@ -14,8 +15,12 @@
 //             millisecond each, where launching the exe per check would cost
 //             tens
 //
-// The exe is looked for in GM8_BUILDER, then ../gm8-builder/dist (where
-// `dotnet publish src/Gm8Builder.Cli -c Release -o dist` puts it), then PATH.
+// It is a dependency, not part of this repo: RELEASE pins one published
+// release, and `node tools/gm8.js fetch` (run by `npm install`, and by find()
+// the first time it is missing) downloads that release's zip, checks it
+// against the pinned SHA-256, and unpacks it under .deps/, which is ignored.
+// GM8_BUILDER points at any other exe instead - a local build of gm8-builder,
+// say - and skips all of that. To move to a new release, change RELEASE.
 //
 // It still needs a Game Maker 8.0 install - not to run it, but for the runner
 // and libraries it copies into every build and the fnames file the linter
@@ -25,35 +30,111 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const https = require('https');
 const readline = require('readline');
 const { spawn, spawnSync } = require('child_process');
 const lib = require('./lib.js');
 
-const EXE_NAME = 'gm8-builder.exe';
+const RELEASE = {
+  version: '0.1.0',
+  assets: {
+    'win32-x64': { name: 'win-x64', sha256: '501b977f6ee1b270c14c3d7a8d90dabfd721cf32da7ba761503d55bdb452e408' },
+    'linux-x64': { name: 'linux-x64', sha256: 'c7a2b5df1df64954e6f72c5b788e1eab41b1bc9ec186463be22917c64919d25c' },
+    'darwin-arm64': { name: 'osx-arm64', sha256: '48d2b725b96ba7e6db0253a73f1ed63d8fa474869bfca941438d7ebd0750a5e0' },
+  },
+};
+
+const EXE_NAME = process.platform === 'win32' ? 'gm8-builder.exe' : 'gm8-builder';
+const DEPS = path.join(__dirname, '..', '.deps', 'gm8-builder', RELEASE.version);
 
 // The .gex functions this game's extension packages provide. gm8-builder
 // knows those of the installed packages a tree uses; this list covers the
 // rest, and a snippet linted without a tree.
 const EXTENSIONS = path.join(__dirname, 'gml-extensions.txt');
 
-function find() {
-  const candidates = [
-    process.env.GM8_BUILDER,
-    path.resolve(__dirname, '..', '..', 'gm8-builder', 'dist', EXE_NAME),
-  ].filter(Boolean);
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  for (const d of (process.env.PATH || '').split(path.delimiter)) {
-    if (d && fs.existsSync(path.join(d, EXE_NAME))) return path.join(d, EXE_NAME);
+function asset() {
+  const a = RELEASE.assets[`${process.platform}-${process.arch}`];
+  if (!a) throw new Error(`gm8-builder v${RELEASE.version} has no build for ${process.platform}-${process.arch}`);
+  const file = `gm8-builder-v${RELEASE.version}-${a.name}.zip`;
+  return { ...a, file, url: `https://github.com/kylelmoy/gm8-builder/releases/download/v${RELEASE.version}/${file}` };
+}
+
+function get(url, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'gg2-agent' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
+        res.resume();
+        return resolve(get(new URL(res.headers.location, url).toString(), redirects - 1));
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`GET ${url}: HTTP ${res.statusCode}`));
+      }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+// Download, verify and unpack the pinned release into DEPS. Resolves the exe.
+async function fetchBuilder({ quiet = false } = {}) {
+  const exePath = path.join(DEPS, EXE_NAME);
+  if (fs.existsSync(exePath)) return exePath;
+  const a = asset();
+  lib.step(`Fetching gm8-builder v${RELEASE.version} (${a.file})`, quiet);
+  const zip = await get(a.url);
+  const digest = crypto.createHash('sha256').update(zip).digest('hex');
+  if (digest !== a.sha256) throw new Error(`${a.file}: sha256 ${digest}, expected ${a.sha256}`);
+
+  // Unpacked beside DEPS and renamed into place, so a failure halfway never
+  // leaves something find() would take for a finished install. Beside, not in
+  // the system temp directory: a rename cannot cross drives.
+  fs.mkdirSync(path.dirname(DEPS), { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(path.dirname(DEPS), '.fetch-'));
+  try {
+    const zipPath = path.join(tmp, a.file);
+    fs.writeFileSync(zipPath, zip);
+    // Windows' own tar reads zip; the tar Git for Windows puts first on PATH does not.
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'unzip';
+    const args = process.platform === 'win32' ? ['-xf', zipPath, '-C', tmp] : ['-q', zipPath, '-d', tmp];
+    const r = spawnSync(tar, args, { encoding: 'utf8', windowsHide: true });
+    if (r.status !== 0) throw new Error(`could not unpack ${a.file}: ${(r.stderr || r.error || '').toString().trim()}`);
+    const unpacked = path.join(tmp, `gm8-builder-${a.name}`);
+    if (!fs.existsSync(path.join(unpacked, EXE_NAME))) throw new Error(`${a.file} has no ${EXE_NAME}`);
+    fs.rmSync(DEPS, { recursive: true, force: true });
+    fs.renameSync(unpacked, DEPS);
+    if (process.platform !== 'win32') fs.chmodSync(exePath, 0o755);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
-  return null;
+  lib.ok(`gm8-builder v${RELEASE.version} in ${path.relative(path.join(__dirname, '..'), DEPS)}`, quiet);
+  return exePath;
+}
+
+// find() is synchronous - gml-lint's CLI and the lint server need an answer
+// on the spot - so a missing release is fetched by a child process, once per
+// process. Offline, it stays missing and lint() says so rather than blocking.
+let fetchTried = false;
+function find() {
+  if (process.env.GM8_BUILDER) return fs.existsSync(process.env.GM8_BUILDER) ? process.env.GM8_BUILDER : null;
+  const exePath = path.join(DEPS, EXE_NAME);
+  if (!fs.existsSync(exePath) && !fetchTried) {
+    fetchTried = true;
+    spawnSync(process.execPath, [__filename, 'fetch', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true });
+  }
+  return fs.existsSync(exePath) ? exePath : null;
 }
 
 function exe() {
   const found = find();
   if (!found) {
     throw new Error(
-      `${EXE_NAME} not found. Check out gm8-builder beside this repo and publish it ` +
-        '(cd ../gm8-builder && dotnet publish src/Gm8Builder.Cli -c Release -o dist), or set GM8_BUILDER.'
+      process.env.GM8_BUILDER
+        ? `GM8_BUILDER is set to ${process.env.GM8_BUILDER}, which does not exist.`
+        : `gm8-builder v${RELEASE.version} is not installed and could not be fetched. Run: node tools/gm8.js fetch`
     );
   }
   return found;
@@ -191,4 +272,19 @@ function stopLint() {
   server = null;
 }
 
-module.exports = { find, exe, findInstall, install, build, lint, stopLint, EXTENSIONS };
+if (require.main === module) {
+  const { positional, flags } = lib.parseArgs(process.argv.slice(2), []);
+  if (flags.help || positional[0] !== 'fetch') {
+    lib.helpAndExit(`
+usage: node tools/gm8.js fetch [--quiet]
+
+  Download gm8-builder v${RELEASE.version}, check its SHA-256 and unpack it into
+  .deps/. Does nothing if it is already there. npm install runs this.
+`);
+  }
+  lib.cli(async () => {
+    await fetchBuilder({ quiet: !!flags.quiet });
+  });
+}
+
+module.exports = { find, exe, fetchBuilder, findInstall, install, build, lint, stopLint, EXTENSIONS, RELEASE };

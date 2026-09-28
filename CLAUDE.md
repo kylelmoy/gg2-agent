@@ -9,11 +9,13 @@ Operating guide for an AI agent. Read this before touching either repo.
 | `gg2-agent` (this one, private) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
 | `Gang-Garrison-2` | the game itself — **upstream `Gang-Garrison-2/Gang-Garrison-2`, the reference checkout** | treat as read-only; never commit tooling, build scripts, or the bridge here |
 | `gg2-server` | the C# port of the server, and everything to do with **bots** | not this repo's business, except that it owns nav now |
-| `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic C#; this repo runs its exe (`tools/gm8.js` finds it in `../gm8-builder/dist`, or `GM8_BUILDER`) |
+| `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic C#; a pinned **release** is this repo's dependency - `tools/gm8.js` fetches it into `.deps/` (`npm install`, or on first use), or `GM8_BUILDER` points at another exe. No checkout needed |
 
 The build and the GML linter are `gm8-builder` (since 2026-09-28; before that
 `gm8-tools`, which drove Game Maker headlessly and spliced code into a template
-exe - neither exists here any more). `gm8-builder` reproduces *Create
+exe, with standalone gmksplit and gm8x_fix binaries - none of it exists here any
+more). The version is `RELEASE` in `tools/gm8.js`, with each platform zip's
+SHA-256; moving to a new release is changing that. `gm8-builder` reproduces *Create
 Executable* itself from the split tree, reading only the runner, libraries and
 `fnames` out of a Game Maker 8.0 install (`GM8_DIR`, else whatever opens
 `.gmk` files), so every build is a full build and takes ~2s. `build-agent.js`
@@ -321,7 +323,8 @@ It refuses, rather than guessing, when:
 
 `gm8-builder roundtrip "<exe>"` proves the read/write round-trip is
 byte-identical, and `gm8-builder compare a.exe b.exe` lists content differences
-between two executables. Its own tests are `dotnet test` in gm8-builder.
+between two executables (`.deps/gm8-builder/<version>/gm8-builder.exe`). Its
+own tests live in its own repo.
 
 ## Where documentation goes
 

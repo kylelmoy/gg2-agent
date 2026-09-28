@@ -10,7 +10,7 @@ Four things live here:
   change the running game over MCP — read state, drive input, freeze it and step
   it a frame at a time, and look at the result;
 - **a ~2s rebuild** of the whole game straight from its source tree, with no
-  Game Maker process, through [gm8-builder](../gm8-builder);
+  Game Maker process, through [gm8-builder](https://github.com/kylelmoy/gm8-builder);
 - **sessions**: a dedicated server and its clients, running at once and
   addressable by name, because nothing about the network protocol is observable
   from inside one process;
@@ -53,8 +53,8 @@ tools/
   instances.js      the register of running games, so they can be named
   session.js        a dedicated server and its clients, started together
 
-  -- building (the build itself is gm8-builder, from ../gm8-builder, see below) --
-  gm8.js            finds gm8-builder and Game Maker; the long-running lint server lives here
+  -- building (the build itself is gm8-builder, a pinned release, see below) --
+  gm8.js            fetches gm8-builder, finds Game Maker; the long-running lint server lives here
   events.js         reading, writing and searching the GML inside object events
   gml-lint.js       checks GML before it is sent or built, through `gm8-builder lint`
   gml-extensions.txt  the .gex functions the linter cannot discover on its own
@@ -87,12 +87,12 @@ each other.
   those files anywhere will do. Found through `GM8_DIR`, then whatever opens
   `.gmk` files, then the default install paths; `build-agent.js --gm8 <dir>`
   overrides it.
-- **`gm8-builder.exe`**, from [gm8-builder](../gm8-builder): the build and the GML
-  linter. Check it out beside this repo and run
-  `dotnet publish src/Gm8Builder.Cli -c Release -o dist` there (.NET 10 SDK), or point
-  `GM8_BUILDER` at the exe.
-- Node 18+, then `npm install` (one dependency: koffi, which ships prebuilt — no
-  compiler needed)
+- Node 18+, then `npm install`. That installs koffi (prebuilt — no compiler
+  needed) and fetches [gm8-builder](https://github.com/kylelmoy/gm8-builder), the
+  build and the GML linter: the release pinned in `tools/gm8.js`, checked against
+  its SHA-256 and unpacked into `.deps/`. If it is missing, the first build or
+  lint fetches it too, and `node tools/gm8.js fetch` does it by hand. Set
+  `GM8_BUILDER` to use some other exe instead, such as a local build.
 - **An audio device.** GM8 loads sound resources into DirectSound during engine
   startup; with no endpoint it raises two modal errors and terminates before any
   game code runs. Over RDP: audio redirection while connected,
@@ -202,7 +202,7 @@ Game Maker 8 has no command-line compile, and upstream's `build.bat` stops at a
 manual *File > Create Executable*. This repo does not run Game Maker at all.
 Game Maker 8 never compiles GML: a built executable is the runner stub with the
 project appended as zlib blobs behind a swap-table cipher, holding every script
-and event as **source text**. [gm8-builder](../gm8-builder) writes that format
+and event as **source text**. [gm8-builder](https://github.com/kylelmoy/gm8-builder) writes that format
 straight from the split tree, reproducing the IDE's image, collision-mask and
 resource quirks, and applies `gm8x_fix`'s runner patches - about two seconds for
 the whole game. It knows nothing about this game or the bridge, and has its own

@@ -14,7 +14,7 @@
 // Step 4 runs from a finally block, so an interrupted or failed build still
 // leaves the checkout clean.
 //
-// Step 2 is gm8-builder (../gm8-builder, see tools/gm8.js), a separate tool
+// Step 2 is gm8-builder (a pinned release, see tools/gm8.js), a separate tool
 // that knows nothing about this game or the bridge. It does not run Game Maker
 // at all - it reproduces Create Executable itself, reading only the runner,
 // libraries and extensions out of a Game Maker 8.0 install - so any change,

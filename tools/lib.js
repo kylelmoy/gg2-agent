@@ -229,22 +229,8 @@ function removeLineText(text, line) {
 // Tools and processes
 //---------------------------------------------------------------------------
 
-// Locate a tool by name across candidate directories, then PATH.
-function findTool(name, dirs) {
-  for (const d of dirs) {
-    const p = path.join(d, name);
-    if (fs.existsSync(p)) return path.resolve(p);
-  }
-  for (const d of (process.env.PATH || '').split(path.delimiter)) {
-    if (!d) continue;
-    const p = path.join(d, name);
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error(`${name} not found. Looked in: ${dirs.join('; ')} and PATH.`);
-}
-
 // Run a program, forwarding its output line by line, and throw on a non-zero
-// exit code. Streaming matters here: the Game Maker step takes ~35 seconds.
+// exit code.
 function run(exe, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { cwd, windowsHide: true });
@@ -306,42 +292,6 @@ function launchDetached(exe, args, cwd) {
   child.unref();
 }
 
-// Hand a file to whatever is registered to open it - a .gmk opens Game Maker.
-function openInShell(file) {
-  const child = spawn('cmd', ['/c', 'start', '', file], { detached: true, stdio: 'ignore' });
-  child.unref();
-}
-
-// Wait for a file to appear and stop growing. Game Maker writes its executable
-// over several seconds, so "exists" is not the same as "finished".
-async function waitForStableFile(file, timeoutMs, onWait, stableSeconds = 3) {
-  const deadline = Date.now() + timeoutMs;
-  const started = Date.now();
-  let lastSize = -1;
-  let held = 0;
-  let announced = 0;
-
-  while (Date.now() < deadline) {
-    await sleep(1000);
-
-    const waited = Math.round((Date.now() - started) / 1000);
-    if (onWait && waited - announced >= 30) {
-      announced = waited;
-      onWait(waited);
-    }
-
-    if (!fs.existsSync(file)) continue;
-    const size = fs.statSync(file).size;
-    if (size > 0 && size === lastSize) {
-      if (++held >= stableSeconds) return true;
-    } else {
-      held = 0;
-    }
-    lastSize = size;
-  }
-  return false;
-}
-
 function connectOnce(port, host) {
   return new Promise((resolve) => {
     const s = net.connect({ port, host });
@@ -381,7 +331,6 @@ module.exports = {
   defaultRepo, resolveGg2Tree, findBuildDir, repoOfBuildDir,
   readText, writeText, addBeforeLine, addAfterLine, removeLine,
   insertLineText, removeLineText, replaceLine, replaceLineText,
-  findTool, run, capture, gitStatus,
+  run, capture, gitStatus,
   sleep, isRunning, stopProcess, launchDetached, waitForPort,
-  openInShell, waitForStableFile,
 };
