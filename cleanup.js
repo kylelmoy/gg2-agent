@@ -21,7 +21,8 @@ const events = require('./tools/events.js');
 const USAGE = `
 usage: node cleanup.js [--repo <path>] [--quiet]
 
-  --repo   the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo   the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+           you are in, else ../Gang-Garrison-2)
   --quiet  only report problems
 
 Exit code 1 means bridge artefacts are still in the checkout.

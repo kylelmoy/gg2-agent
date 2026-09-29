@@ -53,10 +53,11 @@ walkmask.js - render a map's collision mask, black on white
   node tools/walkmask.js <map> <out.png> [--scale <n>] [--repo <path>]
 
   --scale <n>   nearest-neighbour upscale, default 3
-  --repo <path> the Gang Garrison 2 checkout
+  --repo <path> the Gang Garrison 2 checkout (default: GG2_REPO, else the
+                one you are in, else ../Gang-Garrison-2)
 
-  Solid is dark, open is light. This is what the bot nav graph is built
-  against; the map art is only decoration over it.
+  Solid is dark, open is light. This is what the game collides against;
+  the map art is only decoration over it.
 `;
 
 // The map's own PNG, as the game ships it.

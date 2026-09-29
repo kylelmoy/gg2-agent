@@ -29,7 +29,8 @@ const { runAgent, GAME_IMAGE } = require('./run-agent.js');
 const USAGE = `
 usage: node build-fast.js [--repo <path>] [--launch] [--dry-run] [--port <n>]
 
-  --repo     the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo     the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+             you are in, else ../Gang-Garrison-2)
   --launch   relaunch the game afterwards and wait for the bridge
   --dry-run  lint the tree and stop, building nothing
   --port     bridge port to wait on with --launch (default 17777)

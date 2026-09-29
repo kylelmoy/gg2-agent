@@ -39,7 +39,8 @@ usage: node tools/events.js <list|read|find> [...]
   read <object> <event> [index]  print one action's GML
   find <regex>                   search scripts and event code together
 
-  --repo <path>   the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo <path>   the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+                  you are in, else ../Gang-Garrison-2)
   --tree          search only the game, not the bridge payload
 `;
 

@@ -19,7 +19,8 @@ usage: node run-agent.js [--repo <path>] [--port <n>] [--name <label>]
                          [--role <role>] [--keep] [--timeout <seconds>]
                          [-- <game args>]
 
-  --repo     the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo     the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+             you are in, else ../Gang-Garrison-2)
   --port     bridge port (default 17777)
   --name     what to call this instance in the register (default: agent)
   --role     solo, server or client - how gg2_* tools pick a default (default solo)

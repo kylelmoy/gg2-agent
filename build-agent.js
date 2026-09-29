@@ -36,7 +36,8 @@ const gm8 = require('./tools/gm8.js');
 const USAGE = `
 usage: node build-agent.js [--repo <path>] [--keep-injected] [--package] [--gm8 <dir>]
 
-  --repo           the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo           the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+                   you are in, else ../Gang-Garrison-2)
   --keep-injected  leave the bridge in the tree afterwards; run cleanup.js
                    before committing anything to the fork
   --package        also produce build.zip with music, licences and extensions

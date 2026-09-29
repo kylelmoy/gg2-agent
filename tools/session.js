@@ -39,7 +39,8 @@ usage: node tools/session.js <start|stop|list> [options]
   stop    --name <label>  stop one member, or all of them if not given
   list                    what is running
 
-  --repo <path>           the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo <path>           the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+                          you are in, else ../Gang-Garrison-2)
 `;
 
 const DEFAULT_MAP = 'ctf_truefort';

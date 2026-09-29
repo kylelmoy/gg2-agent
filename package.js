@@ -18,7 +18,8 @@ const lib = require('./tools/lib.js');
 const USAGE = `
 usage: node package.js [--repo <path>]
 
-  --repo   the Gang Garrison 2 checkout (default: ../Gang-Garrison-2)
+  --repo   the Gang Garrison 2 checkout (default: GG2_REPO, else the one
+           you are in, else ../Gang-Garrison-2)
 `;
 
 const TEXT_FILES = [

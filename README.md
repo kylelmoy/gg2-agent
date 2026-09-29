@@ -19,10 +19,145 @@ Four things live here:
 
 Everything is kept out of the game's own repository. The bridge is injected into
 its source tree at build time and removed afterwards, so a build can never ship
-it, and nothing about this workflow appears in that repo's history. The checkout
-it targets is upstream `Gang-Garrison-2` and is treated as read-only.
+it, and nothing about this workflow appears in that repo's history. It works on
+upstream `Gang-Garrison-2` or any fork of it.
 
 > Agents: read [`CLAUDE.md`](CLAUDE.md) instead — it is the operating guide.
+
+## Install
+
+**Windows only**: the game is a Windows executable, and the launcher clears its
+modal dialogs through user32. You need:
+
+- **Node 18+.**
+- **A Game Maker 8.0 install.** It is never run - the build copies its runner,
+  libraries and extensions, and the linter reads its `fnames` - so a copy of
+  those files anywhere will do. Found through `GM8_DIR`, then whatever opens
+  `.gmk` files, then the default install paths.
+- **An audio device.** GM8 loads sound resources into DirectSound during engine
+  startup; with no endpoint it raises two modal errors and terminates before any
+  game code runs. Over RDP: audio redirection while connected,
+  `tscon <id> /dest:console`, or a virtual audio driver.
+- **A Gang Garrison 2 checkout** - upstream or your fork. Beside `gg2-agent` is
+  simplest, but anywhere works (see below).
+
+```powershell
+git clone https://github.com/kylelmoy/gg2-agent
+git clone https://github.com/Gang-Garrison-2/Gang-Garrison-2   # or your fork
+cd gg2-agent
+npm install
+npm run doctor
+```
+
+`npm install` installs koffi (prebuilt — no compiler needed) and fetches
+[gm8-builder](https://github.com/kylelmoy/gm8-builder), the build and the GML
+linter: the release pinned in `tools/gm8.js`, checked against its SHA-256 and
+unpacked into `.deps/`. Set `GM8_BUILDER` to use some other exe instead, such as
+a local build.
+
+`npm run doctor` (`tools/doctor.js`) checks everything above and prints the
+command that registers the MCP server. Register it once, at user scope, so it is
+available in every project and nothing lands in the game repo:
+
+```powershell
+claude mcp add gg2 -s user -- node C:\path\to\gg2-agent\tools\gg2-mcp-server.js
+```
+
+Any other MCP client takes the same command as JSON:
+
+```json
+{ "mcpServers": { "gg2": { "command": "node", "args": ["C:\path\to\gg2-agent\tools\gg2-mcp-server.js"] } } }
+```
+
+### Which checkout it works on
+
+Chosen when the server starts, with nothing to configure for the usual cases:
+
+1. `GG2_REPO`, if set (`claude mcp add gg2 -s user -e GG2_REPO=<path> -- node ...`);
+2. otherwise the checkout the session was opened in, or that contains it - so
+   opening a session in a fork or a worktree points every tool at it;
+3. otherwise a `Gang-Garrison-2` beside `gg2-agent`.
+
+`gg2_checkout` shows which one that was, and switches to another mid-session.
+Games belong to the checkout they were built from, so after switching, the
+ones started from the old checkout keep running but are not addressable until
+you switch back. The command-line scripts choose their default `--repo` the
+same way.
+
+## Usage
+
+Open a Claude Code session - in the game checkout is the natural place - and
+ask for what you want in plain words. The agent picks the tools; the table
+below is what it has to pick from.
+
+**First run.** Ask it to build and launch the game. `gg2_rebuild` lints the
+tree, builds `Source/build/Gang Garrison 2.exe` in about two seconds and starts
+it with the bridge listening; `gg2_ping` confirms it answers.
+
+**Looking.** "What map is loaded and who is on which team?" is `gg2_state`;
+"show me the game" is `gg2_screenshot`; "show me all of ctf_truefort, with what
+you can stand on outlined" is `gg2_map_image` or, for the live game,
+`gg2_area_shot`. Any value the game holds can be read with `gg2_evalx`.
+
+**Changing code.** The edit loop is: try an idea against the live game with
+`gg2_eval` (instant, nothing written), write it into the source - scripts are
+plain `.gml`, and `gg2_event` reads and writes the code inside object events -
+then `gg2_rebuild`. The running game only changes when it is rebuilt, since
+GM8 keeps the code inside the executable. `gg2_find` searches scripts and event
+code together.
+
+**Chasing a bug.** `gg2_step` freezes the game and advances an exact number of
+frames; `gg2_wait` runs until a condition becomes true; `gg2_watch` records
+values every frame into the log. When something goes wrong, `gg2_log` shows the
+GML errors the launcher dismissed, located as `file:line`.
+
+**Multiplayer.** "Start a server and two clients on koth_valley" is
+`gg2_session`. Each game gets a name - `server`, `client1`, … - and every live
+tool takes an `instance` argument to say which one it means.
+
+**Tests.** `gg2_test` runs the game's own unit tests (`Scripts/Unit tests/`)
+inside the running game and reports how many assertions passed.
+
+The twenty-three tools, in four groups:
+
+| | |
+|---|---|
+| **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_map_image`, `gg2_area_shot`, `gg2_log` |
+| **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_speed`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
+| **edit** | `gg2_checkout`, `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
+| **run** | `gg2_session`, `gg2_test`, `gg2_profile` |
+
+### From the shell
+
+The same builds and launches are scripts, for CI or for working without an
+agent. Each takes `--help` and `--repo <path>`:
+
+```powershell
+node build-agent.js            # build into a cleared Source/build (~2s)
+node build-agent.js --package  # ...and produce build.zip
+node build-fast.js --launch    # build in place, then relaunch (~2s)
+node run-agent.js              # launch and wait for the bridge
+node tools/session.js start --clients 2   # a dedicated server and two clients
+node tools/selftest.js         # check this repo's own modules (~3s, no game running)
+```
+
+While iterating on the bridge's own GML, `--keep-injected` leaves it in the tree;
+run `node cleanup.js` before committing anything in that checkout.
+
+### When something goes wrong
+
+- **Every call times out, but the game is running.** The game accepts one
+  bridge client at a time. Something else - another editor session, a script of
+  your own - is holding it.
+- **A call fails with a GML error.** GM8 reports errors as modal dialogs; the
+  launcher dismisses them and the call comes back with the message and its
+  `file:line`. `gg2_log` with `source: "launcher"` has the history.
+- **The game dies at startup with two dialogs.** No audio device; see Install.
+- **`gg2_input aim` hangs** for about ten seconds and does nothing. It needs the
+  game window in the foreground, which a launched game usually is not. `press`
+  and `click` work.
+- **Bridge files show up in the game's `git status`.** A build was killed
+  before it could clean up, or `--keep-injected` was used: run `node cleanup.js`.
 
 ## Layout
 
@@ -74,94 +209,11 @@ tools/
 
 The six scripts at the root, plus `events.js`, `session.js` and
 `walkmask.js`, are CLIs taking `--help` and `--repo <path>`; `--repo` defaults the same way the
-MCP server chooses (see Setup): `GG2_REPO`, the checkout the working directory is
+MCP server chooses (see Install): `GG2_REPO`, the checkout the working directory is
 in, then a `Gang-Garrison-2` beside this one. Every one of them is also a plain module,
 which is how the MCP server's `gg2_rebuild` builds in-process instead of spawning a
 shell. The rest of `tools/` is modules only, reached through the MCP tools or through
 each other.
-
-## Setup
-
-- A Game Maker 8.0 install. It is never run - the build copies its runner,
-  libraries and extensions, and the linter reads its `fnames` - so a copy of
-  those files anywhere will do. Found through `GM8_DIR`, then whatever opens
-  `.gmk` files, then the default install paths; `build-agent.js --gm8 <dir>`
-  overrides it.
-- Node 18+, then `npm install`. That installs koffi (prebuilt — no compiler
-  needed) and fetches [gm8-builder](https://github.com/kylelmoy/gm8-builder), the
-  build and the GML linter: the release pinned in `tools/gm8.js`, checked against
-  its SHA-256 and unpacked into `.deps/`. If it is missing, the first build or
-  lint fetches it too, and `node tools/gm8.js fetch` does it by hand. Set
-  `GM8_BUILDER` to use some other exe instead, such as a local build.
-- **An audio device.** GM8 loads sound resources into DirectSound during engine
-  startup; with no endpoint it raises two modal errors and terminates before any
-  game code runs. Over RDP: audio redirection while connected,
-  `tscon <id> /dest:console`, or a virtual audio driver.
-
-Windows only: the game is a Windows executable, and the launcher clears its
-modal dialogs through user32.
-
-```powershell
-git clone https://github.com/kylelmoy/gg2-agent
-git clone https://github.com/Gang-Garrison-2/Gang-Garrison-2   # or your fork, anywhere
-cd gg2-agent
-npm install
-npm run doctor
-```
-
-`npm run doctor` (`tools/doctor.js`) checks each of the above - Node, koffi,
-gm8-builder, the Game Maker install, an audio device, a game checkout - and
-prints the command that registers the MCP server. Register it once, at user
-scope, so it is available in every project and nothing lands in the game repo:
-
-```powershell
-claude mcp add gg2 -s user -- node C:\path\to\gg2-agent\tools\gg2-mcp-server.js
-```
-
-Any other MCP client takes the same command as JSON:
-
-```json
-{ "mcpServers": { "gg2": { "command": "node", "args": ["C:\\path\\to\\gg2-agent\\tools\\gg2-mcp-server.js"] } } }
-```
-
-**Which checkout it works on** is chosen when it starts, and nothing needs
-configuring for the usual cases:
-
-1. `GG2_REPO`, if set (`claude mcp add gg2 -s user -e GG2_REPO=<path> -- node ...`);
-2. otherwise the checkout the session was opened in, or that contains it - so
-   opening a session in a fork or a worktree points every tool at it;
-3. otherwise a `Gang-Garrison-2` beside `gg2-agent`.
-
-`gg2_checkout` shows which one that was, and switches to another mid-session.
-Games belong to the checkout they were built from, so after switching, the
-ones started from the old checkout keep running but are not addressable until
-you switch back.
-
-It exposes twenty-three tools, in four groups:
-
-| | |
-|---|---|
-| **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_map_image`, `gg2_area_shot`, `gg2_log` |
-| **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_speed`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
-| **edit** | `gg2_checkout`, `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
-| **run** | `gg2_session`, `gg2_test`, `gg2_profile` |
-
-Every tool that talks to a game takes an optional `instance`, so a server and its
-clients can be addressed by name; leave it out while only one game is running.
-
-## Use
-
-```powershell
-node build-agent.js            # build into a cleared Source/build (~2s)
-node build-agent.js --package  # ...and produce build.zip
-node build-fast.js --launch    # build in place, then relaunch (~2s)
-node run-agent.js              # launch and wait for the bridge
-node tools/session.js start --clients 2   # a dedicated server and two clients
-node tools/selftest.js         # check this repo's own modules (~3s, no GM8)
-```
-
-While iterating on the bridge's own GML, `--keep-injected` leaves it in the tree;
-run `node cleanup.js` before leaving that checkout.
 
 ## The bridge, and why it is injected
 
@@ -170,11 +222,8 @@ by design: exactly what makes it useful during development, and exactly what mus
 never reach a player's build. Injecting it, rather than committing it, is what
 guarantees that.
 
-It is practical because the bridge touches the game's tree in only a handful of
-places, a line or two each. The first four are lines *added*; the last two are
-existing lines *replaced*, because both sit as the braceless body of an `if` where an
-inserted neighbour would change what the game does — `docs/CLIENTDEBUG.md` has the
-detail, and `cleanup.js` swaps them back and fails if one survives:
+It is practical because the bridge touches the game's tree in few places. Four
+are lines *added*:
 
 | File | Change |
 |---|---|
@@ -182,8 +231,24 @@ detail, and `cleanup.js` swaps them back and fails if one survives:
 | `Scripts/_resources.list.xml` | register the script group |
 | `Scripts/Game/game_init.gml` | `instance_create(0, 0, AgentBridge);` |
 | `Objects/InGameElements/PlayerControl.events/Begin Step.xml` | OR `AgentBridge.heldMask` into `keybyte`, so `gg2_input press left` etc. can hold a direction without a keyboard |
-| `Scripts/Serialization/deserializeState.gml` | route the player-count mismatch through a payload script, so it reaches the log as well as the screen — 2 lines, since the declared count is consumed inside the `if` |
-| `Scripts/Misc/getCharacterSpriteId.gml` | the same for its two `show_error` calls, which abort — see `docs/CLIENTDEBUG.md` |
+
+The rest are nine existing lines *replaced*, each by a call to a payload script
+(`CODE_PATCHES` in `tools/payload.js`). Replacing the whole line rather than
+inserting beside it is what leaves the game's control flow alone - several are
+the braceless body of an `if`, where an inserted neighbour would change what the
+game does - and `cleanup.js` swaps each back and fails if one survives.
+`docs/CLIENTDEBUG.md` has the detail:
+
+| File | Lines | For |
+|---|---|---|
+| `Scripts/Serialization/deserializeState.gml` | 2 | log a player-count desync, with the count the server declared, instead of only showing it |
+| `Scripts/Misc/getCharacterSpriteId.gml` | 2 | log its two `show_error` calls, which abort |
+| `Objects/RateController.events/Begin Step.xml` | 2 | let a faster game speed be held, even across a map change, for long accelerated runs |
+| `Objects/InGameElements/Character.events/User Event 13.xml` | 2 | measure how far a client's prediction snaps when the server corrects it |
+| `Scripts/AudioControl/AudioControlPlaySong.gml` | 1 | stop a stock bug raising a dialog at every round end |
+
+Where a fork reshapes one of these lines, the payload lists that shape as an
+alternative; a tree matching none is built without that line, with a warning.
 
 Everything else is new files. The object configures itself from the command line
 in its own Create event, so the game's startup needs one line and nothing more.
