@@ -988,6 +988,27 @@ async function main() {
 
   contains('sessions can be listed', await mcp.callTool('gg2_session', { action: 'list' }), 'fake');
 
+  process.stdout.write('\nchoosing a checkout\n');
+  {
+    const lib = require('./lib.js');
+    const saved = { cwd: process.cwd(), repo: process.env.GG2_REPO };
+    delete process.env.GG2_REPO;
+    process.chdir(path.join(TREE, 'Scripts'));
+    const fromCwd = lib.defaultRepoWithReason();
+    check('a session opened inside a checkout uses it', fromCwd.repo === SCRATCH && fromCwd.reason === 'working directory', fromCwd.repo);
+    process.env.GG2_REPO = os.tmpdir();
+    check('and GG2_REPO overrides that', lib.defaultRepo() === path.resolve(os.tmpdir()));
+    process.chdir(saved.cwd);
+    if (saved.repo === undefined) delete process.env.GG2_REPO;
+    else process.env.GG2_REPO = saved.repo;
+  }
+  contains('gg2_checkout shows the current checkout', await mcp.callTool('gg2_checkout', {}), SCRATCH);
+  contains('and switches given any directory inside one',
+    await mcp.callTool('gg2_checkout', { path: path.join(TREE, 'Scripts') }), 'gg2_checkout');
+  await throws('and refuses a directory that is not in one',
+    () => mcp.callTool('gg2_checkout', { path: os.tmpdir() }), 'not inside a Gang Garrison 2 checkout');
+  contains('and the games of the checkout still resolve', await mcp.callTool('gg2_ping', {}), 'fake');
+
   // The server keeps its connection to a game open on purpose, so nothing here
   // exits until the sockets on both ends are let go.
   mcp.disconnectAll('selftest finished');

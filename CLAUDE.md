@@ -6,7 +6,7 @@ Operating guide for an AI agent. Read this before touching either repo.
 
 | Repo | Contains | Rule |
 |---|---|---|
-| `gg2-agent` (this one, private) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
+| `gg2-agent` (this one) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
 | `Gang-Garrison-2` | the game itself — **upstream `Gang-Garrison-2/Gang-Garrison-2`, the reference checkout** | treat as read-only; never commit tooling, build scripts, or the bridge here |
 | `gg2-server` | the C# port of the server, and everything to do with **bots** | not this repo's business, except that it owns nav now |
 | `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic C#; a pinned **release** is this repo's dependency - `tools/gm8.js` fetches it into `.deps/` (`npm install`, or on first use), or `GM8_BUILDER` points at another exe. No checkout needed |
@@ -82,6 +82,7 @@ node build-agent.js       # the same build into a cleared Source/build, --packag
 node run-agent.js         # launch the game, wait for the bridge
 node tools/selftest.js    # check the tooling itself, against a fake game   (~3s)
 node tools/walkmask.js    # render a map's collision mask on its own
+node tools/doctor.js      # check this machine is set up, print the MCP registration
 ```
 
 Neither runs Game Maker: `gm8-builder` writes the executable itself, so there is
@@ -91,7 +92,9 @@ build nothing if it has errors. `build-fast.js` stops and (with `--launch`)
 relaunches the game around the build and leaves the rest of `Source/build`
 alone; `build-agent.js` clears `Source/build` first and can `--package`.
 
-Every script takes `--repo <path>` and `--help`, and each is a module as well as
+Every script takes `--repo <path>` and `--help`; `--repo` defaults to `GG2_REPO`, else the
+checkout the working directory is in, else `Gang-Garrison-2` beside this repo - the same
+choice the MCP server starts on, which `gg2_checkout` reports and switches. Each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
 
 ### Live — these are bridge clients, so do not run them from an agent session
@@ -110,6 +113,7 @@ Then drive the running game with the MCP tools:
 | Tool | Use it for |
 |---|---|
 | `gg2_ping` | confirm the game is reachable; try this first when anything fails |
+| `gg2_checkout` | which game checkout every other tool is working on; switch forks or worktrees |
 | `gg2_evalx` | read live state — `room_speed`, `instance_number(Player)`, `global.currentMap` |
 | `gg2_eval` | change live state, call scripts, create instances |
 | `gg2_state` | structured snapshot: room, fps, host flag, players with team and class |

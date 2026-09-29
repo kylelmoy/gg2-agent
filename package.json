@@ -5,16 +5,23 @@
   "main": "build-agent.js",
   "scripts": {
     "postinstall": "node tools/gm8.js fetch",
+    "doctor": "node tools/doctor.js",
     "test": "node tools/selftest.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kylelmoy/gg2-agent.git"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "Kyle Moy",
+  "license": "MIT",
   "dependencies": {
     "koffi": "^3.1.5"
   },
-  "private": true
+  "private": true,
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
 }

@@ -28,6 +28,9 @@
 //
 // Environment:
 //   GG2_AGENT_PORT   bridge port to assume when nothing is registered (17777)
+//   GG2_REPO         the game checkout to start on; otherwise the one the session
+//                    was opened in, else a Gang-Garrison-2 beside this repo.
+//                    gg2_checkout switches it mid-session.
 //   GG2_BUILD_DIR    directory holding the game exe, the logs and the register
 //=============================================================================
 
@@ -50,12 +53,22 @@ const HOST = '127.0.0.1';
 const CALL_TIMEOUT_MS = 10000;
 const ROOM_SPEED = 30; // what the game runs at, for turning frames into a timeout
 
-// This server lives outside the game's repo, so find the build directory rather
-// than assuming it sits alongside. GG2_BUILD_DIR overrides the search. The
-// search itself is lib's, so every process that talks to a game agrees.
-const BUILD_DIR = lib.findBuildDir();
-const REPO = lib.repoOfBuildDir(BUILD_DIR);
-const TREE = path.join(REPO, 'Source', 'gg2');
+// The checkout this server works on. It lives outside the game's repo, so the
+// starting one is lib's choice - GG2_REPO, else the checkout the session was
+// opened in, else one beside gg2-agent - and every process that talks to a game
+// agrees on it. gg2_checkout switches it mid-session, for forks and worktrees.
+let BUILD_DIR, REPO, TREE, TEST_DIR, REPO_REASON;
+function setRepo(buildDir, reason) {
+  BUILD_DIR = buildDir;
+  REPO = lib.repoOfBuildDir(BUILD_DIR);
+  TREE = path.join(REPO, 'Source', 'gg2');
+  TEST_DIR = path.join(TREE, 'Scripts', 'Unit tests');
+  REPO_REASON = reason;
+}
+setRepo(
+  lib.findBuildDir(),
+  process.env.GG2_BUILD_DIR ? 'GG2_BUILD_DIR' : lib.defaultRepoWithReason().reason
+);
 const PAYLOAD = path.resolve(__dirname, '..', 'payload');
 
 // stdout is the MCP channel and must carry nothing but JSON-RPC. That applies
@@ -709,8 +722,6 @@ async function lintOrThrow(code, skip) {
 // report and forget.
 //--------------------------------------------------------------------------
 
-const TEST_DIR = path.join(TREE, 'Scripts', 'Unit tests');
-
 function testSuites() {
   const out = [];
   const walk = (dir) => {
@@ -1236,6 +1247,32 @@ async function callTool(name, args) {
       throw new Error('action must be start, stop or list');
     }
 
+    case 'gg2_checkout': {
+      const describe = () => {
+        const live = instances.list(BUILD_DIR);
+        return (
+          `checkout  ${REPO}  (${REPO_REASON})\n` +
+          `build dir ${BUILD_DIR}${fs.existsSync(BUILD_DIR) ? '' : '  - not built yet; gg2_rebuild builds it'}\n` +
+          (live.length ? `running   ${live.map((i) => i.name).join(', ')}` : 'running   nothing')
+        );
+      };
+      if (!args.path) return describe();
+
+      const repo = lib.enclosingCheckout(path.resolve(args.path));
+      if (!repo) throw new Error(`not inside a Gang Garrison 2 checkout: ${path.resolve(args.path)}`);
+      const left = instances.list(BUILD_DIR);
+      // Games belong to the checkout they were built from; the register that
+      // names them is in its build dir, so after switching they cannot be
+      // addressed. Say so rather than leave them to be found by accident.
+      const note = left.length && path.resolve(repo) !== path.resolve(REPO)
+        ? `\n\nstill running from ${REPO}: ${left.map((i) => i.name).join(', ')} - ` +
+          'switch back to address or stop them.'
+        : '';
+      disconnectAll('switching checkout');
+      setRepo(lib.findBuildDir(repo), 'gg2_checkout');
+      return describe() + note;
+    }
+
     case 'gg2_rebuild': {
       // In-process, so there is no shell, no execution policy and no output to
       // parse: the build reports through lib's sink, which is redirected here
@@ -1395,4 +1432,7 @@ if (require.main === module) serve();
 
 // `command` is exported for the selftest: every tool's timeout is measured in
 // seconds, and a test that has to wait one out is a test nobody runs.
-module.exports = { callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll, command };
+module.exports = {
+  callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll, command,
+  setRepo: (repo) => setRepo(lib.findBuildDir(repo), '--repo'),
+};

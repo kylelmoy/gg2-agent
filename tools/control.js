@@ -594,6 +594,8 @@ function main() {
   if (flags.repo) {
     BUILD_DIR = lib.findBuildDir(flags.repo);
     MAPS = readMaps(BUILD_DIR);
+    // callTool resolves instances against the server module's own checkout.
+    mcp.setRepo(flags.repo);
   }
 
   const port = Number(flags.port) || 7311;

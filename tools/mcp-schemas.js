@@ -437,6 +437,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'gg2_checkout',
+    description:
+      'Show or switch which Gang Garrison 2 checkout the other tools work on - the tree gg2_event, gg2_find, ' +
+      'gg2_lint and gg2_rebuild read and write, and the build dir whose running games the live tools address. ' +
+      'It starts as GG2_REPO if set, else the checkout the session was opened in, else Gang-Garrison-2 beside ' +
+      'gg2-agent. Switch to work on another fork or worktree; games started from the old checkout keep ' +
+      'running but cannot be addressed until you switch back.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'A checkout, or any directory inside one, to switch to. Leave out to show the current one.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'gg2_rebuild',
     description:
       'Rebuild the game from the source tree, in about two seconds, and relaunch it. ' +

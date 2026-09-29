@@ -69,13 +69,15 @@ tools/
   areashot.js       a live screenshot bigger than one window, tiled and stitched
   image.js          turns what screen_save wrote into a PNG
 
+  doctor.js         checks a machine is set up, and prints how to register the server
   selftest.js       exercises all of the above against a fake game
   lib.js            shared helpers (file edits, tool discovery, processes, paths)
 ```
 
 The six scripts at the root, plus `control.js`, `events.js`, `session.js` and
-`walkmask.js`, are CLIs taking `--help` and `--repo <path>`; `--repo` defaults to a
-`Gang-Garrison-2` checkout beside this one. Every one of them is also a plain module,
+`walkmask.js`, are CLIs taking `--help` and `--repo <path>`; `--repo` defaults the same way the
+MCP server chooses (see Setup): `GG2_REPO`, the checkout the working directory is
+in, then a `Gang-Garrison-2` beside this one. Every one of them is also a plain module,
 which is how the MCP server's `gg2_rebuild` builds in-process instead of spawning a
 shell. The rest of `tools/` is modules only, reached through the MCP tools or through
 each other.
@@ -98,19 +100,52 @@ each other.
   game code runs. Over RDP: audio redirection while connected,
   `tscon <id> /dest:console`, or a virtual audio driver.
 
-Register the MCP server once, at user scope, so nothing lands in the game repo:
+Windows only: the game is a Windows executable, and the launcher clears its
+modal dialogs through user32.
 
 ```powershell
-claude mcp add gg2 -s local -- node <path-to>\gg2-agent\tools\gg2-mcp-server.js
+git clone https://github.com/kylelmoy/gg2-agent
+git clone https://github.com/Gang-Garrison-2/Gang-Garrison-2   # or your fork, anywhere
+cd gg2-agent
+npm install
+npm run doctor
 ```
 
-It exposes twenty-two tools, in four groups:
+`npm run doctor` (`tools/doctor.js`) checks each of the above - Node, koffi,
+gm8-builder, the Game Maker install, an audio device, a game checkout - and
+prints the command that registers the MCP server. Register it once, at user
+scope, so it is available in every project and nothing lands in the game repo:
+
+```powershell
+claude mcp add gg2 -s user -- node C:\path\to\gg2-agent\tools\gg2-mcp-server.js
+```
+
+Any other MCP client takes the same command as JSON:
+
+```json
+{ "mcpServers": { "gg2": { "command": "node", "args": ["C:\\path\\to\\gg2-agent\\tools\\gg2-mcp-server.js"] } } }
+```
+
+**Which checkout it works on** is chosen when it starts, and nothing needs
+configuring for the usual cases:
+
+1. `GG2_REPO`, if set (`claude mcp add gg2 -s user -e GG2_REPO=<path> -- node ...`);
+2. otherwise the checkout the session was opened in, or that contains it - so
+   opening a session in a fork or a worktree points every tool at it;
+3. otherwise a `Gang-Garrison-2` beside `gg2-agent`.
+
+`gg2_checkout` shows which one that was, and switches to another mid-session.
+Games belong to the checkout they were built from, so after switching, the
+ones started from the old checkout keep running but are not addressable until
+you switch back.
+
+It exposes twenty-three tools, in four groups:
 
 | | |
 |---|---|
 | **inspect** | `gg2_ping`, `gg2_evalx`, `gg2_state`, `gg2_screenshot`, `gg2_map_image`, `gg2_area_shot`, `gg2_log` |
 | **drive** | `gg2_eval`, `gg2_input`, `gg2_step`, `gg2_resume`, `gg2_speed`, `gg2_wait`, `gg2_watch`, `gg2_sprite` |
-| **edit** | `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
+| **edit** | `gg2_checkout`, `gg2_lint`, `gg2_event`, `gg2_find`, `gg2_rebuild` |
 | **run** | `gg2_session`, `gg2_test`, `gg2_profile` |
 
 Every tool that talks to a game takes an optional `instance`, so a server and its
@@ -275,3 +310,8 @@ the public lobby, `HostingPort` is where the server listens and therefore where
 clients must be pointed, and `MultiClientLimit` caps connections from one
 address — which every local client shares. `session.js` sets the first, reads the
 second and refuses politely against the third.
+
+## License
+
+MIT - see [`LICENSE`](LICENSE). Gang Garrison 2 itself is a separate project
+under its own license; nothing from it is included here.
