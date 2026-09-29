@@ -11,6 +11,8 @@
 // sitting between the transport and the dispatch made both harder to find.
 //=============================================================================
 
+const path = require('path');
+
 const INSTANCE_ARG = {
   instance: {
     type: 'string',
@@ -499,4 +501,21 @@ const TOOLS = [
   },
 ];
 
-module.exports = { TOOLS, INSTANCE_ARG };
+// Sent in the initialize reply; MCP clients put it in the agent's context for
+// every session. It is the only guidance that reaches a session opened in the
+// game checkout - CLAUDE.md and GML.md load only in one opened in this repo -
+// so it carries what an agent editing the game must not get wrong, and points
+// at the rest by absolute path.
+const ROOT = path.resolve(__dirname, '..');
+const INSTRUCTIONS = `\
+These tools build, run and drive Gang Garrison 2, a Game Maker 8 game, through a debug bridge injected at build time.
+
+GM8 GML is not GameMaker Studio GML. Before writing any, read ${path.join(ROOT, 'GML.md')} - it lists what compiles but misbehaves. The short version: no ternary, try/catch, structs, static, #region, arrays beyond 2D, or string escapes ("\\n" is literal; use chr(10)). and/or do not short-circuit. -1 is self, not "no instance". var is script-scoped and must not shadow a built-in (x, score, health, other...). House style: and/or/not, semicolons always, parentheses around conditions, braces on their own line, four-space indent; never use new, delete or function as identifiers.
+
+Editing: object event code is XML-escaped inside Objects/**/*.events/*.xml - read and write it with gg2_event, never by hand, and search with gg2_find, which sees event code that grep does not. Run gg2_lint on GML before writing it. The running game only changes when rebuilt: try an idea with gg2_eval, write it into the tree, then gg2_rebuild (~2s). gg2_checkout says which checkout the tools are working on.
+
+Running games: each accepts one bridge client, and this session is it - a node script run against the same game waits forever. A GML error comes back as a failed call with its file:line; gg2_log with source "launcher" has the history. Freezing (gg2_step) stops the network too, so a frozen server's clients fall behind and may drop. gg2_input aim hangs; use press and click.
+
+Never commit AgentBridge files, agentDebug*/agentSnap*/agentRoomSpeed/agentAudioStopSong calls or an AgentBridge.heldMask line to the game repository; the build removes them, and node ${path.join(ROOT, 'cleanup.js')} does if a build was killed. The full operating guide is ${path.join(ROOT, 'CLAUDE.md')}.`;
+
+module.exports = { TOOLS, INSTANCE_ARG, INSTRUCTIONS };

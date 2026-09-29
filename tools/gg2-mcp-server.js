@@ -820,7 +820,7 @@ function summarise(name, { total, succeeded, messages, errors }) {
 // the switch in callTool below.
 //--------------------------------------------------------------------------
 
-const { TOOLS } = require('./mcp-schemas.js');
+const { TOOLS, INSTRUCTIONS } = require('./mcp-schemas.js');
 
 
 //--------------------------------------------------------------------------
@@ -1374,6 +1374,7 @@ async function handle(msg) {
         protocolVersion: version,
         capabilities: { tools: {} },
         serverInfo: { name: 'gg2-agent-bridge', version: '0.2.0' },
+        instructions: INSTRUCTIONS,
       });
     }
 

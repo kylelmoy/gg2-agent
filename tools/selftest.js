@@ -912,6 +912,15 @@ async function main() {
 
     check('every tool declares a schema and a description',
       mcp.TOOLS.every((t) => t.description && t.inputSchema && t.inputSchema.type === 'object'));
+
+    // The instructions are all a session opened in the game checkout is told,
+    // and they send it to files by absolute path.
+    const { INSTRUCTIONS } = require('./mcp-schemas.js');
+    const named = [...INSTRUCTIONS.matchAll(/(\S+\.(?:md|js))\b/g)].map((m) => m[1]).filter((p) => path.isAbsolute(p));
+    check('the instructions name GML.md, CLAUDE.md and cleanup.js', named.length === 3, named.join(', '));
+    check('and every file they name exists', named.every((p) => fs.existsSync(p)), named.join(', '));
+    const src2 = fs.readFileSync(path.join(__dirname, 'gg2-mcp-server.js'), 'utf8');
+    contains('and initialize sends them', src2, 'instructions: INSTRUCTIONS');
   }
 
   contains('find sees code inside events', await mcp.callTool('gg2_find', { pattern: 'closestDist' }), '.events/');
