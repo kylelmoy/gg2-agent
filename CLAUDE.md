@@ -97,18 +97,11 @@ checkout the working directory is in, else `Gang-Garrison-2` beside this repo - 
 choice the MCP server starts on, which `gg2_checkout` reports and switches. Each is a module as well as
 a CLI - which is how `gg2_rebuild` builds in-process rather than shelling out.
 
-### Live — these are bridge clients, so do not run them from an agent session
+### Live — through the MCP tools, always
 
-Each of these drives a running game, which makes each one a second client. **From an
-editor session use the MCP tool instead**; these CLIs are for CI and for a game nothing
-else is talking to. They ping first and explain themselves rather than timing out
-anonymously, but the explanation costs a round trip you do not need to spend.
-
-| CLI | What it answers | From an agent session, instead |
-|---|---|---|
-| `node tools/control.js` | a browser control panel, for playtesting by hand | keep using the MCP tools; the panel hands the game back with `/api/release` |
-
-Then drive the running game with the MCP tools:
+Everything that drives a running game is an MCP tool. A script of your own that opens a
+bridge connection is a second client, and waits behind the session for as long as it
+holds the game.
 
 | Tool | Use it for |
 |---|---|
@@ -275,19 +268,6 @@ and has no command-line flag, so clients need `-server` *and* `-port` together;
 is the same address; and `UseLobby` must be 0 or a dedicated server announces
 itself to the public lobby. `gg2_session` handles all three. Both games share one
 `gg2.ini` and one working directory — only the logs are separated, by port.
-
-### Driving it by hand, rather than by call
-
-`node tools/control.js` serves a browser control panel on `localhost:7311`: freeze,
-step, teleport, change map. The MCP tools are shaped for an agent — one call,
-one answer — and playtesting wants the opposite, so this exists alongside them rather than
-instead of them. It drives the game through the MCP server's own `callTool`, so the
-framing, the request ids and the wedged-bridge recovery are the same code.
-
-⚠️ **This process is a bridge client** (see *The loop*), so it and an editor's MCP session
-cannot both hold a game. `/api/release` (there is a button) drops this process's sockets so
-an agent can take the game back without stopping the panel; the next request from the page
-reconnects.
 
 ### The spare objects, and the spare scripts
 

@@ -1432,7 +1432,4 @@ if (require.main === module) serve();
 
 // `command` is exported for the selftest: every tool's timeout is measured in
 // seconds, and a test that has to wait one out is a test nobody runs.
-module.exports = {
-  callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll, command,
-  setRepo: (repo) => setRepo(lib.findBuildDir(repo), '--repo'),
-};
+module.exports = { callTool, handle, TOOLS, testSuites, dialogsIn, summarise, describeError, disconnectAll, command };

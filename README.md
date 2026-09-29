@@ -46,8 +46,6 @@ tools/
   -- driving a running game --
   gg2-mcp-server.js the MCP server (JSON-RPC over stdio): transport and dispatch
   mcp-schemas.js    the tool table it advertises - declarations only, no behaviour
-  control.js        a browser control panel for playtesting, over the same tools
-  control-ui.html   the page it serves
   launcher.js       runs the game; clears the modal dialogs that freeze it
   win32.js          the slice of user32 the launcher needs, via koffi
   instances.js      the register of running games, so they can be named
@@ -74,7 +72,7 @@ tools/
   lib.js            shared helpers (file edits, tool discovery, processes, paths)
 ```
 
-The six scripts at the root, plus `control.js`, `events.js`, `session.js` and
+The six scripts at the root, plus `events.js`, `session.js` and
 `walkmask.js`, are CLIs taking `--help` and `--repo <path>`; `--repo` defaults the same way the
 MCP server chooses (see Setup): `GG2_REPO`, the checkout the working directory is
 in, then a `Gang-Garrison-2` beside this one. Every one of them is also a plain module,
