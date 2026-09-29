@@ -4,7 +4,7 @@
   "description": "Tooling for developing Gang Garrison 2 with an AI agent",
   "main": "build-agent.js",
   "scripts": {
-    "postinstall": "node tools/gm8.js fetch",
+    "postinstall": "node tools/gm8.js fetch --soft",
     "doctor": "node tools/doctor.js",
     "test": "node tools/selftest.js"
   },

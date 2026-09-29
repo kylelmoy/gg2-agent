@@ -3,7 +3,7 @@
 //
 // inject.js copies these into the game's tree and registers them; cleanup.js
 // deletes them and unregisters them. Both read this list, so adding a resource
-// to the payload cannot leave half of it behind in the public fork.
+// to the payload cannot leave half of it behind in the game's checkout.
 //=============================================================================
 
 // Objects registered in Objects/_resources.list.xml, in order.
@@ -49,9 +49,10 @@ const KEYSTATE_ANCHOR = 'if(keyboard_check(global.taunt)) keybyte |= $01;';
 const KEYSTATE_LINE = '        if (instance_exists(AgentBridge)) keybyte |= (AgentBridge.heldMask & $E3);';
 
 // Call sites in the game's own code that the payload rewrites, so a failure the
-// game currently only puts on screen also reaches agent_bridge_<port>.log.
+// game currently only puts on screen also reaches agent_bridge_<port>.log, and a
+// round end does not raise a dialog.
 //
-// WHY REPLACE A LINE RATHER THAN INSERT ONE. Both of these sites are the
+// WHY REPLACE A LINE RATHER THAN INSERT ONE. Several of these sites are the
 // braceless body of an `if`, so an inserted neighbour does not join the branch -
 // it displaces the original out of it. Insert beside deserializeState's
 // show_message and the log line fires on every state update; insert beside
@@ -95,17 +96,6 @@ const CODE_PATCHES = [
           to: 'agentDebugDesync();',
         },
       ],
-      // A tree with Scripts/Client/clientProtocolError.gml (the kylelmoy fork's
-      // desync-fixes branch): every stream desync the client detects reports
-      // through this one line, with the counts, class or recent message ids
-      // already in the text.
-      [
-        {
-          file: ['Scripts', 'Client', 'clientProtocolError.gml'],
-          from: 'promptRestartOrQuit(text);',
-          to: 'agentDebugProtocolError(text);',
-        },
-      ],
     ],
   },
   {
@@ -119,61 +109,10 @@ const CODE_PATCHES = [
     to: 'agentDebugSpriteError(1, class, team, animation);',
   },
 
-  // --- soak testing ---------------------------------------------------------
-  //
-  // The four below are not debug-logging sites; they are what makes an
-  // unattended, accelerated, hours-long run against another server
-  // implementation possible. Same rules apply: one line for one line, and every
-  // replacement is a no-op unless its global has been turned on.
-
-  // RateController pins room_speed every frame from global.game_fps, so nothing
-  // outside can hold a different value. Patching the assignment keeps the
-  // instance ACTIVE, which is what agentBridgeSpeed's deactivation gives up:
-  // the boost then survives a map change, and RateController's Step keeps
-  // maintaining global.run_virtual_ticks. agentRoomSpeed has the full argument.
-  //
-  // Both lines are plain statements inside a braced block, so neither is the
-  // body of anything.
-  {
-    file: ['Objects', 'RateController.events', 'Begin Step.xml'],
-    from: 'room_speed = 60;',
-    to: 'agentRoomSpeed(60);',
-  },
-  {
-    file: ['Objects', 'RateController.events', 'Begin Step.xml'],
-    from: 'room_speed = 30;',
-    to: 'agentRoomSpeed(30);',
-  },
-
-  // The prediction-snap probe. These two bracket the authoritative position
-  // block a client hard-assigns every seventh tick, so the predicted and the
-  // authoritative values are both in hand in the same frame - which is the only
-  // way to measure the correction at all. agentSnapBegin has the argument.
-  //
-  // ANCHOR CHOICE. The block's last statement is
-  //   moveStatus = (temp >> 1) & $07;
-  // and in the event XML that line is stored escaped, as `&gt;&gt;` and `&amp;`,
-  // so an anchor for it would have to carry the escaping and would break if the
-  // file were ever re-serialised. `hp = read_ubyte(...)` is the last line that
-  // assigns anything this probe reads and it is plain text, so it is the anchor.
-  // Both are plain statements inside the braced `if`.
-  {
-    file: ['Objects', 'InGameElements', 'Character.events', 'User Event 13.xml'],
-    from: 'receiveCompleteMessage(global.serverSocket,9,global.deserializeBuffer);',
-    to: 'agentSnapBegin(); receiveCompleteMessage(global.serverSocket,9,global.deserializeBuffer);',
-  },
-  {
-    file: ['Objects', 'InGameElements', 'Character.events', 'User Event 13.xml'],
-    from: 'hp = read_ubyte(global.deserializeBuffer);',
-    to: 'hp = read_ubyte(global.deserializeBuffer); agentSnapEnd();',
-  },
-
-  // AudioControl destroys itself in its own Create - `if(instance_number(
-  // AudioControl)) > 1 {`, parenthesis in the wrong place - so currentSong is
-  // never initialised and every round end raises a modal from WinBanner. One
-  // dialog per round is survivable by hand and not by an unattended run: at 8x
-  // it stalled a client until the server dropped it. agentAudioStopSong makes
-  // the stock script safe and then does what the stock line did.
+  // Every round end reaches AudioControlPlaySong from WinBanner, and on some runs
+  // AudioControl has no currentSong, so the stock line raises a modal dialog per
+  // round. agentAudioStopSong makes the stock script safe and then does what the
+  // stock line did.
   //
   // This line IS the braceless body of an `if` - both are on one line - so the
   // whole line is replaced, which is the only safe edit for that shape.

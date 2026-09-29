@@ -11,12 +11,6 @@
 // pixels, which is what walkmask.js scales by, so a mask base layer lines up
 // with the art without conversion.
 //
-// This also drew a bot nav-graph overlay, shared between an offline CLI and the
-// live gg2_map_image so the two could not drift - they had, by 6 cells, and that
-// is what the sharing fixed. Both consumers went with the bot layer when the
-// fork was replaced by the upstream reference checkout; gg2-server owns bot
-// navigation now. `git show d346b8a^:tools/mapimage.js` has the overlay code.
-//
 // Usage: a module only - gg2_map_image is the tool.
 //=============================================================================
 

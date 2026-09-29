@@ -5,11 +5,6 @@
 // AgentBridge's Draw event only fires because agentBridgeCreate sets visible = true for
 // exactly this - it has no sprite, so that costs nothing while the labels are off - and
 // its depth of -1000000 puts them over everything else in the room, the HUD included.
-//
-// This used to draw a nav-reachability overlay as well, one bar per bot nav node. That
-// went with the bot layer when the fork it belonged to was replaced by the upstream
-// reference checkout; gg2-server owns bot navigation now. `git show d346b8a^:payload/
-// Scripts/AgentBridge/agentBridgeDraw.gml` has the old version if it is ever wanted.
 
 // agentBridgeCreate sets every global read below, and Draw cannot run before Create -
 // except that the client startup path has been seen at least once to produce an

@@ -37,11 +37,11 @@ const { spawn, spawnSync } = require('child_process');
 const lib = require('./lib.js');
 
 const RELEASE = {
-  version: '0.1.0',
+  version: '0.2.0',
   assets: {
-    'win32-x64': { name: 'win-x64', sha256: '501b977f6ee1b270c14c3d7a8d90dabfd721cf32da7ba761503d55bdb452e408' },
-    'linux-x64': { name: 'linux-x64', sha256: 'c7a2b5df1df64954e6f72c5b788e1eab41b1bc9ec186463be22917c64919d25c' },
-    'darwin-arm64': { name: 'osx-arm64', sha256: '48d2b725b96ba7e6db0253a73f1ed63d8fa474869bfca941438d7ebd0750a5e0' },
+    'win32-x64': { name: 'win-x64', sha256: 'c1e625b5d81be52fceab922b582097c0bee2979a1b996616ab556aac25e7e7ec' },
+    'linux-x64': { name: 'linux-x64', sha256: 'f034f2eb07eb8c370bf6bf09c5c395c524ca7b256a7e6998fed5b3d8e97ae9fe' },
+    'darwin-arm64': { name: 'osx-arm64', sha256: 'ab690cbb3c81c3aeeecf2f98b886bd8e910538ea65a46d4d2461d6dc696f97c2' },
   },
 };
 
@@ -276,14 +276,23 @@ if (require.main === module) {
   const { positional, flags } = lib.parseArgs(process.argv.slice(2), []);
   if (flags.help || positional[0] !== 'fetch') {
     lib.helpAndExit(`
-usage: node tools/gm8.js fetch [--quiet]
+usage: node tools/gm8.js fetch [--quiet] [--soft]
 
   Download gm8-builder v${RELEASE.version}, check its SHA-256 and unpack it into
   .deps/. Does nothing if it is already there. npm install runs this.
+
+  --soft   warn rather than fail if it cannot be fetched - what npm install
+           uses, so an offline install still succeeds; the first build or lint
+           tries again.
 `);
   }
   lib.cli(async () => {
-    await fetchBuilder({ quiet: !!flags.quiet });
+    try {
+      await fetchBuilder({ quiet: !!flags.quiet });
+    } catch (e) {
+      if (!flags.soft) throw e;
+      console.warn(`warning: could not fetch gm8-builder (${e.message}); it will be fetched on first use`);
+    }
   });
 }
 

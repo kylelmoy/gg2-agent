@@ -5,8 +5,7 @@ stopping. `tools/launcher.js` dismisses those dialogs and records them, but
 Delphi paints some captions with no window handle at all, so a great many of
 them reach `agent_launcher_<port>.log` as `(dialog had no readable text)`. The
 recovery is to screenshot the dialog and read the picture — which works, and
-which is how two real bugs were cracked on 2026-09-05, and which costs a round
-trip and a human eye every single time.
+costs a round trip and a human eye every single time.
 
 The payload closes that gap for the failures that have actually bitten. It does
 not do it by branching the game.
@@ -17,14 +16,14 @@ not do it by branching the game.
 `inject.js` rewrites each one; `cleanup.js` puts it back. They are the same kind
 of edit `INIT_ANCHOR` and `KEYSTATE_ANCHOR` already were — the payload has always
 patched the game's code, this is just more of it — and they come and go with the
-bridge, so nothing reaches the public fork.
+bridge, so nothing reaches the game's repository.
 
 Each replacement calls a payload script that logs through `agentBridgeLog` and
 then does exactly what the stock line did.
 
 ## The rule this cost a design to learn
 
-**Both interesting call sites are the braceless body of an `if`. You cannot
+**Several of these call sites are the braceless body of an `if`. You cannot
 insert a line next to one of those.** An inserted neighbour does not join the
 branch — it displaces the original out of it:
 
@@ -55,9 +54,9 @@ the anchor line is the body *of* before choosing.
 **The default build is observationally identical to a stock client.**
 
 Logging is additive. "Fail loudly" is not — it changes *when* the client dies,
-and the entire value of driving a real client against another implementation is
-asking whether a **stock** client survives what the server writes. A build that
-aborts at the count mismatch is a better debugger and a worse oracle.
+and a build that behaves differently from what players run answers a different
+question. A build that aborts at the count mismatch is a better debugger and a
+worse reproduction.
 
 So each replacement script re-raises the identical stock message, with the
 identical text, and fail-fast is opt-in: `global.agentFailFast`, initialised
@@ -67,18 +66,7 @@ being hunted.
 
 ## The sites, and why each earns its place
 
-### The desync report — two shapes, one per version of the game
-
-The payload targets stock upstream Gang Garrison 2 and must not depend on any
-fork of it. This is the one site a fork has reshaped, so its `CODE_PATCHES`
-entry is a `{ site, variants }`: `resolvePatches` picks the first variant the
-tree matches before `inject.js` touches anything, and a tree that matches neither
-is built without the site and says so (`call site 'desync report' matches
-nothing in this tree - skipped`). `cleanup.js` looks for every variant's
-replacement, since it cannot know which one was chosen. Both shapes log a
-`DESYNC ...` line.
-
-**Upstream: `deserializeState.gml`.**
+### The desync report — `deserializeState.gml`
 
 ```
 163276375  DESYNC deserializeState: server declared 6 players, client holds 0, updateType=0
@@ -92,24 +80,6 @@ below). Two patches: `agentDebugStateCount` wraps the `read_ubyte` inside the
 gone — and hands the byte straight back; `agentDebugDesync` replaces the
 `show_message` body, logs both counts and the update type, and then shows the
 identical message.
-
-**A tree with `Scripts/Client/clientProtocolError.gml`** (the kylelmoy fork's
-`desync-fixes` branch).
-
-```
-666593312  DESYNC live test of the log patch |  | Last messages received from the server, oldest first: | 6, 6, 6, 6, 9, 6, 6, 6, 6, 6, 6, 9, 6, 6, 6, 6
-```
-
-There the count mismatch, a character record for an unknown class, and a
-message id with no handler all go through `clientProtocolError`, which stops
-parsing (`global.serverStreamBroken`) and shows a Restart/Quit prompt whose text
-already names both counts, the class, or the last 16 message ids. The only thing
-left to add is getting that text into a file, so this is one patch on the
-`promptRestartOrQuit(text);` line; `agentDebugProtocolError` logs the text with
-`#` turned into ` | ` and then shows the identical prompt. That branch changes
-the stock behaviour this tooling is an oracle for: its client stops at the first
-detected desync instead of reading on, and with the launcher dismissing the
-prompt it neither restarts nor quits, it just stops reading from the server.
 
 ### `getCharacterSpriteId.gml` — the fatal, which names only what was already known
 
@@ -159,7 +129,9 @@ To add one:
    did.
 3. Add the `{ file, from, to }` entry to `CODE_PATCHES` — or, if versions of
    the game disagree about the line, a `{ site, variants }` entry with upstream's
-   shape first.
+   shape first. `resolvePatches` picks the first variant a tree matches before
+   `inject.js` touches anything; a tree that matches none is built without the
+   site and says so, and `cleanup.js` looks for every variant's replacement.
 4. `node tools/selftest.js` — the *payload call-site patches* section checks the
    anchor is still exactly one line of the real tree, that every `agent*` call in
    a replacement is a registered script, and that inject/cleanup round-trips byte
@@ -167,71 +139,17 @@ To add one:
 5. `node build-fast.js` (or `gg2_rebuild`). A new script builds like any
    other change.
 
-## The soak sites, which are not debug logging
+## The audio site, which is not debug logging
 
-Four of the patched sites exist to make an unattended, accelerated, hours-long
-run against another server implementation possible rather than to route a failure
-into the log. Same rules: one line for one line, and each replacement is a no-op
-unless its global has been turned on.
-
-| Site | Script | Global |
-|---|---|---|
-| `RateController.events/Begin Step.xml`, both `room_speed =` lines | `agentRoomSpeed` | `agentRate`, 0 = off |
-| `Character.events/User Event 13.xml`, the position block's first and last read | `agentSnapBegin` / `agentSnapEnd` | `agentSnap`, false = off |
-| `AudioControlPlaySong.gml`, its first line | `agentAudioStopSong` | always on, and observationally identical |
-
-`agentSoakTick` is called from `agentBridgeStep` and needs no site.
-
-### Why `agentRoomSpeed` rather than `agentBridgeSpeed`
-
-`agentBridgeSpeed` deactivates `RateController` so a different `room_speed`
-sticks. That is the right trade for a look at something and the wrong one for a
-soak, in two ways its own header already names one of:
-
-- **A room change ends the boost.** A new room means a new `RateController`,
-  active and unaware, resetting `room_speed` on its next Begin Step. A soak
-  crosses a map change every few minutes, so the boost is gone almost
-  immediately. Patching the assignment means the new instance runs the patched
-  line too and the rate simply survives.
-- **`run_virtual_ticks` stops being maintained.** `RateController`'s *Step* is
-  what sets it, and a deactivated instance runs no Step. Harmless in the 30 fps
-  arm, where `ticks_per_virtual` is 1 and the flag is true every frame. Not
-  harmless in the 60 fps arm, where it alternates: freezing it breaks the
-  virtual-tick cadence the simulation advances on.
-
-Patching the line keeps the instance active, so `delta_factor`,
-`skip_delta_factor`, `ticks_per_virtual` and `frameskip` all keep the values
-`RateController` just computed. `agentRateArm()` reads them back, and a soak
-should assert they did not move: that invariant is the whole reason an
-accelerated run measures the same simulation a real-time one does. Verified in
-both arms under boost.
-
-### The snap probe
-
-The two sites in `User Event 13` bracket the authoritative position block a
-client hard-assigns every seventh tick, so the predicted and the authoritative
-values are both in hand in the same frame. That is the only way to measure the
-correction at all — between updates a client's state *is* its prediction.
-
-The block's last statement is `moveStatus = (temp >> 1) & $07;`, and the event
-XML stores that line escaped (`&gt;&gt;`, `&amp;`), so an anchor for it would
-have to carry the escaping. `hp = read_ubyte(...)` is the last line that assigns
-anything the probe reads and it is plain text, so it is the anchor instead. Both
-anchors are plain statements inside a braced `if`, so neither is the body of
-anything.
-
-`agentSnapReport()` prints count, mean, max and three threshold counts per
-field. The numbers themselves, and what they establish about the 60 fps arm,
-live in `gg2-server`'s `docs/TRAPS-LIVEGAME.md` — measurements belong with the
-implementation they measure.
-
-### The audio site
+`AudioControlPlaySong.gml`'s first line is replaced by `agentAudioStopSong`,
+always on and observationally identical to stock.
 
 `WinBanner`'s Create reaches `AudioControlPlaySong` unguarded, so a round ending
 raises `Unknown variable currentSong` where that variable is absent — including
-with `Music=3`, which only guards `basicRoomSetup.gml:79`. One modal per round
-end is survivable by hand and not by an unattended run: at a boosted rate,
-dismissing it stalled a client until the server dropped the connection.
+with `Music=3`, which only guards `basicRoomSetup.gml:79`. The launcher dismisses
+it, but one modal per round end still stalls the game while it waits, and a
+client sped up with `gg2_speed` can fall far enough behind to be dropped by its
+server.
 
 `agentAudioStopSong` makes the stock script safe and then does what the stock
 line did. **Why the variable goes missing is not established**, and the
@@ -251,7 +169,7 @@ Built with `build-agent.js`, run against a `gg2_session` server and one client:
 | `gg2_state` on that client | two players, `CustomMapRoom`, playing normally |
 | `agentDebugDesync()` with `agentFailFast` off | `DESYNC ... updateType=6` logged, client **still alive** afterwards |
 | `agentDebugDesync()` with `agentFailFast` on | aborts with the stock text, `Wrong number of players while deserializing state` |
-| `cleanup.js` | fork back to only its own unrelated changes; `selftest` 191/191 |
+| `cleanup.js` | checkout back to only its own unrelated changes |
 
 One thing that read oddly and is worth knowing: a count planted with `gg2_eval`
 was **already overwritten** by the time the next `gg2_eval` called the logger, so
@@ -261,38 +179,17 @@ re-sourced from the live stream on every state update — but it means the desyn
 line cannot be faked from outside in two calls; plant and log in one `gg2_eval`
 if you ever need to.
 
-The `agentDebugDesync` and `agentDeclaredPlayers` rows are the upstream shape;
-re-checked 2026-09-28 on an upstream build (`ea8d6951`), where planting a count
-and calling `agentDebugDesync()` in one `gg2_eval` logged the upstream line quoted
-above and the game stayed up. The `clientProtocolError` shape, measured
-2026-09-23 against the `desync-fixes` branch with a server and two clients:
-calling `clientProtocolError("live test of the log patch")` on a client logged
-the line quoted above (message 6 is `INPUTSTATE`, 9 is `QUICK_UPDATE`), the
-launcher force-closed the prompt, and the client stayed up with
-`global.serverStreamBroken` set.
+Re-checked 2026-09-28 on an upstream build (`ea8d6951`): planting a count and
+calling `agentDebugDesync()` in one `gg2_eval` logged the line quoted above and
+the game stayed up.
 
 ## Not done
 
 A **message ring buffer** — the last N message types and lengths the client read,
-dumped from these two sites. (The game's `desync-fixes` branch now keeps the last
-16 message *ids* itself and puts them in the `clientProtocolError` text; lengths
-are still not recorded.) A desync is a framing failure and the bytes leading
+dumped from the desync site. A desync is a framing failure and the bytes leading
 into it are the evidence; nothing recovers them after the fact. It is the one
 addition with a real cost on a per-message path, and the bridge's own per-frame
-cost was measured at zero, so it should be held to the same bar.
-
-**What decides whether it is worth building.** The desync cannot be provoked on
-demand, and as of 2026-09-05 an in-process harness against the C# port cannot
-provoke it either — but the negative is now specific rather than general, which
-is what makes the ring buffer the next move rather than more harness work. A
-client joined in the same tick as a bot fill change, across six fills forcing
-both adds and removals, with a player-count check armed on the mirror, **stays
-clean**; and the tick order explains why, since the population service runs well
-ahead of the accept and join-servicing calls, so the join burst already sees the
-post-removal roster. What that does not cover is the population manager
-*auto-displacing* a bot to seat an arriving human — the exact line pair the live
-failure showed (`bot [BOT] 5 removed from player 5` immediately followed by
-`Player joined as player 6`). So the manual path is clean and the automatic one
-is untested, and the two are not obviously the same code. A ring buffer says
-which side the truth is on from a real occurrence, where the harness has to guess
-the path first.
+cost was measured at zero, so it should be held to the same bar. The desync
+cannot be provoked on demand, which is what would make it worth building: it
+says what happened from a real occurrence, where anything else has to guess the
+path first.

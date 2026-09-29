@@ -186,7 +186,7 @@ const TOOLS = [
   {
     name: 'gg2_speed',
     description:
-      'Set how fast the game runs relative to real time, for burning through a slow stretch of bot behaviour ' +
+      'Set how fast the game runs relative to real time, for burning through a slow stretch of play ' +
       'without gg2_step\'s frame-by-frame cost. GM8 paces its own step loop to hit room_speed steps a real ' +
       'second, and RateController.Begin Step resets room_speed back to 30 or 60 every single frame - so a plain ' +
       '`room_speed = ...` via gg2_eval gets stomped within one frame. This tool deactivates RateController first, ' +
@@ -253,10 +253,10 @@ const TOOLS = [
       'expression can fail to compile; if the game rejects it anyway, the wait is abandoned after the first ' +
       'frame with an error reply rather than repeating the same failure for the rest of the budget. Pass raw ' +
       'GML - do not HTML/XML-escape < > & as &lt; &gt; &amp;, unlike gg2_event which wants escaped text. ' +
-      'Optional setup runs once, synchronously, before the first evaluation of expr - use it to place a bot or ' +
+      'Optional setup runs once, synchronously, before the first evaluation of expr - use it to move a player or ' +
       'set up state in the same call that starts waiting, instead of a separate gg2_eval first: the game keeps ' +
       'running between calls, so a setup done as a prior gg2_eval leaves an unknown amount of real game time ' +
-      'before the wait actually arms, and a bot can walk off, re-plan, or finish before anything is watching.',
+      'before the wait actually arms, and what you set up can have moved on before anything is watching.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -400,7 +400,7 @@ const TOOLS = [
       'exists to amortise that properly instead of hand-rolling it with gg2_eval and gg2_watch. Two modes:\n' +
       '  mode "expr" (default) - runs code repeat(n) between two current_time reads inside one call and ' +
       'reports the total and the per-iteration mean. For a pure CPU cost, e.g. one collision check or one ' +
-      'grid cell of a bot-nav build.\n' +
+      'call to a script under suspicion.\n' +
       '  mode "frames" - freezes the game and steps it one frame at a time, reading current_time after each ' +
       'step (the in-game clock, not a stopwatch on this side of the wire, which would measure MCP round-trip ' +
       'time instead of GML time), and reports the frame-time distribution. For the per-frame cost of whatever ' +
@@ -410,7 +410,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['expr', 'frames'], description: 'What to time (default expr).' },
-        code: { type: 'string', description: 'mode "expr": GML statement(s) to repeat, e.g. navClearanceBuild();' },
+        code: { type: 'string', description: 'mode "expr": GML statement(s) to repeat, e.g. getCharacterSpriteId(0, 0, "Stand");' },
         n: { type: 'integer', description: 'mode "expr": how many iterations (default 100, max 1000000).' },
         frames: { type: 'integer', description: 'mode "frames": how many frames to sample (default 60, min 2, max 600).' },
         timeout_seconds: { type: 'integer', description: 'mode "expr": how long the whole repeat may take (default 60).' },
@@ -516,6 +516,6 @@ Editing: object event code is XML-escaped inside Objects/**/*.events/*.xml - rea
 
 Running games: each accepts one bridge client, and this session is it - a node script run against the same game waits forever. A GML error comes back as a failed call with its file:line; gg2_log with source "launcher" has the history. Freezing (gg2_step) stops the network too, so a frozen server's clients fall behind and may drop. gg2_input aim hangs; use press and click.
 
-Never commit AgentBridge files, agentDebug*/agentSnap*/agentRoomSpeed/agentAudioStopSong calls or an AgentBridge.heldMask line to the game repository; the build removes them, and node ${path.join(ROOT, 'cleanup.js')} does if a build was killed. The full operating guide is ${path.join(ROOT, 'CLAUDE.md')}.`;
+Never commit AgentBridge files, agentDebug*/agentAudioStopSong calls or an AgentBridge.heldMask line to the game repository; the build removes them, and node ${path.join(ROOT, 'cleanup.js')} does if a build was killed. The full operating guide is ${path.join(ROOT, 'CLAUDE.md')}.`;
 
 module.exports = { TOOLS, INSTANCE_ARG, INSTRUCTIONS };

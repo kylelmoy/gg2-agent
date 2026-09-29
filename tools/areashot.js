@@ -123,8 +123,8 @@ async function capture({ run, lint = () => {}, buildDir, repo, port, x, y, width
   }
 
   // The mask over the live picture, composited here rather than drawn in the
-  // game: one mask cell is exactly NAV_CELL_SIZE (6) world pixels and the tiles
-  // are captured at 1:1, so this lands on the exact pixels the collision does -
+  // game: one mask cell is exactly six world pixels and the tiles are
+  // captured at 1:1, so this lands on the exact pixels the collision does -
   // no resample, no GML, and nothing that could disturb a running server.
   // Outlined rather than filled, because a fill over a map this dark and this
   // detailed either vanishes into the art or hides whatever the shot was taken

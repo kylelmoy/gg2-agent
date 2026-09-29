@@ -14,10 +14,9 @@
 // half.
 //
 // global.agentFailFast (agentBridgeCreate; settable live over gg2_eval) turns
-// the warning into an abort. It is off by default on purpose: the whole value
-// of driving a real client against another implementation is asking whether a
-// STOCK client survives what the server writes, and a build that dies at the
-// mismatch is a better debugger and a worse oracle.
+// the warning into an abort. It is off by default on purpose: a patched build
+// has to behave exactly like a stock client, and a build that dies at the
+// mismatch is a better debugger and a worse reproduction of what players see.
 
 if (instance_exists(AgentBridge))
 {

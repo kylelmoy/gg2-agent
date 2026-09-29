@@ -31,36 +31,20 @@ global.agentHideHud = false;
 global.agentSpeedFactor = 1;
 
 // The debug-logging call sites inject.js patches into the game's own code -
-// agentDebugDesync/agentDebugStateCount on upstream, agentDebugProtocolError on
-// a tree with clientProtocolError, and agentDebugSpriteError - read these, so
+// agentDebugDesync/agentDebugStateCount and agentDebugSpriteError - read these, so
 // they are set here where every build that has the payload at all runs them,
 // and before the -agent check below: a build launched with no bridge still logs.
 //
 // agentFailFast turns the desync report - deserializeState's count-mismatch
-// warning, or clientProtocolError's Restart/Quit prompt - into an abort.
-// Off by default and it must stay that way: the value of driving a real client
-// against another implementation is asking what a stock one does, and a client
-// that dies at the first desync answers a different question. Flip it live
-// with gg2_eval when the desync is the thing being hunted.
+// warning - into an abort. Off by default and it must stay that way: a patched
+// build has to behave exactly like a stock client, and a client that dies at the
+// first desync answers a different question. Flip it live with gg2_eval when the
+// desync is the thing being hunted.
 global.agentFailFast = false;
 global.agentDeclaredPlayers = -1;
 
-// The soak-testing switches, here for the same reason as the two above: the call
-// sites inject.js patches into the game's own code read them, and
-// RateController's Begin Step runs in every build whether or not a bridge was
-// asked for. Each one is off, and off means observationally identical to stock.
-//
-// agentRate   room_speed to force, 0 = leave RateController's own value alone.
-//             agentRoomSpeed says why this is a patched line rather than
-//             agentBridgeSpeed's deactivation.
-// agentSnap   collect prediction-snap statistics - agentSnapBegin.
-// agentSoak   keep an unattended run alive - agentSoakTick.
-global.agentRate = 0;
-global.agentSnap = false;
-global.agentSoak = false;
+// Scratch for agentAudioStopSong, which a patched call site reaches in every build.
 global.agentAudioOk = false;
-
-agentSnapReset();
 
 // A request that cannot be answered in the frame it arrives - STEP counts frames
 // down, WAIT re-tests an expression - leaves deferKind set, and agentBridgeDefer

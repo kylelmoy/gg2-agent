@@ -1,8 +1,8 @@
 // Services the agent bridge once per step: accepts a local client, then reads
 // length prefixed requests and writes length prefixed replies.
 
-// Self-heal: an instance whose Create never ran - the client startup path did
-// this at least once, see HANDOFF.md - would otherwise raise "unknown variable
+// Self-heal: an instance whose Create never ran - the client startup path has
+// done this at least once - would otherwise raise "unknown variable
 // listener" every step forever. Cheap enough to check unconditionally.
 if (not variable_local_exists("listener"))
     agentBridgeCreate();
@@ -14,12 +14,6 @@ if (not variable_local_exists("listener"))
 // looking at the window, whether or not an agent is connected to this instance.
 if (keyboard_check_pressed(vk_f11))
     global.agentLabels = !global.agentLabels;
-
-// Soak mode pins the two idle timers that would otherwise end a long unattended
-// run without saying so. Ahead of the listener check for the same reason F11 is:
-// it costs one global read while off, and a run that has been armed should stay
-// armed across a reconnect. agentSoakTick.
-agentSoakTick();
 
 if (listener < 0)
     exit;
@@ -154,11 +148,10 @@ while (guard < 32)
 
         // Optional request id: "#<digits> <request>". Whatever a client puts
         // there is echoed on the front of the reply, which is what lets it
-        // match replies to requests by name rather than by position - see
-        // HANDOFF.md. Nothing is required to send one: without it replyPrefix
-        // stays empty and the reply is bare, exactly as before, so a client
-        // built against the older protocol keeps working against a game that
-        // has been rebuilt with this.
+        // match replies to requests by name rather than by position. Nothing is
+        // required to send one: without it replyPrefix stays empty and the
+        // reply is bare, so a client built against the older protocol keeps
+        // working against a game that has been rebuilt with this.
         //
         // ⚠️ Ids stopped being a convenience the moment this loop began running
         // during a defer. Replies are no longer in arrival order - CANCEL jumps

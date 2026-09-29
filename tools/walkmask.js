@@ -6,11 +6,11 @@
 // walkmask - is deflated into a zTXt chunk keyed "Gang Garrison 2 Level Data",
 // which is how the game itself loads a custom map (Scripts/Maps/CustomMaps).
 // So the mask is available with no game running, at exactly the resolution the
-// art is, which is exactly the resolution a nav cell is.
+// art is.
 //
 // That matters because the art is decorative and the mask is the truth. Every
-// question the nav tools ask - why is there no edge here, what is this node
-// standing on, is that gap crossable - is a question about the mask; the art
+// question about movement - what is this player standing on, is that gap
+// crossable, why can nobody get up there - is a question about the mask; the art
 // answers it only when the two happen to agree, and they routinely do not
 // (painted-on scenery that nothing collides with, and blocking geometry that is
 // drawn as background). Rendering the mask instead of the art removes an entire
@@ -155,8 +155,8 @@ function toRgba({ width, height, bits }) {
 //
 // `cell` is how many of the image's pixels one mask cell covers, and
 // origin is where the image's top-left corner sits in those same units - so
-// map art is cell 1 at (0, 0), and a live screenshot is cell NAV_CELL_SIZE (6,
-// always: it is NAV_CELL_SIZE) at the world coordinate the capture started
+// map art is cell 1 at (0, 0), and a live screenshot is cell 6 (always: six
+// world pixels to a mask cell) at the world coordinate the capture started
 // from. That is the whole coordinate conversion, and it is exact in both
 // directions rather than a resample.
 // `only: 'solid'` leaves open space exactly as it came, which is what a
@@ -192,7 +192,7 @@ function tint(image, mask, { cell = 1, originX = 0, originY = 0, strength = 0.55
 // disappears into the art or hides what the shot was taken for. An outline
 // costs one world pixel per boundary and covers nothing, which turns out to be
 // exactly the question anyone has of a live picture - where can a character
-// stand, what is that bot stuck on - rather than "which half of the screen is
+// stand, what is that player stuck on - rather than "which half of the screen is
 // rock".
 //
 // The edge is drawn on the solid side, on the cell's own outermost pixel row or

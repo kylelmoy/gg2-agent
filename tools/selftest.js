@@ -614,26 +614,13 @@ async function main() {
     };
     roundTrip(TREE, patches, '');
 
-    // The other shape of the desync site, the one a tree carrying
-    // Scripts/Client/clientProtocolError.gml has. Built synthetically, so this
-    // does not need a fork checked out.
+    // A tree that has reshaped a site - a fork, say - builds without that site
+    // rather than failing: it is skipped by name, and the rest still apply.
     const desync = payloadSpec.patchSites().find((s) => s.name === 'desync report');
-    const protocolPatch = desync.variants[1][0];
     const serialize = path.join(TREE, 'Scripts', 'Serialization', 'deserializeState.gml');
     const upstreamSerialize = lib.readText(serialize);
-    const forkFile = path.join(TREE, ...protocolPatch.file);
-    fs.mkdirSync(path.dirname(forkFile), { recursive: true });
-    fs.writeFileSync(forkFile, `// argument0: text\nvar text;\ntext = argument0;\n    ${protocolPatch.from}\n`);
     fs.writeFileSync(serialize, upstreamSerialize.split(/\r?\n/)
       .filter((l) => !desync.variants[0].some((p) => l.trim() === p.from.trim())).join('\n'));
-    const fork = payloadSpec.resolvePatches(TREE);
-    check('a clientProtocolError tree picks that variant',
-      fork.skipped.length === 0 && fork.patches.includes(protocolPatch)
-      && !desync.variants[0].some((p) => fork.patches.includes(p)));
-    roundTrip(TREE, [protocolPatch], 'fork shape: ');
-
-    // Neither shape: the site is skipped by name, and the rest still apply.
-    fs.rmSync(forkFile);
     const neither = payloadSpec.resolvePatches(TREE);
     check('a site that matches no variant is skipped, not fatal',
       neither.skipped.length === 1 && neither.skipped[0] === 'desync report'
@@ -840,8 +827,8 @@ async function main() {
   check('a screenshot comes back as an image block', Array.isArray(shot) && shot[0].type === 'image' && shot[0].mimeType === 'image/png');
   check('and the temporary file is cleared away', !fs.existsSync(path.join(BUILD, `agent_shot_${PORT}.png`)));
 
-  // The walkmask: the collision the nav graph is built against, read out of the
-  // map PNG's own level data. Synthesised here rather than taken from the game
+  // The walkmask: the map's collision, read out of the map PNG's own level
+  // data. Synthesised here rather than taken from the game
   // repo, so the encoding is checked against a pattern this file knows the
   // answer to - a mask decoded one bit out of step still looks like a map.
   process.stdout.write('\nwalkmask\n');
@@ -870,7 +857,7 @@ async function main() {
     check('tinting solids leaves open space alone', openPx(solidOnly, 0, 0) === 0);
     check('and paints the solid ones', openPx(solidOnly, 4, 1) === walkmask.SOLID[0], String(openPx(solidOnly, 4, 1)));
 
-    // Six world pixels to the mask cell, always (NAV_CELL_SIZE): a live shot
+    // Six world pixels to the mask cell, always: a live shot
     // is tinted through that scale and an offset, and getting either wrong puts
     // the geometry somewhere it is not.
     const shot = { width: 12, height: 12, rgba: Buffer.alloc(12 * 12 * 4, 0) };

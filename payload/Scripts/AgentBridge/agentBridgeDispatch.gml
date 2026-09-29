@@ -139,9 +139,9 @@ case "WAIT":
     // contain anything - including a colon - without ambiguity.
     //
     // Running <setup> here, synchronously inside the same request that arms the
-    // wait, is what makes "place a bot, then wait for it to arrive" a single
+    // wait, is what makes "move a player, then wait for it to land" a single
     // measurement instead of two calls with an unknown amount of real game time
-    // between them - see HANDOFF.md.
+    // between them.
     sp = string_pos(" ", rest);
     if (sp == 0)
         return "ERR WAIT needs a frame budget and an expression";

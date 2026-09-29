@@ -10,7 +10,7 @@ if (ds_list_size(watchExpr) == 0)
 // which used to make FREEZE and STEP look broken instead of the game just
 // being frozen. Gated on instancesDeactivated rather than "frozen" itself, so
 // sampling keeps working across a STEP's own active frames, which is exactly
-// the combination worth having (see HANDOFF.md).
+// the combination worth having.
 if (instancesDeactivated)
 {
     if (!watchSuspended)

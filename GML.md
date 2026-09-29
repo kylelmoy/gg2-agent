@@ -47,8 +47,8 @@ there is not one `var` declaration that shadows any of them. Name grid locals
 ### A variable must not share a name with a resource
 
 ```gml
-// there is a script called navNodeGrid
-global.navNodeGrid = -1;   // COMPILATION ERROR
+// there is a script called spawnGrid
+global.spawnGrid = -1;   // COMPILATION ERROR
 ```
 
 Script, object, sprite, room and constant names are read-only constants at compile
@@ -93,9 +93,9 @@ var player, i, other, place;                        // COMPILATION ERROR, lints 
 
 The failure is the same as `score`'s and just as unhelpful: *"Variable name expected"* at
 the `var` line, the whole game fails to compile at load, and it launches into a window
-that paints, answers a ping, and does nothing. It cost a full `build-agent.js` cycle on
-2026-08-21 in `botRoleAssign`, where `other` is the obvious name for "the player I am
-comparing myself to".
+that paints, answers a ping, and does nothing. It is an easy slip in any script that
+compares one player against the rest, where `other` is the obvious name for "the player I
+am comparing myself to".
 
 The other GM8 keywords worth not naming a local after: `self`, `all`, `noone`, `global`,
 `local`, `then`, `begin`, `end`, `div`, `mod`, `not`, `and`, `or`, `xor`. Most read as
@@ -165,12 +165,11 @@ GM8's special instance ids are negative, and `-1` is one of them:
 | `-5` | `global` | false |
 
 All verified against a running exe. So when GG2 stores `-1` to mean "this player has no
-Character" — which it does, in `Player.object`, `Sentry.currentWeapon`, `navFindPath`'s
-failure return, `botPath`, and plenty more — every one of these does something other
-than what it looks like:
+Character" — which it does, in `Player.object`, `Sentry.currentWeapon` and plenty more —
+every one of these does something other than what it looks like:
 
 ```gml
-// player.object is -1 because the bot is dead
+// player.object is -1 because the player is dead
 if (instance_exists(player.object))   // TRUE. -1 is self, and self exists.
     hp = player.object.hp;            // reads the CALLING instance's hp
 with (player.object)                  // runs the block on the caller
@@ -182,7 +181,7 @@ variable on the calling instance and reading it back through a `-1` handle. If t
 caller happens not to have that variable, you get `Unknown variable someVar` — which
 reads exactly like "that object doesn't have this field" and sends you looking at the
 wrong object entirely. That is precisely how a session was spent concluding `Character`
-had no `currentWeapon`, when the real answer was that the bot was dead at that instant
+had no `currentWeapon`, when the real answer was that the player was dead at that instant
 and the read had been quietly redirected to the `AgentBridge`.
 
 **The guard is `!= -1`, never `instance_exists`.** The game's own code already does this
@@ -263,15 +262,13 @@ error stays invisible until something lands in the wrong place.
   ```
 
   Every count starts absent, so a bare `ds_map_replace` leaves the map permanently
-  **empty** while raising no error at all. Cost a live debugging round on the bot
-  edge-occupancy counts (2026-08-22): every bot reported its route as counted, the
-  per-bot flag was set outside the branch that failed, and `ds_map_size` sat at 0 for
-  1200 frames with twelve bots running.
+  **empty** while raising no error at all: every caller believes it counted, and
+  `ds_map_size` stays at 0.
 - **`ds_map_find_next` does not return a sentinel you can test with `>= 0`.** Walking a
   numeric-keyed map with `while(k >= 0)` never terminates and hangs the game with no
   dialog - the bridge simply stops answering. Iterate with `ds_map_size` and
   `ds_map_find_first`/`find_next` bounded by a counter, or keep a companion `ds_list`
-  of keys the way the bot blacklist does.
+  of keys.
 - **No `ds_set`.** Use a `ds_map` with dummy values, or a `ds_grid` as a bitmap.
 - `ds_priority` has no handle per queued item, so there is no real decrease-key
   available for A\*. Push duplicates and skip already-closed entries when popping;

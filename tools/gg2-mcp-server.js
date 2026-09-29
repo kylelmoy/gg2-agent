@@ -689,9 +689,18 @@ async function watched(where, fn) {
 
 const lintGml = (code) => gmllint.check(code, { trees: [TREE, PAYLOAD] });
 
+// The linter fails open - a missing gm8-builder or Game Maker install must not
+// block real work - but then nothing stands between a typo and a modal dialog.
+// So whenever a call's code went unchecked, tools/call says so beside the
+// result, where the agent cannot miss it, rather than only in a log. Per call,
+// since calls can be in flight together.
+const lintSkipped = new (require('async_hooks').AsyncLocalStorage)();
+
 async function lintOrThrow(code, skip) {
   if (skip) return;
   const res = await lintGml(code);
+  const skipped = lintSkipped.getStore();
+  if (skipped && res.note && /unavailable/.test(res.note)) skipped.note = res.note;
   if (res.ok) return;
   const lines = res.errors.map((f) => `  line ${f.line}: ${f.message}`).join('\n');
   throw new Error(
@@ -1386,13 +1395,18 @@ async function handle(msg) {
 
     case 'tools/call': {
       const name = params && params.name;
+      const skipped = { note: null };
+      const unchecked = () => (skipped.note
+        ? [{ type: 'text', text: `Warning: this GML was NOT linted (${skipped.note}); run node tools/doctor.js. ` +
+          'Until it is fixed, a syntax error will reach the game as a modal dialog.' }]
+        : []);
       try {
-        const out = await callTool(name, params && params.arguments);
+        const out = await lintSkipped.run(skipped, () => callTool(name, params && params.arguments));
         const content = Array.isArray(out) ? out : [{ type: 'text', text: String(out) }];
-        return result(id, { content });
+        return result(id, { content: [...content, ...unchecked()] });
       } catch (e) {
         // Tool failures are reported in-band so the model can react to them.
-        return result(id, { content: [{ type: 'text', text: 'Error: ' + e.message }], isError: true });
+        return result(id, { content: [{ type: 'text', text: 'Error: ' + e.message }, ...unchecked()], isError: true });
       }
     }
 

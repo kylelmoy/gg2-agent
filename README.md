@@ -33,7 +33,9 @@ modal dialogs through user32. You need:
 - **A Game Maker 8.0 install.** It is never run - the build copies its runner,
   libraries and extensions, and the linter reads its `fnames` - so a copy of
   those files anywhere will do. Found through `GM8_DIR`, then whatever opens
-  `.gmk` files, then the default install paths.
+  `.gmk` files, then the default install paths. Game Maker 8 is no longer sold
+  and nothing here ships its files; if you already build Gang Garrison 2 you
+  have one, since upstream's own build needs it too.
 - **An audio device.** GM8 loads sound resources into DirectSound during engine
   startup; with no endpoint it raises two modal errors and terminates before any
   game code runs. Over RDP: audio redirection while connected,
@@ -53,7 +55,8 @@ npm run doctor
 [gm8-builder](https://github.com/kylelmoy/gm8-builder), the build and the GML
 linter: the release pinned in `tools/gm8.js`, checked against its SHA-256 and
 unpacked into `.deps/`. Set `GM8_BUILDER` to use some other exe instead, such as
-a local build.
+a local build. If the download fails - offline, say - the install still
+succeeds, and the first build or lint tries again.
 
 `npm run doctor` (`tools/doctor.js`) checks everything above and prints the
 command that registers the MCP server. Register it once, at user scope, so it is
@@ -156,6 +159,9 @@ run `node cleanup.js` before committing anything in that checkout.
 - **`gg2_input aim` hangs** for about ten seconds and does nothing. It needs the
   game window in the foreground, which a launched game usually is not. `press`
   and `click` work.
+- **A reply ends with "this GML was NOT linted".** gm8-builder or the Game
+  Maker 8 install could not be found, so nothing is checking code before it
+  reaches the game and a typo will raise a dialog. `npm run doctor` says which.
 - **Bridge files show up in the game's `git status`.** A build was killed
   before it could clean up, or `--keep-injected` was used: run `node cleanup.js`.
 
@@ -232,7 +238,7 @@ are lines *added*:
 | `Scripts/Game/game_init.gml` | `instance_create(0, 0, AgentBridge);` |
 | `Objects/InGameElements/PlayerControl.events/Begin Step.xml` | OR `AgentBridge.heldMask` into `keybyte`, so `gg2_input press left` etc. can hold a direction without a keyboard |
 
-The rest are nine existing lines *replaced*, each by a call to a payload script
+The rest are five existing lines *replaced*, each by a call to a payload script
 (`CODE_PATCHES` in `tools/payload.js`). Replacing the whole line rather than
 inserting beside it is what leaves the game's control flow alone - several are
 the braceless body of an `if`, where an inserted neighbour would change what the
@@ -243,8 +249,6 @@ game does - and `cleanup.js` swaps each back and fails if one survives.
 |---|---|---|
 | `Scripts/Serialization/deserializeState.gml` | 2 | log a player-count desync, with the count the server declared, instead of only showing it |
 | `Scripts/Misc/getCharacterSpriteId.gml` | 2 | log its two `show_error` calls, which abort |
-| `Objects/RateController.events/Begin Step.xml` | 2 | let a faster game speed be held, even across a map change, for long accelerated runs |
-| `Objects/InGameElements/Character.events/User Event 13.xml` | 2 | measure how far a client's prediction snaps when the server corrects it |
 | `Scripts/AudioControl/AudioControlPlaySong.gml` | 1 | stop a stock bug raising a dialog at every round end |
 
 Where a fork reshapes one of these lines, the payload lists that shape as an
@@ -373,6 +377,19 @@ the public lobby, `HostingPort` is where the server listens and therefore where
 clients must be pointed, and `MultiClientLimit` caps connections from one
 address — which every local client shares. `session.js` sets the first, reads the
 second and refuses politely against the third.
+
+## Security
+
+The bridge runs any GML it is sent, which on Windows means anything at all.
+That is contained three ways, and all three matter:
+
+- it listens only when the game is started with `-agent`;
+- it drops every connection that is not from `127.0.0.1` or `::1`;
+- it is injected at build time and removed afterwards, so it is never in the
+  game's repository and cannot reach a release build made from it.
+
+Do not remove the loopback check, and never distribute an executable built by
+this tooling. To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## License
 

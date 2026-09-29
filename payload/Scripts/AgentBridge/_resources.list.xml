@@ -18,16 +18,7 @@
   <resource name="agentBridgeSpeed" type="RESOURCE"/>
   <resource name="agentDebugStateCount" type="RESOURCE"/>
   <resource name="agentDebugDesync" type="RESOURCE"/>
-  <resource name="agentDebugProtocolError" type="RESOURCE"/>
   <resource name="agentDebugSpriteError" type="RESOURCE"/>
-  <resource name="agentRoomSpeed" type="RESOURCE"/>
-  <resource name="agentRateArm" type="RESOURCE"/>
-  <resource name="agentSnapBegin" type="RESOURCE"/>
-  <resource name="agentSnapEnd" type="RESOURCE"/>
-  <resource name="agentSnapAccum" type="RESOURCE"/>
-  <resource name="agentSnapReset" type="RESOURCE"/>
-  <resource name="agentSnapReport" type="RESOURCE"/>
-  <resource name="agentSoakTick" type="RESOURCE"/>
   <resource name="agentAudioStopSong" type="RESOURCE"/>
   <resource name="agentScriptSpare0" type="RESOURCE"/>
   <resource name="agentScriptSpare1" type="RESOURCE"/>

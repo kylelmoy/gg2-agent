@@ -7,36 +7,22 @@ Operating guide for an AI agent. Read this before touching either repo.
 | Repo | Contains | Rule |
 |---|---|---|
 | `gg2-agent` (this one) | all tooling: build scripts, the agent bridge payload, the MCP server, the launcher | tooling only |
-| `Gang-Garrison-2` | the game itself — **upstream `Gang-Garrison-2/Gang-Garrison-2`, the reference checkout** | treat as read-only; never commit tooling, build scripts, or the bridge here |
-| `gg2-server` | the C# port of the server, and everything to do with **bots** | not this repo's business, except that it owns nav now |
-| `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic C#; a pinned **release** is this repo's dependency - `tools/gm8.js` fetches it into `.deps/` (`npm install`, or on first use), or `GM8_BUILDER` points at another exe. No checkout needed |
+| `Gang-Garrison-2` | the game itself — [upstream](https://github.com/Gang-Garrison-2/Gang-Garrison-2) or a fork of it | treat as read-only; never commit tooling, build scripts, or the bridge here |
+| `gm8-builder` | `gm8-builder.exe`: building and linting **any** GM8 project, with no Game Maker process | game-agnostic; a pinned **release** is this repo's dependency - `tools/gm8.js` fetches it into `.deps/` (`npm install`, or on first use), or `GM8_BUILDER` points at another exe. No checkout needed |
 
-The build and the GML linter are `gm8-builder` (since 2026-09-28; before that
-`gm8-tools`, which drove Game Maker headlessly and spliced code into a template
-exe, with standalone gmksplit and gm8x_fix binaries - none of it exists here any
-more). The version is `RELEASE` in `tools/gm8.js`, with each platform zip's
-SHA-256; moving to a new release is changing that. `gm8-builder` reproduces *Create
+The build and the GML linter are [`gm8-builder`](https://github.com/kylelmoy/gm8-builder).
+The version is `RELEASE` in `tools/gm8.js`, with each platform zip's SHA-256;
+moving to a new release is changing that. `gm8-builder` reproduces *Create
 Executable* itself from the split tree, reading only the runner, libraries and
 `fnames` out of a Game Maker 8.0 install (`GM8_DIR`, else whatever opens
 `.gmk` files), so every build is a full build and takes ~2s. `build-agent.js`
-and `build-fast.js` are still the front doors - they inject the bridge and run
-`gm8-builder build --lint --gm8x-fix` - and `tools/gml-lint.js` is still what the
-MCP tools call, but it asks a long-running `gm8-builder lint --serve`. A change
+and `build-fast.js` are the front doors - they inject the bridge and run
+`gm8-builder build --lint --gm8x-fix` - and `tools/gml-lint.js` is what the
+MCP tools call, which asks a long-running `gm8-builder lint --serve`. A change
 to how an exe is built or what the linter checks belongs in that repo, not here.
 It must never learn about this game or the bridge; anything GG2-specific is
 passed in (`--extensions tools/gml-extensions.txt` for the .gex functions, the
 payload as a second `--tree`). Linting is async: every `lintOrThrow` is awaited.
-
-⚠️ **`Gang-Garrison-2` is upstream now, not the old bot fork** (changed
-2026-09-05). That checkout has **no bot layer at all** — no `Scripts/Bots/`, no
-`Scripts/BotNav/`, no `NAV_*` in `Constants.xml` — so anything in an older
-transcript about nav graphs, bot scenarios, `botAdd`, `navBuildState` or
-`Source/build/botnav` refers to code that is not there. This repo's own bot-nav
-tooling (nine tools, three docs, two payload scripts and `gg2_scenario`) was
-retired with it; `git show d346b8a` is the last commit that has them. Bot
-navigation lives in `gg2-server` — its `docs/NAVGEN.md`, `docs/BOTAI.md` and
-`docs/TRAPS-BOTS.md` — and its server generates any graph it is missing on a map
-change, so there is nothing to warm here.
 
 The bridge is **injected** into the game's source tree at build time and removed
 again afterwards. If you find `AgentBridge` files, an `instance_create(0, 0,
@@ -44,25 +30,23 @@ AgentBridge);` line, or an `AgentBridge.heldMask` reference inside
 `PlayerControl` committed there, that is a mistake — run `cleanup.js`.
 
 ⚠️ **Injecting also rewrites a few lines of the game's own logic**, not just adds
-lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps nine call sites for
+lines beside it: `CODE_PATCHES` in `tools/payload.js` swaps five lines for
 calls to payload scripts. Four route a failure the game only ever put on screen
-into `agent_bridge_<port>.log`; the other five are what make an unattended,
-accelerated soak against another server implementation possible — the rate
-override, the prediction-snap probe and the audio guard. The anchors are
-upstream's, and the payload must not depend on a fork of the game: a site a fork
-reshapes lists each shape as a variant, and a tree matching none is built without
-that site and warned about, not refused. `cleanup.js` swaps them
-all back and fails if one survives. An `agentDebug*`, `agentSnap*`,
-`agentRoomSpeed` or `agentAudioStopSong` call left inside the game's own files in
-the fork is the same kind of mistake as the ones above. `docs/CLIENTDEBUG.md` is
-why each exists and how to add another — read it before patching a tenth,
-because **some anchors are the braceless body of an `if`, where inserting a line
-beside the anchor silently changes what the game does.**
+into `agent_bridge_<port>.log`; the fifth stops a stock bug raising a dialog at
+every round end. The anchors are upstream's, and the payload must not depend on
+a fork of the game: a site a fork reshapes can list each shape as a variant, and
+a tree matching none is built without that site and warned about, not refused.
+`cleanup.js` swaps them all back and fails if one survives. An `agentDebug*` or
+`agentAudioStopSong` call left inside the game's own files is the same kind of
+mistake as the ones above. `docs/CLIENTDEBUG.md` is why each exists and how to
+add another — read it before patching a sixth, because **some anchors are the
+braceless body of an `if`, where inserting a line beside the anchor silently
+changes what the game does.**
 
 ## The loop
 
 There are two front doors onto the same code, and **one socket between them**. The bridge
-inside the game accepts a single client — `payload/Scripts/AgentBridge/agentBridgeStep.gml:26`
+inside the game accepts a single client — `payload/Scripts/AgentBridge/agentBridgeStep.gml:25`
 takes a connection only while it has none — and every *process* that talks to a game is a
 client. So an editor's MCP session and a `node tools/...` invocation cannot both hold one
 game: whoever is second sits in the accept backlog forever, which presents as every call
@@ -150,15 +134,10 @@ The first is "what does this map look like, and what can a body stand on"; the s
 
 - **`gg2_map_image`** doesn't touch the camera at all — it reads the map's own
   `Included Files/<name>.png` directly off disk (every built-in map ships as exactly this
-  art, at native map-pixel resolution, e.g. `koth_valley` is 804×170 - checked against all
-  22). Because it never goes through the game's own renderer there is no camera
-  distortion, no window-resolution cap, and nothing to stitch. An earlier `gg2_nav_map`
-  *did* screenshot the live camera and had exactly those problems - most visibly, a wide
-  map squashed to fit an ~4:3 window (GM8 scales each view axis independently, so a
-  rectangle whose aspect ratio doesn't already match the window comes out warped) - worth
-  knowing if `gg2_nav_map` shows up in an old transcript. It only knows built-in maps; a
-  custom (player-uploaded) one has no fixed path on disk and gets a clear error rather
-  than a wrong image.
+  art, at native map-pixel resolution, e.g. `koth_valley` is 804×170). Because it never
+  goes through the game's renderer there is no camera distortion, no window-resolution
+  cap, and nothing to stitch. It only knows built-in maps; a custom (player-uploaded) one
+  has no fixed path on disk and gets a clear error rather than a wrong image.
   **`base: "mask" | "art" | "both"` picks what is drawn**, and defaults to `art`. The same
   PNG carries the map's collision mask in its own `zTXt` "Gang Garrison 2 Level Data"
   chunk - the game reads it the same way, see `Scripts/Maps/CustomMaps` - and
@@ -168,43 +147,24 @@ The first is "what does this map look like, and what can a body stand on"; the s
   underground is nearly black, in which two vertical shafts are invisible in the art and
   obvious in the mask. `node tools/walkmask.js <map> out.png` renders one on its own.
 - **`gg2_area_shot`** is for when the *live* game is what needs seeing at more than one
-  window's worth at a time - players, projectiles, capture progress, an actual running
-  match - which `gg2_map_image` fundamentally cannot show, since it never asks the game
-  anything beyond its current map name. It freezes the game (a camera-follow Step event
-  would otherwise reset the view before every tile's redraw - confirmed live: two tiles
-  taken without freezing came back pixel-identical), tiles the requested area into
-  window-sized shots at exact 1:1 zoom so nothing warps, and stitches them into one
-  image before resuming. Verified live: two adjacent tiles of `koth_valley` stitched with
-  a seamless terrain boundary at the tile edge. `hide_hud` (default true) deactivates
-  every HUD-drawing object this tooling knows about - team/class select, the gamemode's
-  own status bar (score, timer, capture-point lock icon), kill log, ammo/health/uber/
-  sentry/nuts-and-bolts HUD, respawn timer, win banner, medic radar, notices, the
-  spectator overlay - and blanks the cursor sprite, so a full-map capture isn't tiled
-  with a repeating scoreboard and crosshair.
-  **⚠️ `visible = false` does not hide most of these**, and this cost a whole extra
-  round before landing on what does: `KothHUD`'s own Draw event (like its siblings)
-  draws through custom GML, not GM8's automatic sprite draw, and that code runs
-  regardless of `visible` - confirmed live, a capture-point lock icon and the score/timer
-  bar both survived `with(HUD) visible = false` completely unchanged, even though `HUD`
-  is their common parent and the same parent-inclusive `with()` reliably works elsewhere
-  in this codebase. `instance_deactivate_object(HUD)` (`agentBridgeHudVisible.gml`) does
-  work, because deactivating stops the Draw event itself from firing. That, in turn,
-  collided with `agentBridgeShot`'s existing `instance_activate_all()` - needed so a
-  *frozen* game draws its real content instead of an empty room - which reactivates
-  everything unconditionally, silently undoing the suppression one frame before it would
-  otherwise have mattered. Fixed by having `agentBridgeShot` re-apply
-  `agentBridgeHudVisible(false)` itself, every single redraw, whenever
-  `global.agentHideHud` is set - confirmed live across two separate tile captures in a
-  row, not just one. `TeamSelectController`/`ClassSelectController` are the one exception
-  that *does* need only `visible`, since neither has a custom Draw event of its own.
+  window's worth at a time - players, projectiles, capture progress, a running match. It
+  freezes the game (a camera-follow Step event would otherwise reset the view before every
+  tile's redraw), tiles the requested area into window-sized shots at exact 1:1 zoom so
+  nothing warps, and stitches them into one image before resuming. `hide_hud` (default
+  true) deactivates every HUD-drawing object this tooling knows about and blanks the
+  cursor sprite, so a full-map capture isn't tiled with a repeating scoreboard and
+  crosshair.
+  **⚠️ `visible = false` does not hide most HUD objects**: their Draw events are custom
+  GML, which runs regardless of `visible`. Deactivating them does work
+  (`agentBridgeHudVisible.gml`), and `agentBridgeShot` re-applies it on every redraw,
+  because its own `instance_activate_all()` - needed so a frozen game draws anything -
+  would otherwise undo it. `TeamSelectController`/`ClassSelectController` are the
+  exception: neither has a Draw event of its own, so `visible` is enough.
   **`walkmask: true` traces the collision boundary over the shot in magenta**, so what the
   geometry is and what everyone is doing in it can be read off one picture. It is
   composited on the Node side, not drawn in the game: one mask cell is exactly six world
-  pixels and the tiles are captured at 1:1, so it lands on the
-  pixels the collision actually uses - no resample, no GML, and nothing that can disturb a
-  running server. It is an *outline* because a fill was tried first and lost: over a map
-  painted this dark, tinting solid ground either disappears into the art or hides whatever
-  the shot was taken for.
+  pixels and the tiles are captured at 1:1, so it lands on the pixels the collision
+  actually uses. It is an *outline* because a fill disappears into GG2's dark map art.
 
 The underlying pieces (`agentBridgeDraw`, `agentBridgeHudVisible`) live permanently in the
 bridge payload, not a spare, since this is meant to be reached for again rather than
@@ -233,24 +193,26 @@ before you get to the part worth looking at.
 
 GM8 paces its own step loop to hit `room_speed` steps a real second, and
 `RateController.Begin Step` resets `room_speed` back to 30 or 60 every single
-frame - confirmed live, 2026-08-20: setting `room_speed` directly with `gg2_eval`
-was already back to 30 by the very next `gg2_evalx` read. `gg2_speed` works by
-deactivating `RateController` first, which is what makes a different value
-stick. This does not touch per-tick game logic: `RateController` only
-recalculates `global.delta_factor`/`frameskip`/`ticks_per_virtual` for its own
-two supported rates, and deactivating it leaves those exactly as they were - so
-a boosted game does the same thing per tick, just more ticks per real second.
-Measured live at `factor: 10`: 296.7 sim-fps against a 30.0 sim-fps baseline,
-with an exact restore to 30.0 on reset.
+frame, so setting `room_speed` with `gg2_eval` is undone by the next frame.
+`gg2_speed` works by deactivating `RateController` first, which is what makes a
+different value stick. This does not touch per-tick game logic: `RateController`
+only recalculates `global.delta_factor`/`frameskip`/`ticks_per_virtual` for its
+own two supported rates, and deactivating it leaves those exactly as they were -
+so a boosted game does the same thing per tick, just more ticks per real second.
+Measured at `factor: 10`: 296.7 sim-fps against a 30.0 baseline, with an exact
+restore on reset.
 
-**It is not sticky.** `gg2_step`, `gg2_wait`, `gg2_resume` and a frozen
-`gg2_screenshot` all call `instance_activate_all()`, which reactivates
-`RateController` right along with everything else and lets it reset
-`room_speed` on its next `Begin Step` - confirmed live, the same call sequence
-above. So the boost silently drops back to normal the moment any of those run.
-Usually that is convenient (nothing can leave the game stuck at 10x by
-accident), but call `gg2_speed` again afterwards to keep fast-forwarding. And
-because it speeds up whatever services the network each frame too, it carries
+**What ends the boost**, measured rather than assumed:
+
+- **A room change.** A new room means a new `RateController`, active and
+  unaware. Re-apply the factor after changing map.
+- **Un-freezing.** `gg2_resume`, a frozen `gg2_screenshot`, and `gg2_step` when
+  the game was already frozen all call `instance_activate_all()`, which brings
+  `RateController` back with everything else.
+- **Not `gg2_wait`, `gg2_eval` or `gg2_evalx`.** A wait never touches instances,
+  so "fast-forward until a condition holds" is one call and needs no polling.
+
+Because it speeds up whatever services the network each frame too, it carries
 the same caution as freezing: fine solo, careful inside a `gg2_session`.
 
 ### More than one game at once
@@ -272,10 +234,8 @@ itself to the public lobby. `gg2_session` handles all three. Both games share on
 ### The spare objects, and the spare scripts
 
 `AgentSpare0..3` (blank objects) and `agentScriptSpare0..5` (placeholder scripts)
-are built into the executable. They date from when a fast rebuild could only
-splice code into an existing exe, so a new object or script name meant a full
-IDE build. That is no longer true - a new resource costs the same ~2s build as an
-edit - so they are just blank resources kept ready for an experiment. Write to an
+are built into the executable. A new resource costs the same ~2s build as an
+edit, so these are just blank resources kept ready for an experiment. Write to an
 object with `gg2_event`, `gg2_rebuild`, then `instance_create(x, y, AgentSpare0)`.
 
 Editing the game's `.gml` does **not** affect the running game: the code lives
@@ -333,9 +293,8 @@ one investigation. When the investigation ends, exactly one of two things happen
 - everything else is **deleted**, because git has it.
 
 What earns promotion is a measurement, a format, or a rule that will still be true next
-month: "the cache is column-major with the double four bytes in", "reachability went
-13/270 to 150/270 when takeoffs stopped being pinned to the end of a run". What does not
-is narrative — what was tried, in what order, and how it felt.
+month: "the cache is column-major with the double four bytes in", "factor 10 measured
+296.7 sim-fps against a 30.0 baseline". What does not is narrative — what was tried, in what order, and how it felt.
 
 If you are asked for a handoff document, write it to `.claude/notes/` and say so. Do not
 put it at the repo root; nothing there is disposable.
@@ -380,8 +339,8 @@ it lives inside XML, in a `<argument kind="STRING">` element, and it is
 <argument kind="STRING">if (dist &lt; closestDist or closestDist == -1)</argument>
 ```
 
-Writing a bare `<`, `>` or `&` into one of those files produces invalid XML and
-GmkSplitter will refuse the whole tree.
+Writing a bare `<`, `>` or `&` into one of those files produces invalid XML, and
+the build will refuse the whole tree.
 
 Use **`gg2_event`** rather than editing the XML by hand: `list` shows an object's
 events, `read` hands back real GML, and `write` escapes it, lints it and leaves
@@ -426,8 +385,9 @@ otherwise say which suite it stopped in.
 
 `node tools/selftest.js` is the other half: it exercises this repo's own Node
 modules against a fake bridge and a scratch copy of the tree, in about three
-seconds and with no Game Maker anywhere. Run it after changing anything under
-`tools/`.
+seconds and with no game running. It does need the game checkout and a Game
+Maker 8 install, since the linter's checks are part of it. Run it after changing
+anything under `tools/` or `payload/`.
 
 It asserts that every tool in `mcp-schemas.js` has a `case` in `callTool` and vice
 versa, since the table and the behaviour are in separate files; and it round-trips
@@ -457,6 +417,12 @@ reads GM8's own `fnames` table for built-in names and signatures, plus this
 project's scripts and extension functions - and it reports nothing on the game's
 existing ~20,000 lines.
 
+The linter fails *open*: if gm8-builder or the Game Maker 8 install cannot be
+found, code goes through unchecked rather than blocking work. Every tool result
+whose code was not checked then ends with a line saying so - `this GML was NOT
+linted` - and until that is fixed (`node tools/doctor.js` says what is missing)
+a typo reaches the game as a dialog.
+
 Run `gg2_lint` yourself before writing GML into a source file; the linter costs
 nothing and a build costs seconds. `gg2_rebuild` runs it too and
 refuses to build code that would not compile, but finding out at edit time
@@ -480,9 +446,8 @@ exactly what broke.
   returns when the game window is not the foreground window, which a game
   launched by this tooling normally is not. The obvious fix - the launcher
   forcing focus with `AttachThreadInput`/`SetForegroundWindow` - was tried and
-  failed with access-denied/invalid-parameter errors (see the HANDOFF.md at repo root as of
-  commit `efedf8b` for the detail, before trying it again). Expect a ~10s
-  timeout and no effect. `press`/`click` do not depend on focus and work fine.
+  failed; `docs/OPEN.md` has the detail, read it before trying again. Expect a
+  ~10s timeout and no effect. `press`/`click` do not depend on focus and work fine.
 - **A frozen game's own instances cannot be read by field while they stay
   frozen.** `gg2_step` (and `FREEZE` generally) works by calling
   `instance_deactivate_all(true)`, and GM8 makes a deactivated instance's data
@@ -496,7 +461,7 @@ exactly what broke.
   itself run any code or advance anything, since nothing steps again until the
   game is actually resumed) - or just `gg2_resume` first if the whole game's
   state is wanted anyway.
-- **A GML error does not kill the game any more, and it is not silent either.**
+- **A GML error does not kill the game, and it is not silent either.**
   `tools/launcher.js` presses Ignore on GM8's `TErrorForm` and logs the message;
   any call that runs while the game raises one comes back as an error carrying
   that text, instead of the `0` the bridge would otherwise report, and located as
@@ -510,7 +475,7 @@ exactly what broke.
   the server mid-use, and from then on the server's *own* per-tick code raises
   the same error every frame, forever, with nothing to do with the call that
   caused it. No amount of waiting fixes it: `gg2_session stop` then `start` is
-  the only cure, and the tooling now says so when it sees an error repeating
+  the only cure, and the tooling says so when it sees an error repeating
   frame after frame. Before the first risky call of a session, check the
   docstring of whatever you are about to touch for a warning about a background
   job that owns it, and `gg2_wait` on whatever says that job is idle. Freezing
@@ -524,7 +489,7 @@ exactly what broke.
   two games in one directory never interleave.
 - **Only one bridge client at a time.** This is the constraint *The loop* routes
   around. The game accepts a single connection; a second one waits.
-- **Every request carries an id, and replies are no longer in order.** The frame
+- **Every request carries an id, and replies are not in order.** The frame
   body is `#<id> <request>` and the reply comes back `#<id> <reply>`, so a reply
   belongs to the call that asked for it by name rather than by position — a late
   reply to a call that already gave up is dropped as that call's, not handed to
@@ -532,18 +497,15 @@ exactly what broke.
   is given, so rebuilding a game does not break an older client; this client
   always sends one, and refuses (with instructions) to talk to a bridge that
   answers without one.
-  ⚠️ **Matching by position is now wrong, not merely fragile.** A `CANCEL` jumps
+  ⚠️ **Matching by position is wrong, not merely fragile.** A `CANCEL` jumps
   the queue and a deferred reply lands after requests that arrived later than it
   — measured live, `#1` and `#3` come back before `#2` when `#2` was sent second.
-  A test harness written against this got three false failures out of correct
-  behaviour before it was fixed to match by id.
-- **A deferred `STEP` or `WAIT` no longer blocks the connection — `CANCEL` ends
+- **A deferred `STEP` or `WAIT` does not block the connection — `CANCEL` ends
   it.** The bridge keeps reading while a reply is deferred: `CANCEL` is answered
   on the spot, and anything else is held and run the moment that reply goes out.
   So a `WAIT` whose caller gave up costs one round trip to escape rather than the
   rest of its frame budget. Measured live: gave up on a 3000-frame wait after 2s,
-  next call answered in **53ms with the connection kept**, where the old path was
-  a ~98s wait or a reconnect. `CANCEL` is idempotent — nothing deferred is `OK`,
+  next call answered in **53ms with the connection kept**. `CANCEL` is idempotent — nothing deferred is `OK`,
   not an error — and cancelling a `STEP` re-deactivates the world, since `STEP`
   activates it to run its frames.
   Requests are *held* rather than run because a deferred `STEP` has the world
